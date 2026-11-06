@@ -18,7 +18,8 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { acquireLock, matchPrRun, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
+import { runCi } from './ci.mjs';
+import { acquireLock, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
 import { decide, eligible, marker, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -66,43 +67,17 @@ function comment(pr, body) {
   gh(['pr', 'comment', String(pr), '--body-file', f]);
 }
 
-/** 触发 ci.yml 测试“PR 头部合并到 base 之后”的代码，返回 { status: ok|failed|error, base, url } */
-async function runCi(pr, head, base) {
-  const nonce = randomBytes(6).toString('hex');
-  try {
+/** CI 的真实 io：经 gh 访问 GitHub（供 ci.mjs 的 runCi 使用；runCi 会把这里的任何异常转为 status=error） */
+const ciIo = {
+  dispatch: async ({ pr, head, base, nonce }) => {
     gh(['workflow', 'run', 'ci.yml', '--ref', 'main', '-f', `pr=${pr}`, '-f', `head=${head}`, '-f', `base=${base}`, '-f', `nonce=${nonce}`]);
-  } catch (e) {
-    // main 上的 ci.yml 还不支持 workflow_dispatch（只发生在 devloop 自身合入之前）：
-    // 退而使用该 PR 的 pull_request 运行，前提是它测的正是这个 head、且合并基准正是这个 base
-    if (/workflow_dispatch/.test(e.message)) return pullRequestCi(pr, head, base);
-    return { status: 'error', base, url: null, note: `无法触发 CI：${e.message.split('\n')[0]}` };
-  }
-  const deadline = Date.now() + CI_TIMEOUT_MS;
-  let run = null;
-  while (Date.now() < deadline) {
-    await sleep(15_000);
-    const runs = JSON.parse(gh(['run', 'list', '--workflow', 'ci.yml', '--event', 'workflow_dispatch', '--limit', '30', '--json', 'databaseId,displayTitle,status,conclusion,url']));
-    run = runs.find((r) => r.displayTitle.includes(nonce)) ?? null;
-    if (run?.status === 'completed') break;
-  }
-  // 运行一直没完成：可能是测试挂起，也可能是排队 —— 算基础设施问题，由 retry 上限兜底
-  if (!run || run.status !== 'completed') return { status: 'error', base, url: run?.url ?? null, note: '等待 CI 超时' };
-  if (run.conclusion === 'success') return { status: 'ok', base, url: run.url };
-  // timed_out = 任务超过 timeout-minutes，多为测试挂起，属于代码问题，交给执行者修
-  if (run.conclusion === 'failure' || run.conclusion === 'timed_out') return { status: 'failed', base, url: run.url, note: run.conclusion === 'timed_out' ? 'CI 任务超时' : undefined };
-  return { status: 'error', base, url: run.url, note: `CI 结论 ${run.conclusion}` };
-}
-
-/** 回退：找 pull_request 事件、head 与 base 都吻合的已完成 CI 运行（GitHub 在运行记录里给出当时的 base.sha） */
-function pullRequestCi(pr, head, base) {
-  const runs = JSON.parse(sh('gh', ['api', `repos/${REPO}/actions/runs?event=pull_request&head_sha=${head}&per_page=20`])).workflow_runs ?? [];
-  const run = matchPrRun(runs, { pr, head, base });
-  if (!run) return { status: 'error', base, url: null, note: '无法触发 dispatch CI，也没有 head 与 base 都吻合的 pull_request CI' };
-  const note = '回退：使用该 PR 的 pull_request CI（head 与 base 均已核对）';
-  if (run.conclusion === 'success') return { status: 'ok', base, url: run.html_url, note };
-  if (run.conclusion === 'failure' || run.conclusion === 'timed_out') return { status: 'failed', base, url: run.html_url, note };
-  return { status: 'error', base, url: run.html_url, note: `${note}；结论 ${run.conclusion}` };
-}
+  },
+  listDispatchRuns: async () =>
+    JSON.parse(gh(['run', 'list', '--workflow', 'ci.yml', '--event', 'workflow_dispatch', '--limit', '30', '--json', 'displayTitle,status,conclusion,url'])),
+  listPrRuns: async (head) => JSON.parse(sh('gh', ['api', `repos/${REPO}/actions/runs?event=pull_request&head_sha=${head}&per_page=20`])).workflow_runs ?? [],
+  sleep,
+  now: () => Date.now(),
+};
 
 /** GPT 只读审核 PR 头部提交 */
 function gptReview(pr, meta, base) {
@@ -144,7 +119,7 @@ function format({ pr, head, review, ci, d }) {
   return [
     `执行者：GPT（${REVIEW_MODEL}，经 devloop 审核；独立于代码执行者 Claude）`,
     '',
-    `**结论：${review.verdict === 'approve' ? '✅ 通过' : '🔁 需修改'}**（审核提交 \`${head.slice(0, 8)}\`）`,
+    `**结论：${review.verdict === 'approve' ? '✅ 通过' : review.verdict === 'error' ? '⚠️ 审核未完成' : '🔁 需修改'}**（审核提交 \`${head.slice(0, 8)}\`）`,
     '',
     review.summary,
     '',
@@ -179,8 +154,15 @@ async function reviewLocked(pr, { merge }) {
   const base = git(['rev-parse', 'origin/main']);
   const head = meta.headRefOid;
 
-  const ciPromise = runCi(pr, head, base);
-  const rv = gptReview(pr, meta, base);
+  const ciPromise = runCi({ pr, head, base, io: ciIo, timeoutMs: CI_TIMEOUT_MS });
+  let rv = null;
+  let reviewError = null;
+  try {
+    rv = gptReview(pr, meta, base);
+  } catch (e) {
+    reviewError = e.message.split('\n')[0];
+    log(`#${pr} GPT 审核失败：${reviewError}`);
+  }
   const ci = await ciPromise;
 
   const now = prState(pr);
@@ -194,7 +176,7 @@ async function reviewLocked(pr, { merge }) {
     review: rv,
     now: { labels: now.labels, base: git(['rev-parse', 'origin/main']), mergeable: now.mergeable, state: now.state, isDraft: now.isDraft, baseRefName: now.baseRefName },
     roundsBefore: roundsUsed(now.markers),
-    retriesForHead: now.markers.filter((m) => m.head === head && m.state === 'retry' && m.reason === 'ci').length,
+    retriesForHead: now.markers.filter((m) => m.head === head && m.state === 'retry' && m.reason === 'infra').length,
     allowMerge: merge,
   });
   if (d.addLabel) gh(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
@@ -223,8 +205,8 @@ async function reviewLocked(pr, { merge }) {
       d.text = `审核与测试都通过，但合并未完成（${e.message.split('\n')[0]}），下一轮扫描重试。`;
     }
   }
-  comment(pr, format({ pr, head, review: rv, ci, d }));
-  const result = { pr, head, state: d.state, ci: ci.status, verdict: rv.verdict, findings: rv.findings.length };
+  comment(pr, format({ pr, head, review: rv ?? { verdict: 'error', summary: `GPT 审核未能完成：${reviewError}`, findings: [] }, ci, d }));
+  const result = { pr, head, state: d.state, ci: ci.status, verdict: rv?.verdict ?? 'error', findings: rv?.findings.length ?? 0 };
   console.log(JSON.stringify(result));
   return result;
 }

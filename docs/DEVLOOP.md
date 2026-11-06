@@ -31,6 +31,7 @@ Muse 验收 / 用户 / 讨论结论 ──► issue，打 devloop 标签
 | `scripts/devloop/devloop.mjs` | 用户 Mac | `watch`：常驻审核；`review <PR>`：手动审核一次 |
 | `scripts/devloop/policy.mjs`（+ `policy.test.mjs`） | — | 合并决策与评论标记（CI 里用 `node --test` 自测） |
 | `scripts/devloop/gitops.mjs`（+ `gitops.test.mjs`） | — | 合并推送、删分支、CI 运行匹配、进程锁（本地临时仓库集成测试） |
+| `scripts/devloop/ci.mjs`（+ `ci.test.mjs`） | — | 触发与等待 CI；任何查询异常都转为“基础设施问题”，不向外抛 |
 | `scripts/devloop/review-prompt.md`、`review-schema.json` | — | GPT 审核必查项与结构化结论格式 |
 | `.github/workflows/ci.yml` | GitHub Actions | devloop 触发：PR 合并到指定 main 后测试；人工 PR；main 构建并上传发布产物 |
 
@@ -62,7 +63,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 ## 五、停止条件、标签与评论标记
 
-审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；同一提交因 CI 基础设施问题重试满 3 次即转为 `stopped`）。CI 任务超时（`timed_out`）按测试失败处理，交执行者修。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
+审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；同一提交因基础设施问题——CI 未完成或 GPT 审核本身失败——累计 3 次即转为 `stopped`）。CI 任务超时（`timed_out`）按测试失败处理，交执行者修。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
 
 标记带 HMAC 签名，密钥只在审核方本机（`../ce-devloop/marker.key`）；只认审核方账号发出、以“执行者：GPT”开头的评论，每条评论只认最后一个标记。其他人写的标记无效。
 
@@ -86,6 +87,8 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
 4. 信息不足以动手。
 
 ## 六、残余风险（如实列出）
+
+- 云端 Claude 步骤失败、超时，或整个任务失败：`publish` 仍会运行，在 issue / PR 下发失败说明并加 `needs-user`，循环停下等用户，不会无声卡住。
 
 - `work` 任务里有 Anthropic API key（Claude 运行必需），并会执行仓库代码与依赖安装脚本。依赖被投毒时这个 key 可能泄露，但拿不到能写仓库的令牌。缓解：在 Anthropic 控制台给这个 key 设用量上限。
 - 推送 main 前的最后核对与推送之间有一个很短的窗口（**时长未测量，待核实**）；彻底由 GitHub 强制需要分支保护（GitHub Pro），待用户决定。

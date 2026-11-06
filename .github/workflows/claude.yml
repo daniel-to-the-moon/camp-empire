@@ -79,6 +79,9 @@ jobs:
         with:
           node-version: 24
       - uses: anthropics/claude-code-action@v1
+        id: claude
+        # 比任务超时短：Claude 超时只让这一步失败，后面的打包与发布照常运行（GPT 审核 #6 第七轮 major）
+        timeout-minutes: 75
         env:
           GH_TOKEN: ${{ github.token }}
           OUT: ${{ runner.temp }}/devloop
@@ -113,22 +116,32 @@ jobs:
             --model claude-opus-5-5
             --max-turns 120
             --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(ls:*),Bash(cat:*),Bash(mkdir:*),Bash(echo:*)"
-      - name: 打包新提交
+      - name: 打包新提交（前面任一步失败也运行，失败时产出 needs-user 说明）
+        if: always()
         env:
           OUT: ${{ runner.temp }}/devloop
           START: ${{ steps.start.outputs.start }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          mkdir -p "$OUT"
+          if [ "$CLAUDE_OUTCOME" != "success" ]; then
+            # Claude 这一步失败、超时或没运行：不发布任何代码，只报告
+            printf '执行者：Claude（devloop）\n\n云端执行没有正常完成（Claude 步骤结果：%s），自动循环在此停下，请用户查看：%s\n' "${CLAUDE_OUTCOME:-未运行}" "$RUN_URL" > "$OUT/body.md"
+            echo needs-user > "$OUT/outcome"
+            exit 0
+          fi
           test -f "$OUT/outcome" || echo needs-user > "$OUT/outcome"
           test -f "$OUT/body.md" || printf '执行者：Claude（devloop）\n\n本次运行没有产出说明，请看 Actions 日志：%s\n' "$RUN_URL" > "$OUT/body.md"
-          if [ "$(tr -d '[:space:]' < "$OUT/outcome")" = "pr" ] && [ "$(git rev-parse HEAD)" != "$START" ]; then
+          if [ "$(tr -d '[:space:]' < "$OUT/outcome")" = "pr" ] && [ -n "$START" ] && [ "$(git rev-parse HEAD)" != "$START" ]; then
             git bundle create "$OUT/work.bundle" "$START..HEAD" HEAD
             echo pr > "$OUT/outcome"
           else
             echo needs-user > "$OUT/outcome"
           fi
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: devloop-${{ github.run_id }}
           path: ${{ runner.temp }}/devloop
@@ -136,6 +149,8 @@ jobs:
 
   publish:
     needs: work
+    # work 失败或超时也运行：把失败说明发出去并加 needs-user，循环不会无声卡住
+    if: always() && needs.work.result != 'skipped'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -144,6 +159,7 @@ jobs:
       issues: write
     steps:
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: devloop-${{ github.run_id }}
           path: out
@@ -158,12 +174,19 @@ jobs:
           START: ${{ needs.work.outputs.start }}
         run: |
           set -euo pipefail
-          case "$BRANCH" in claude/*) ;; *) echo "::error::拒绝推送到非 claude/* 分支：$BRANCH"; exit 1;; esac
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          mkdir -p out
+          if [ ! -f out/outcome ]; then
+            # 连产物都没有（work 任务整体失败 / 超时被取消）
+            echo needs-user > out/outcome
+            printf '执行者：Claude（devloop）\n\n云端执行任务失败或超时，没有产物，自动循环在此停下，请用户查看：%s\n' "$RUN_URL" > out/body.md
+          fi
           if [ "$(cat out/outcome)" != "pr" ]; then
             gh issue comment "$N" -R "$REPO" --body-file out/body.md
             gh issue edit "$N" -R "$REPO" --add-label needs-user
             exit 0
           fi
+          case "$BRANCH" in claude/*) ;; *) echo "::error::拒绝推送到非 claude/* 分支：$BRANCH"; exit 1;; esac
           git init -q repo
           cd repo
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"

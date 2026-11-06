@@ -14,7 +14,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export const MAX_ROUNDS = 5;
-/** 同一个 head 因 CI 基础设施问题连续重试的上限，超过即停下等用户（GPT 审核 #6 第六轮 major） */
+/** 同一个 head 因基础设施问题（CI 未完成、GPT 审核失败）重试的上限，达到即停下等用户（GPT 审核 #6 第六、七轮 major） */
 export const MAX_CI_RETRIES = 3;
 export const SKIP_LABELS = ['needs-user', 'hold'];
 const TERMINAL = new Set(['changes', 'merged', 'stopped']);
@@ -88,11 +88,13 @@ export function decide({ ci, review, now, roundsBefore, allowMerge, retriesForHe
   if (hasSkipLabel(now.labels)) {
     return { state: 'retry', merge: false, text: `PR 带有 ${now.labels.filter((l) => SKIP_LABELS.includes(l)).join('、')} 标签，本轮结论不生效；去掉标签后重新审核。` };
   }
-  if (ci.status === 'error') {
+  // 基础设施问题：CI 未能完成，或 GPT 审核本身失败（review 为 null）。同一提交累计到上限即停
+  if (ci.status === 'error' || !review) {
+    const what = !review ? 'GPT 审核未能完成' : 'CI 未能完成';
     if (retriesForHead + 1 >= MAX_CI_RETRIES) {
-      return { state: 'stopped', reason: 'ci', merge: false, addLabel: 'needs-user', text: `同一提交已 ${retriesForHead + 1} 次因 CI 未能完成而无法判定，达到上限 ${MAX_CI_RETRIES}，停止自动循环，请用户检查 CI（已加 needs-user 标签）。` };
+      return { state: 'stopped', reason: 'infra', merge: false, addLabel: 'needs-user', text: `同一提交已 ${retriesForHead + 1} 次因基础设施问题无法判定（本次：${what}），达到上限 ${MAX_CI_RETRIES}，停止自动循环，请用户检查（已加 needs-user 标签）。` };
     }
-    return { state: 'retry', reason: 'ci', merge: false, text: `CI 未能完成（基础设施问题，第 ${retriesForHead + 1} 次），下一轮扫描重试。` };
+    return { state: 'retry', reason: 'infra', merge: false, text: `${what}（基础设施问题，第 ${retriesForHead + 1} 次），下一轮扫描重试。` };
   }
   const approved = review.verdict === 'approve' && !isBlocking(review.findings);
   const needsChange = ci.status === 'failed' || !approved || now.mergeable === 'CONFLICTING';

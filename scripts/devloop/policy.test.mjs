@@ -103,14 +103,15 @@ test('PR 状态：草稿、已关闭、目标不是 main 都不审、不合并',
   }
 });
 
-test(`CI 基础设施问题：同一提交第 ${MAX_CI_RETRIES} 次即 stopped + needs-user，不会无限重试`, () => {
-  const err = { ...base, ci: { status: 'error', base: B } };
-  assert.equal(decide({ ...err, retriesForHead: 0 }).state, 'retry');
-  assert.equal(decide({ ...err, retriesForHead: 0 }).reason, 'ci');
-  const d = decide({ ...err, retriesForHead: MAX_CI_RETRIES - 1 });
-  assert.equal(d.state, 'stopped');
-  assert.equal(d.addLabel, 'needs-user');
-  // 标记带上原因，可按原因计数
-  const c = { author: REV, body: `执行者：GPT\n${marker(KEY, { pr: PR, state: 'retry', reason: 'ci', head: H, base: B })}` };
-  assert.deepEqual(parse([c]).map((m) => [m.state, m.reason]), [['retry', 'ci']]);
+test(`基础设施问题（CI 未完成 / GPT 审核失败）：同一提交第 ${MAX_CI_RETRIES} 次即 stopped + needs-user`, () => {
+  for (const over of [{ ci: { status: 'error', base: B } }, { review: null }]) {
+    const d0 = decide({ ...base, ...over, retriesForHead: 0 });
+    assert.equal(d0.state, 'retry');
+    assert.equal(d0.reason, 'infra');
+    const d = decide({ ...base, ...over, retriesForHead: MAX_CI_RETRIES - 1 });
+    assert.equal(d.state, 'stopped');
+    assert.equal(d.addLabel, 'needs-user');
+  }
+  const c = { author: REV, body: `执行者：GPT\n${marker(KEY, { pr: PR, state: 'retry', reason: 'infra', head: H, base: B })}` };
+  assert.deepEqual(parse([c]).map((m) => [m.state, m.reason]), [['retry', 'infra']]);
 });
