@@ -47,7 +47,7 @@ jobs:
         with:
           node-version: 24
       - name: devloop 脚本自测
-        run: if [ -d scripts/devloop ]; then node --test scripts/devloop/; else echo "无 devloop 脚本，跳过"; fi
+        run: if [ -d scripts/devloop ]; then node --test scripts/devloop/*.test.mjs; else echo "无 devloop 脚本，跳过"; fi
       - name: 是否有应用代码
         id: app
         run: if [ -f package.json ]; then echo "yes=1" >> "$GITHUB_OUTPUT"; else echo "无 package.json，跳过 npm 步骤"; fi

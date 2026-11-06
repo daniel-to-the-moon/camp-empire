@@ -1,4 +1,4 @@
-// node --test scripts/devloop/
+// node --test scripts/devloop/*.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decide, marker, MAX_ROUNDS, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
