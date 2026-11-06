@@ -52,7 +52,9 @@ jobs:
                （开头写“执行者：Claude（devloop）”），执行 `gh issue edit ${{ github.event.issue.number }} --add-label needs-user`，然后结束，不写代码。
             3. 否则：从 main 新建分支 `claude/issue-${{ github.event.issue.number }}`，实现需求，并为新增或改动的逻辑写测试。
                遵守 CHARTER 第三节硬边界；新增数值注明“提案 / 待核实”或给出推演。
-            4. 提交前必须本地通过：`npm ci --no-audit --no-fund && npm test && npm run build`。不通过就继续修，不要提交失败的代码。
+            4. 提交前必须本地通过：若仓库根目录有 package.json，跑 `npm ci --no-audit --no-fund && npm test && npm run build`；
+               若改了 scripts/devloop，跑 `node --test scripts/devloop/*.test.mjs`。没有 package.json 的纯文档改动不需要 npm。
+               不通过就继续修，不要提交失败的代码。
             5. 推送分支并开 PR：`gh pr create --base main --head claude/issue-${{ github.event.issue.number }}`。
                PR 描述开头写“执行者：Claude（devloop）”，写明改了什么、怎么验证、哪些是提案值，末尾写 `Closes #${{ github.event.issue.number }}`。
             6. 不要合并、不要审核自己的 PR；合并由 GPT 审核方完成。
@@ -108,7 +110,8 @@ jobs:
             2. 逐条处理所有 blocker 与 major；minor 合理就改。不同意的意见在回复里给出理由（附代码或数据依据），不要静默忽略。
                如果评论说“测试或构建失败”，用评论里的 Actions 链接对应的运行号执行 `gh run view <运行号> --log-failed` 看失败日志，复现后再修；
                如果说“与基准分支冲突”，`git merge origin/main` 后解决冲突。
-            3. 推送前必须通过：`npm ci --no-audit --no-fund && npm test && npm run build`（无 package.json 的纯文档 PR 跳过）。
+            3. 推送前必须通过：有 package.json 时跑 `npm ci --no-audit --no-fund && npm test && npm run build`；
+               改了 scripts/devloop 时跑 `node --test scripts/devloop/*.test.mjs`；纯文档改动不需要 npm。
             4. 推送到同一分支（不要强推，不要新开 PR），然后在 PR 下评论：开头写“执行者：Claude（devloop）”，逐条列出每个意见的处理结果。
             5. 不要合并；推送后 GPT 审核方会自动重新审核。
           claude_args: |

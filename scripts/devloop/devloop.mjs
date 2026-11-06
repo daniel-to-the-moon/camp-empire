@@ -18,7 +18,7 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, marker, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, eligible, marker, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = resolve(HERE, '../..');
@@ -71,6 +71,9 @@ async function runCi(pr, head, base) {
   try {
     gh(['workflow', 'run', 'ci.yml', '--ref', 'main', '-f', `pr=${pr}`, '-f', `head=${head}`, '-f', `base=${base}`, '-f', `nonce=${nonce}`]);
   } catch (e) {
+    // main 上的 ci.yml 还不支持 workflow_dispatch（只发生在 devloop 自身合入之前）：
+    // 退而使用该 PR 的 pull_request 运行，前提是它测的正是这个 head、且合并基准正是这个 base
+    if (/workflow_dispatch/.test(e.message)) return pullRequestCi(pr, head, base);
     return { status: 'error', base, url: null, note: `无法触发 CI：${e.message.split('\n')[0]}` };
   }
   const deadline = Date.now() + CI_TIMEOUT_MS;
@@ -85,6 +88,19 @@ async function runCi(pr, head, base) {
   if (run.conclusion === 'success') return { status: 'ok', base, url: run.url };
   if (run.conclusion === 'failure') return { status: 'failed', base, url: run.url };
   return { status: 'error', base, url: run.url, note: `CI 结论 ${run.conclusion}` };
+}
+
+/** 回退：找 pull_request 事件、head 与 base 都吻合的已完成 CI 运行（GitHub 在运行记录里给出当时的 base.sha） */
+function pullRequestCi(pr, head, base) {
+  const runs = JSON.parse(sh('gh', ['api', `repos/${REPO}/actions/runs?event=pull_request&head_sha=${head}&per_page=20`])).workflow_runs ?? [];
+  const run = runs.find(
+    (r) => r.path === '.github/workflows/ci.yml' && r.status === 'completed' && r.pull_requests?.some((p) => p.number === pr && p.head.sha === head && p.base.sha === base),
+  );
+  if (!run) return { status: 'error', base, url: null, note: '无法触发 dispatch CI，也没有 head 与 base 都吻合的 pull_request CI' };
+  const note = '回退：使用该 PR 的 pull_request CI（head 与 base 均已核对）';
+  if (run.conclusion === 'success') return { status: 'ok', base, url: run.html_url, note };
+  if (run.conclusion === 'failure') return { status: 'failed', base, url: run.html_url, note };
+  return { status: 'error', base, url: run.html_url, note: `${note}；结论 ${run.conclusion}` };
 }
 
 /** GPT 只读审核 PR 头部提交 */
@@ -151,8 +167,7 @@ function format({ pr, head, review, ci, d }) {
 
 export async function review(pr, { merge }) {
   const meta = prState(pr);
-  if (meta.state !== 'OPEN') throw new Error(`PR #${pr} 状态为 ${meta.state}`);
-  if (meta.baseRefName !== 'main') throw new Error(`PR #${pr} 的基准是 ${meta.baseRefName}，devloop 只处理合并到 main 的 PR`);
+  if (!eligible(meta)) throw new Error(`PR #${pr} 不是“打开、非草稿、目标 main”（state=${meta.state} draft=${meta.isDraft} base=${meta.baseRefName}）`);
   git(['fetch', '-q', 'origin', 'main', `pull/${pr}/head`]);
   const base = git(['rev-parse', 'origin/main']);
   const head = meta.headRefOid;
@@ -170,7 +185,7 @@ export async function review(pr, { merge }) {
   const d = decide({
     ci,
     review: rv,
-    now: { labels: now.labels, base: git(['rev-parse', 'origin/main']), mergeable: now.mergeable },
+    now: { labels: now.labels, base: git(['rev-parse', 'origin/main']), mergeable: now.mergeable, state: now.state, isDraft: now.isDraft, baseRefName: now.baseRefName },
     roundsBefore: roundsUsed(now.markers),
     allowMerge: merge,
   });
@@ -205,7 +220,10 @@ function mergeTested(pr, meta, head, base) {
     git(['merge', '--no-ff', '--no-edit', '-m', `合并 PR #${pr}：${meta.title}\n\ndevloop：GPT 审核通过，CI 在 ${base.slice(0, 8)} + ${head.slice(0, 8)} 上测试通过。`, head], dir);
     const sha = git(['rev-parse', 'HEAD'], dir);
     git(['push', '-q', 'origin', `${sha}:refs/heads/main`], dir);
-    if (!meta.isCrossRepository) spawnSync('git', ['push', '-q', 'origin', '--delete', meta.headRefName], { cwd: REPO_DIR });
+    // 只有分支仍停在合入的那个 head 时才删除；执行者在此之后推了新提交则保留分支（租约不符，删除被拒）
+    if (!meta.isCrossRepository) {
+      spawnSync('git', ['push', '-q', `--force-with-lease=refs/heads/${meta.headRefName}:${head}`, 'origin', `:refs/heads/${meta.headRefName}`], { cwd: REPO_DIR });
+    }
     return sha;
   } finally {
     spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_DIR });
@@ -219,7 +237,7 @@ async function watch(intervalSec) {
       const prs = JSON.parse(gh(['pr', 'list', '--state', 'open', '--base', 'main', '--json', 'number', '--limit', '50']));
       for (const { number } of prs.sort((a, b) => a.number - b.number)) {
         const m = prState(number);
-        if (!shouldReview({ head: m.headRefOid, labels: m.labels, markers: m.markers })) continue;
+        if (!shouldReview({ head: m.headRefOid, labels: m.labels, markers: m.markers, pr: m })) continue;
         try {
           const r = await review(number, { merge: true });
           // 合并后退出，由 launchd 重启并拉取最新 main：审核方自身的更新也随之生效

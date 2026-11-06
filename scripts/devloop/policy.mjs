@@ -49,8 +49,14 @@ export function hasSkipLabel(labels) {
   return labels.some((l) => SKIP_LABELS.includes(l));
 }
 
+/** PR 是否处在可以自动处理的状态：打开、非草稿、目标为 main */
+export function eligible({ state, isDraft, baseRefName }) {
+  return state === 'OPEN' && !isDraft && baseRefName === 'main';
+}
+
 /** watch 是否要审这个 PR 的当前 head */
-export function shouldReview({ head, labels, markers }) {
+export function shouldReview({ head, labels, markers, pr }) {
+  if (pr && !eligible(pr)) return false;
   if (hasSkipLabel(labels)) return false;
   return !markers.some((m) => m.head === head && TERMINAL.has(m.state));
 }
@@ -67,9 +73,13 @@ export function isBlocking(findings) {
 /**
  * 合并前的最终决定。
  * ci: { status: 'ok' | 'failed' | 'error', base }，base 为 CI 实际测试的基准提交
- * now: { labels, base, mergeable }：决定前一刻重新读取的 PR 状态与 main
+ * now: { labels, base, mergeable, state, isDraft, baseRefName }：决定前一刻重新读取的 PR 状态与 main
  */
 export function decide({ ci, review, now, roundsBefore, allowMerge }) {
+  // PR 在审核期间被关闭、改成草稿、改投其他分支：本轮作废，不合并、不写终态
+  if (!eligible({ state: now.state ?? 'OPEN', isDraft: now.isDraft ?? false, baseRefName: now.baseRefName ?? 'main' })) {
+    return { state: 'retry', merge: false, text: 'PR 已不是“打开、非草稿、目标 main”的状态，本轮结论不生效。' };
+  }
   // 暂停标签最先判断：审核期间被暂停的 PR 只记 retry，去掉标签后会重新审核（不写终态）
   if (hasSkipLabel(now.labels)) {
     return { state: 'retry', merge: false, text: `PR 带有 ${now.labels.filter((l) => SKIP_LABELS.includes(l)).join('、')} 标签，本轮结论不生效；去掉标签后重新审核。` };

@@ -1,7 +1,7 @@
 // node --test scripts/devloop/*.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { decide, marker, MAX_ROUNDS, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, eligible, marker, MAX_ROUNDS, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
 
 const KEY = 'test-key';
 const PR = 6;
@@ -89,4 +89,16 @@ test('一条评论里塞多个标记只认最后一个；轮次按不同 head �
   assert.equal(parse([stuffed]).length, 1);
   const markers = parse([reviewComment('changes'), reviewComment('changes'), reviewComment('retry', 'e'.repeat(40)), reviewComment('changes', 'f'.repeat(40))]);
   assert.equal(roundsUsed(markers), 2);
+});
+
+test('PR 状态：草稿、已关闭、目标不是 main 都不审、不合并', () => {
+  const open = { state: 'OPEN', isDraft: false, baseRefName: 'main' };
+  assert.equal(eligible(open), true);
+  for (const bad of [{ ...open, isDraft: true }, { ...open, state: 'CLOSED' }, { ...open, state: 'MERGED' }, { ...open, baseRefName: 'dev' }]) {
+    assert.equal(eligible(bad), false);
+    assert.equal(shouldReview({ head: H, labels: [], markers: [], pr: bad }), false);
+    const d = decide({ ...base, now: { ...now, ...bad } });
+    assert.equal(d.merge, false);
+    assert.equal(d.state, 'retry');
+  }
 });

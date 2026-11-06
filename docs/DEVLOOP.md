@@ -65,7 +65,9 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 标记带 HMAC 签名，密钥只在审核方本机（`../ce-devloop/marker.key`）；只认审核方账号发出、以“执行者：GPT”开头的评论，每条评论只认最后一个标记。其他人写的标记无效。
 
-合并方式：在 CI 测试过的 main 提交上生成合并提交（与 CI 相同的 `git merge --no-ff`），普通推送到 main；main 已变化时推送被拒，不会合入未测试的组合。
+只处理“打开、非草稿、目标 main”的 PR；草稿 PR 要先转为 ready 才会进入审核。
+
+合并方式：在 CI 测试过的 main 提交上生成合并提交（与 CI 相同的 `git merge --no-ff`），普通推送到 main；main 已变化时推送被拒，不会合入未测试的组合。合并后只有分支仍停在合入的提交上才删除分支（`--force-with-lease`），之后若有新提交则保留。
 
 | 标签 | 含义 |
 |---|---|
