@@ -93,33 +93,42 @@ test('审核缓存键随 head 或 base 变化', () => {
   assert.notEqual(reviewCacheKey(6, 'h', 'b1'), reviewCacheKey(6, 'h', 'b2'));
 });
 
-test('进程锁：同时只有一个持有者；持有进程退出后可接管', async () => {
-  const home = join(root, 'lock');
-  const release = acquireLock(home);
+test('进程锁：同时只有一个持有者；8 个进程并发抢锁不重叠；持有进程崩溃后自动释放', async () => {
+  const port = 40000 + Math.floor(Math.random() * 20000);
+  const lib = JSON.stringify(new URL('./gitops.mjs', import.meta.url).href);
+  const release = await acquireLock(port);
   assert.ok(release);
-  // 另一个进程拿不到
-  const other = spawn(process.execPath, ['--input-type=module', '-e', `import { acquireLock } from ${JSON.stringify(new URL('./gitops.mjs', import.meta.url).href)}; process.exit(acquireLock(${JSON.stringify(home)}) ? 0 : 3);`]);
-  const code = await new Promise((r) => other.on('exit', r));
-  assert.equal(code, 3);
-  release();
-  // 并发：8 个进程同时抢锁，任一时刻只有一个能拿到（各自拿到后持有 300ms 再释放，统计重叠）
-  const script = `import { acquireLock } from ${JSON.stringify(new URL('./gitops.mjs', import.meta.url).href)};
-    import { appendFileSync } from 'node:fs';
-    const log = ${JSON.stringify(join(home, 'events'))};
-    const r = acquireLock(${JSON.stringify(home)});
-    if (r) { appendFileSync(log, 'in ' + Date.now() + '\\n'); await new Promise((x) => setTimeout(x, 300)); appendFileSync(log, 'out ' + Date.now() + '\\n'); r(); }`;
+  assert.equal(await acquireLock(port), null);
+  const other = spawn(process.execPath, ['--input-type=module', '-e', `import { acquireLock } from ${lib}; process.exit((await acquireLock(${port})) ? 0 : 3);`]);
+  assert.equal(await new Promise((r) => other.on('exit', r)), 3);
+  await release();
+
+  const events = join(root, 'lock-events');
+  const script = `import { acquireLock } from ${lib}; import { appendFileSync } from 'node:fs';
+    for (let i = 0; i < 40; i++) {
+      const r = await acquireLock(${port});
+      if (r) { appendFileSync(${JSON.stringify(events)}, 'in ' + process.hrtime.bigint() + '\\n'); await new Promise((x) => setTimeout(x, 30)); appendFileSync(${JSON.stringify(events)}, 'out ' + process.hrtime.bigint() + '\\n'); await r(); }
+      await new Promise((x) => setTimeout(x, 5));
+    }`;
   const kids = Array.from({ length: 8 }, () => spawn(process.execPath, ['--input-type=module', '-e', script]));
   await Promise.all(kids.map((k) => new Promise((r) => k.on('exit', r))));
+  const lines = readFileSync(events, 'utf8').trim().split('\n').map((l) => l.split(' ')).sort((a, b) => (BigInt(a[1]) < BigInt(b[1]) ? -1 : 1));
   let depth = 0;
   let maxDepth = 0;
-  for (const line of readFileSync(join(home, 'events'), 'utf8').trim().split('\n').sort((a, b) => Number(a.split(' ')[1]) - Number(b.split(' ')[1]) || (a.startsWith('out') ? -1 : 1))) {
-    depth += line.startsWith('in') ? 1 : -1;
+  for (const [kind] of lines) {
+    depth += kind === 'in' ? 1 : -1;
     maxDepth = Math.max(maxDepth, depth);
   }
+  assert.ok(lines.length >= 2);
   assert.equal(maxDepth, 1);
-  // 写入一个已不存在的 pid，模拟过期锁
-  writeFileSync(join(home, 'devloop.lock'), '999999');
-  const again = acquireLock(home);
+
+  // 持锁进程被强杀：锁随进程消失
+  const holder = spawn(process.execPath, ['--input-type=module', '-e', `import { acquireLock } from ${lib}; await acquireLock(${port}); console.log('held'); setInterval(() => {}, 1000);`]);
+  await new Promise((r) => holder.stdout.once('data', r));
+  assert.equal(await acquireLock(port), null);
+  holder.kill('SIGKILL');
+  await new Promise((r) => holder.on('exit', r));
+  const again = await acquireLock(port);
   assert.ok(again);
-  again();
+  await again();
 });

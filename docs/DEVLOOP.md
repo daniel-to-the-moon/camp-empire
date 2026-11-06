@@ -62,7 +62,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 ## 五、停止条件、标签与评论标记
 
-审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交）。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
+审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；同一提交因 CI 基础设施问题重试满 3 次即转为 `stopped`）。CI 任务超时（`timed_out`）按测试失败处理，交执行者修。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
 
 标记带 HMAC 签名，密钥只在审核方本机（`../ce-devloop/marker.key`）；只认审核方账号发出、以“执行者：GPT”开头的评论，每条评论只认最后一个标记。其他人写的标记无效。
 
@@ -70,9 +70,9 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 合并方式：在 CI 测试过的 main 提交上生成合并提交（与 CI 相同的 `git merge --no-ff`），普通推送到 main；main 已变化时推送被拒，不会合入未测试的组合。合并后只有分支仍停在合入的提交上才删除分支（`--force-with-lease`），之后若有新提交则保留。
 
-推送前一刻会再读一次 PR（打开、非草稿、目标 main、头部未变、无暂停标签），任一不符即中止。这一刻到推送之间仍有约一秒的窗口；要由 GitHub 强制“状态检查通过才能进 main”，需要分支保护（私有仓库需 GitHub Pro），**待用户决定**。
+推送前一刻会再读一次 PR（打开、非草稿、目标 main、头部未变、无暂停标签），任一不符即中止。这一刻到推送之间仍有一个很短的窗口（中间只有本地 git 操作和一次 git 推送，**时长未测量，待核实**）；要由 GitHub 强制“状态检查通过才能进 main”，需要分支保护（私有仓库需 GitHub Pro），**待用户决定**。
 
-同一时刻只允许一个 devloop 进程审核或合并（`../ce-devloop/devloop.lock`）；工作区目录每次唯一。git 操作在 `gitops.test.mjs` 里用本地临时仓库做了集成测试。
+同一时刻只允许一个 devloop 进程审核或合并（监听本机 127.0.0.1:47831 作为锁，进程退出由系统释放）；工作区目录每次唯一。git 操作在 `gitops.test.mjs` 里用本地临时仓库做了集成测试。
 
 | 标签 | 含义 |
 |---|---|
@@ -88,7 +88,7 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
 ## 六、残余风险（如实列出）
 
 - `work` 任务里有 Anthropic API key（Claude 运行必需），并会执行仓库代码与依赖安装脚本。依赖被投毒时这个 key 可能泄露，但拿不到能写仓库的令牌。缓解：在 Anthropic 控制台给这个 key 设用量上限。
-- 推送 main 前的最后核对与推送之间约一秒窗口；彻底由 GitHub 强制需要分支保护（GitHub Pro），待用户决定。
+- 推送 main 前的最后核对与推送之间有一个很短的窗口（**时长未测量，待核实**）；彻底由 GitHub 强制需要分支保护（GitHub Pro），待用户决定。
 
 ## 七、本机审核方的安装
 

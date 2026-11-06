@@ -85,9 +85,11 @@ async function runCi(pr, head, base) {
     run = runs.find((r) => r.displayTitle.includes(nonce)) ?? null;
     if (run?.status === 'completed') break;
   }
-  if (!run || run.status !== 'completed') return { status: 'error', base, url: run?.url ?? null, note: 'CI 超时' };
+  // 运行一直没完成：可能是测试挂起，也可能是排队 —— 算基础设施问题，由 retry 上限兜底
+  if (!run || run.status !== 'completed') return { status: 'error', base, url: run?.url ?? null, note: '等待 CI 超时' };
   if (run.conclusion === 'success') return { status: 'ok', base, url: run.url };
-  if (run.conclusion === 'failure') return { status: 'failed', base, url: run.url };
+  // timed_out = 任务超过 timeout-minutes，多为测试挂起，属于代码问题，交给执行者修
+  if (run.conclusion === 'failure' || run.conclusion === 'timed_out') return { status: 'failed', base, url: run.url, note: run.conclusion === 'timed_out' ? 'CI 任务超时' : undefined };
   return { status: 'error', base, url: run.url, note: `CI 结论 ${run.conclusion}` };
 }
 
@@ -98,7 +100,7 @@ function pullRequestCi(pr, head, base) {
   if (!run) return { status: 'error', base, url: null, note: '无法触发 dispatch CI，也没有 head 与 base 都吻合的 pull_request CI' };
   const note = '回退：使用该 PR 的 pull_request CI（head 与 base 均已核对）';
   if (run.conclusion === 'success') return { status: 'ok', base, url: run.html_url, note };
-  if (run.conclusion === 'failure') return { status: 'failed', base, url: run.html_url, note };
+  if (run.conclusion === 'failure' || run.conclusion === 'timed_out') return { status: 'failed', base, url: run.html_url, note };
   return { status: 'error', base, url: run.html_url, note: `${note}；结论 ${run.conclusion}` };
 }
 
@@ -155,17 +157,17 @@ function format({ pr, head, review, ci, d }) {
     '### 流水线动作',
     d.text,
     '',
-    marker(KEY, { pr, state: d.state, head, base: ci.base }),
+    marker(KEY, { pr, state: d.state, reason: d.reason, head, base: ci.base }),
   ].join('\n');
 }
 
 export async function review(pr, { merge }) {
-  const release = acquireLock(HOME);
+  const release = await acquireLock();
   if (!release) throw new Error('另一个 devloop 进程正在审核或合并，稍后再试');
   try {
     return await reviewLocked(pr, { merge });
   } finally {
-    release();
+    await release();
   }
 }
 
@@ -192,6 +194,7 @@ async function reviewLocked(pr, { merge }) {
     review: rv,
     now: { labels: now.labels, base: git(['rev-parse', 'origin/main']), mergeable: now.mergeable, state: now.state, isDraft: now.isDraft, baseRefName: now.baseRefName },
     roundsBefore: roundsUsed(now.markers),
+    retriesForHead: now.markers.filter((m) => m.head === head && m.state === 'retry' && m.reason === 'ci').length,
     allowMerge: merge,
   });
   if (d.addLabel) gh(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
@@ -215,6 +218,7 @@ async function reviewLocked(pr, { merge }) {
       d.text += `\n\n合并提交 \`${sha.slice(0, 8)}\`（父提交：main \`${ci.base.slice(0, 8)}\` + PR \`${head.slice(0, 8)}\`，与 CI 测试的组合一致）${branchDeleted ? '' : '；分支上有新提交或已删除，未删除分支'}。`;
     } catch (e) {
       d.state = 'retry';
+      d.reason = 'merge';
       d.merge = false;
       d.text = `审核与测试都通过，但合并未完成（${e.message.split('\n')[0]}），下一轮扫描重试。`;
     }

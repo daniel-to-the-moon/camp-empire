@@ -27,7 +27,7 @@ jobs:
        github.event.issue.pull_request &&
        github.event.comment.user.login == github.repository_owner &&
        startsWith(github.event.comment.body, '执行者：GPT') &&
-       contains(github.event.comment.body, ' state=changes head=') &&
+       contains(github.event.comment.body, ' state=changes:') &&
        !contains(github.event.issue.labels.*.name, 'needs-user') &&
        !contains(github.event.issue.labels.*.name, 'hold'))
     runs-on: ubuntu-latest

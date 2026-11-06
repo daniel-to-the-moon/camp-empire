@@ -1,7 +1,7 @@
 // node --test scripts/devloop/*.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { decide, eligible, marker, MAX_ROUNDS, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, eligible, marker, MAX_CI_RETRIES, MAX_ROUNDS, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
 
 const KEY = 'test-key';
 const PR = 6;
@@ -101,4 +101,16 @@ test('PR 状态：草稿、已关闭、目标不是 main 都不审、不合并',
     assert.equal(d.merge, false);
     assert.equal(d.state, 'retry');
   }
+});
+
+test(`CI 基础设施问题：同一提交第 ${MAX_CI_RETRIES} 次即 stopped + needs-user，不会无限重试`, () => {
+  const err = { ...base, ci: { status: 'error', base: B } };
+  assert.equal(decide({ ...err, retriesForHead: 0 }).state, 'retry');
+  assert.equal(decide({ ...err, retriesForHead: 0 }).reason, 'ci');
+  const d = decide({ ...err, retriesForHead: MAX_CI_RETRIES - 1 });
+  assert.equal(d.state, 'stopped');
+  assert.equal(d.addLabel, 'needs-user');
+  // 标记带上原因，可按原因计数
+  const c = { author: REV, body: `执行者：GPT\n${marker(KEY, { pr: PR, state: 'retry', reason: 'ci', head: H, base: B })}` };
+  assert.deepEqual(parse([c]).map((m) => [m.state, m.reason]), [['retry', 'ci']]);
 });

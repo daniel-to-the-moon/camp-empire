@@ -2,7 +2,7 @@
  * devloop 决策逻辑（无网络、无文件 I/O），由 policy.test.mjs 覆盖。
  *
  * 每条审核评论末尾带一个签名的机器标记（每条评论只认最后一个）：
- *   <!-- devloop pr=<编号> state=<状态> head=<提交> base=<提交> sig=<HMAC> -->
+ *   <!-- devloop pr=<编号> state=<状态>:<原因> head=<提交> base=<提交> sig=<HMAC> -->
  *   changes  需要执行者改（GPT 要求修改 / 测试失败 / 冲突）→ 触发云端 Claude 修复；同一 head 不再审
  *   merged   已合并
  *   stopped  达到轮次上限，加 needs-user，停止自动循环
@@ -14,6 +14,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export const MAX_ROUNDS = 5;
+/** 同一个 head 因 CI 基础设施问题连续重试的上限，超过即停下等用户（GPT 审核 #6 第六轮 major） */
+export const MAX_CI_RETRIES = 3;
 export const SKIP_LABELS = ['needs-user', 'hold'];
 const TERMINAL = new Set(['changes', 'merged', 'stopped']);
 const REVIEW_PREFIX = '执行者：GPT';
@@ -22,8 +24,9 @@ function sign(key, pr, state, head, base) {
   return createHmac('sha256', key).update(`${pr}|${state}|${head}|${base}`).digest('hex').slice(0, 32);
 }
 
-export function marker(key, { pr, state, head, base }) {
-  return `<!-- devloop pr=${pr} state=${state} head=${head} base=${base} sig=${sign(key, pr, state, head, base)} -->`;
+export function marker(key, { pr, state, head, base, reason = 'none' }) {
+  const st = `${state}:${reason}`;
+  return `<!-- devloop pr=${pr} state=${st} head=${head} base=${base} sig=${sign(key, pr, st, head, base)} -->`;
 }
 
 /**
@@ -34,13 +37,14 @@ export function parseMarkers(comments, { key, reviewer, pr }) {
   const out = [];
   for (const c of comments) {
     if (c.author !== reviewer || !c.body.startsWith(REVIEW_PREFIX)) continue;
-    const all = [...c.body.matchAll(/<!-- devloop pr=(\d+) state=(\w+) head=([0-9a-f]{40}) base=([0-9a-f]{40}) sig=([0-9a-f]{32}) -->/g)];
+    const all = [...c.body.matchAll(/<!-- devloop pr=(\d+) state=(\w+:\w+) head=([0-9a-f]{40}) base=([0-9a-f]{40}) sig=([0-9a-f]{32}) -->/g)];
     const m = all.at(-1);
     if (!m || Number(m[1]) !== pr) continue;
     const want = Buffer.from(sign(key, m[1], m[2], m[3], m[4]));
     const got = Buffer.from(m[5]);
     if (want.length !== got.length || !timingSafeEqual(want, got)) continue;
-    out.push({ state: m[2], head: m[3], base: m[4] });
+    const [state, reason] = m[2].split(':');
+    out.push({ state, reason, head: m[3], base: m[4] });
   }
   return out;
 }
@@ -75,7 +79,7 @@ export function isBlocking(findings) {
  * ci: { status: 'ok' | 'failed' | 'error', base }，base 为 CI 实际测试的基准提交
  * now: { labels, base, mergeable, state, isDraft, baseRefName }：决定前一刻重新读取的 PR 状态与 main
  */
-export function decide({ ci, review, now, roundsBefore, allowMerge }) {
+export function decide({ ci, review, now, roundsBefore, allowMerge, retriesForHead = 0 }) {
   // PR 在审核期间被关闭、改成草稿、改投其他分支：本轮作废，不合并、不写终态
   if (!eligible({ state: now.state ?? 'OPEN', isDraft: now.isDraft ?? false, baseRefName: now.baseRefName ?? 'main' })) {
     return { state: 'retry', merge: false, text: 'PR 已不是“打开、非草稿、目标 main”的状态，本轮结论不生效。' };
@@ -84,7 +88,12 @@ export function decide({ ci, review, now, roundsBefore, allowMerge }) {
   if (hasSkipLabel(now.labels)) {
     return { state: 'retry', merge: false, text: `PR 带有 ${now.labels.filter((l) => SKIP_LABELS.includes(l)).join('、')} 标签，本轮结论不生效；去掉标签后重新审核。` };
   }
-  if (ci.status === 'error') return { state: 'retry', merge: false, text: 'CI 未能完成（基础设施问题），下一轮扫描重试。' };
+  if (ci.status === 'error') {
+    if (retriesForHead + 1 >= MAX_CI_RETRIES) {
+      return { state: 'stopped', reason: 'ci', merge: false, addLabel: 'needs-user', text: `同一提交已 ${retriesForHead + 1} 次因 CI 未能完成而无法判定，达到上限 ${MAX_CI_RETRIES}，停止自动循环，请用户检查 CI（已加 needs-user 标签）。` };
+    }
+    return { state: 'retry', reason: 'ci', merge: false, text: `CI 未能完成（基础设施问题，第 ${retriesForHead + 1} 次），下一轮扫描重试。` };
+  }
   const approved = review.verdict === 'approve' && !isBlocking(review.findings);
   const needsChange = ci.status === 'failed' || !approved || now.mergeable === 'CONFLICTING';
   if (needsChange) {

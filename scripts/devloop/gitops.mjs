@@ -3,7 +3,8 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { rmSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { join } from 'node:path';
 
 export const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -62,67 +63,17 @@ export function reviewCacheKey(pr, head, base) {
 }
 
 /**
- * 进程锁：同一时刻只允许一个 devloop 进程审核或合并。返回释放函数；拿不到锁返回 null。
- * 原子性：先把 pid 写进私有临时文件，再 link 成锁文件——link 要么整个成功、要么 EEXIST，
- * 别的进程永远读不到“已创建但还没写 pid”的锁（GPT 审核 #6 第五轮 major）。
- * 过期锁（持有进程已退出）接管：先把锁文件 rename 到私有名字（同一时刻只有一个进程能 rename 成功），
- * 再确认挪走的确实是刚才看到的那把过期锁；不是的话原样放回、放弃本次。
+ * 进程锁：同一时刻只允许一个 devloop 进程审核或合并。拿到返回释放函数，拿不到返回 null。
+ * 用操作系统的端口独占实现：监听 127.0.0.1 上的固定端口，同一端口只能被一个进程监听，
+ * 进程退出（含崩溃）时由系统自动释放——不存在“过期锁”，也就没有接管竞态（GPT 审核 #6 第五、六轮 major）。
  */
-export function acquireLock(home) {
-  mkdirSync(home, { recursive: true });
-  const f = join(home, 'devloop.lock');
-  const mine = `${f}.${process.pid}.${randomBytes(4).toString('hex')}`;
-  writeFileSync(mine, String(process.pid));
-  try {
-    for (let i = 0; i < 3; i++) {
-      try {
-        linkSync(mine, f);
-        return () => {
-          try {
-            if (readFileSync(f, 'utf8').trim() === String(process.pid)) unlinkSync(f);
-          } catch {
-            /* 已不存在 */
-          }
-        };
-      } catch (e) {
-        if (e.code !== 'EEXIST') throw e;
-      }
-      let seen;
-      try {
-        seen = readFileSync(f, 'utf8').trim();
-      } catch {
-        continue; // 刚被释放，重试
-      }
-      if (pidAlive(Number(seen))) return null;
-      const moved = `${mine}.stale`;
-      try {
-        renameSync(f, moved);
-      } catch {
-        continue; // 别的进程先挪走了，重试
-      }
-      if (readFileSync(moved, 'utf8').trim() !== seen) {
-        // 挪走的不是那把过期锁（别人刚接管了）：放回去，放弃
-        try {
-          linkSync(moved, f);
-        } catch {
-          /* 位置又被占了：对方持锁，照样放弃 */
-        }
-        unlinkSync(moved);
-        return null;
-      }
-      unlinkSync(moved);
-    }
-    return null;
-  } finally {
-    rmSync(mine, { force: true });
-  }
-}
-
-function pidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e.code === 'EPERM';
-  }
+export async function acquireLock(port = Number(process.env.DEVLOOP_LOCK_PORT ?? 47831)) {
+  const server = createServer();
+  server.unref();
+  const ok = await new Promise((resolve, reject) => {
+    server.once('error', (e) => (e.code === 'EADDRINUSE' ? resolve(false) : reject(e)));
+    server.listen({ port, host: '127.0.0.1', exclusive: true }, () => resolve(true));
+  });
+  if (!ok) return null;
+  return () => new Promise((r) => server.close(() => r()));
 }
