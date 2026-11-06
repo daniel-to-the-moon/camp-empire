@@ -1,0 +1,98 @@
+# devloop：自主开发循环（用户 2026-11-06 授权）
+
+## 一、循环
+
+```
+Muse 验收 / 用户 / 讨论结论 ──► issue，打 devloop 标签
+                                   │
+  【GitHub 云端】Claude（claude-code-action，Anthropic API key）
+     读 issue → 分支 claude/issue-N → 写代码 + 测试 → 本地跑通 test/build → 开 PR（Closes #N）
+                                   │
+  【用户 Mac】审核方（devloop.mjs watch 每 5 分钟扫一次；本机不执行 PR 代码）
+     ├─ 触发 GitHub Actions：把 PR 合并到当前 main 后跑 test / build（一次性 runner）
+     └─ GPT（Codex CLI，ChatGPT 订阅）只读审核代码
+     → 结论评论到 PR，末尾带机器标记 <!-- devloop state=… -->
+                                   │
+         ┌── 需修改 / 测试失败 / 冲突 → 评论触发云端 Claude 在同一分支修复 → 新提交 → 再审（最多 5 轮）
+         │
+         └── 通过 → 确认 main 没在测试后变化 → squash 合并（--match-head-commit）→ CI 构建 main 并上传发布产物
+                                   │
+                         Muse 验收 → 新 issue（回到开头）
+```
+
+为什么分两处：仓库只有 Anthropic API key，没有 OpenAI API key；GPT 审核只能用用户 ChatGPT 订阅下的 Codex CLI，在用户 Mac 上跑（用户 2026-11-06 选定）。
+代价：**Mac 关机或睡眠时不审核、不合并**；云端 Claude 照常开 PR，等 Mac 醒来后排队审核。
+
+## 二、组件
+
+| 组件 | 位置 | 作用 |
+|---|---|---|
+| `.github/workflows/claude.yml` | GitHub Actions | `implement`：issue 打上 `devloop` 标签时实现并开 PR；`fix`：GPT 审核评论要求修改时在同一 PR 修复 |
+| `scripts/devloop/devloop.mjs` | 用户 Mac | `watch`：常驻审核；`review <PR>`：手动审核一次 |
+| `scripts/devloop/policy.mjs`（+ `policy.test.mjs`） | — | 合并决策与评论标记（纯函数，CI 里用 `node --test` 自测） |
+| `scripts/devloop/review-prompt.md`、`review-schema.json` | — | GPT 审核必查项与结构化结论格式 |
+| `.github/workflows/ci.yml` | GitHub Actions | devloop 触发：PR 合并到指定 main 后测试；人工 PR；main 构建并上传发布产物 |
+
+```bash
+node scripts/devloop/devloop.mjs watch 300              # 常驻审核（launchd 托管，见第六节）
+node scripts/devloop/devloop.mjs review <PR号>           # 手动审核一次；通过则合并
+node scripts/devloop/devloop.mjs review <PR号> --no-merge
+```
+
+## 三、角色
+
+| 角色 | 做什么 | 不做什么 |
+|---|---|---|
+| Claude（云端，`claude-opus-5-5`） | 认领 `devloop` issue、写代码与测试、开 PR、按审核意见修复 | 不审核、不合并自己的 PR |
+| GPT（Codex CLI，`gpt-6-astra`） | 每个新提交独立审核：只读检出、自己读代码、按必查项给 approve / request_changes | 不改代码 |
+| 流水线 | CI 测试合并后的代码；GPT 通过且测试通过、main 未变、无暂停标签才合并；只合入审核过的那个提交 | 不在本机执行 PR 代码 |
+| Muse | 验收，按第四节格式提 issue | — |
+| 用户 | 收费 / 广告 / 商家投放开关、对公众上线、托管位置、裁决 `needs-user` | — |
+
+## 四、给 Muse 的 issue 格式
+
+- 标签：`devloop`（打上即触发云端 Claude）；类型标签 `bug` / `enhancement` / `acceptance`
+- 标题：一句话说清楚要什么
+- 正文：
+  - **现象 / 需求**：在哪个版本（main 提交号）、做了什么、看到什么、期望什么
+  - **验收标准**：可勾选的条目，Claude 会照着写测试
+  - **证据四维**：涉及数值或现实常识的主张，按 CHARTER 第二节写；缺的标“待核实”
+- 一个 issue 一件事；大需求拆成多个。
+
+## 五、停止条件、标签与评论标记
+
+审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；GPT 结论按提交缓存复用）。
+
+| 标签 | 含义 |
+|---|---|
+| `needs-user` | 自动循环停下等用户：同一 PR 连续 5 轮未通过；或 Claude 判断命中下列条件 |
+| `hold` | 用户手动暂停某个 PR 的自动审核与合并 |
+
+Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`：
+1. 涉及收费、广告、商家投放开关，或对公众开放（含实名、防沉迷等，CHARTER 第五节）；
+2. 需要外部付费服务、新账号或新的第三方数据源；
+3. issue 之间互相矛盾，或与 CHARTER 硬边界冲突；
+4. 信息不足以动手。
+
+## 六、本机审核方的安装
+
+launchd 常驻（`~/Library/LaunchAgents/com.camp-empire.devloop.plist`），日志在 `../ce-devloop/watch.log`。
+审核方从独立克隆 `../ce-devloop/repo` 运行，不影响日常工作的检出。
+
+```bash
+launchctl print gui/$(id -u)/com.camp-empire.devloop | head    # 看状态
+launchctl bootout gui/$(id -u)/com.camp-empire.devloop          # 停掉
+tail -f ../ce-devloop/watch.log                                 # 看日志
+```
+
+## 七、发布与托管
+
+- 现在：main 每次更新，CI 测试并构建，`dist` 上传为 GitHub Actions 发布产物 `camp-empire-<提交号>`（私有，保留 90 天）。**不部署到任何对外地址。**
+- 不用 Vercel：当前账号是 Hobby 套餐，条款只允许非商业用途；vercel.app 在中国大陆访问也不稳定。
+- 正式托管位置**待用户拍板**（会影响费用、备案与合规）。面向中国大陆公众上线需 ICP 备案；网络游戏商业运营涉及版号、实名与防沉迷（CHARTER 第五节第 5 条），具体要求**待核实**。
+
+## 八、费用（待核实）
+
+- 云端 Claude 按 Anthropic API 用量计费，每次实现 / 修复上限 120 轮对话；单次花费没有实测数据，跑过几次后按账单补到 #2 预算讨论里。
+- GitHub Actions：私有仓库免费额度每月 2000 分钟，超出另计。
+- GPT 审核走用户 ChatGPT 订阅额度。
