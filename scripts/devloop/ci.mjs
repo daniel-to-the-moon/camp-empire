@@ -31,7 +31,8 @@ export async function runCi({ pr, head, base, io, timeoutMs = 30 * 60_000, pollM
     } catch (e) {
       // main 上的 ci.yml 还不支持 workflow_dispatch（只发生在 devloop 自身合入之前）：
       // 退而使用该 PR 的 pull_request 运行，前提是它测的正是这个 head、且合并基准正是这个 base
-      if (/workflow_dispatch/.test(firstLine(e))) return await fromPullRequestRun({ pr, head, base, io });
+      // 要看完整错误（gh 的原因写在 stderr 的后几行，不在第一行）
+      if (/workflow_dispatch/.test(`${e?.message ?? e}\n${e?.stderr ?? ''}`)) return await fromPullRequestRun({ pr, head, base, io });
       return { status: 'error', base, url: null, note: `无法触发 CI：${firstLine(e)}` };
     }
     const deadline = io.now() + timeoutMs;

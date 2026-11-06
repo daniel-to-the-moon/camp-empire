@@ -81,3 +81,13 @@ test('io 本身意外抛出（例如 now 出错）：仍返回 error 而不是�
   const r = await run(fakeIo({ now: () => { throw new Error('boom'); } }));
   assert.equal(r.status, 'error');
 });
+
+test('回退判断看完整错误信息：原因在 stderr 或第二行时也能识别', async () => {
+  const prRun = { path: '.github/workflows/ci.yml', status: 'completed', conclusion: 'success', html_url: 'x', pull_requests: [{ number: 6, head: { sha: head }, base: { sha: base } }] };
+  const multiLine = new Error("Command failed: gh workflow run ci.yml\ncould not create workflow dispatch event: HTTP 422: Workflow does not have 'workflow_dispatch' trigger");
+  const viaStderr = Object.assign(new Error('Command failed: gh workflow run ci.yml'), { stderr: "HTTP 422: Workflow does not have 'workflow_dispatch' trigger" });
+  for (const err of [multiLine, viaStderr]) {
+    const r = await run(fakeIo({ dispatch: async () => { throw err; }, listPrRuns: async () => [prRun] }));
+    assert.equal(r.status, 'ok');
+  }
+});
