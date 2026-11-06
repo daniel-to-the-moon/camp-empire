@@ -18,6 +18,7 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { acquireLock, matchPrRun, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
 import { decide, eligible, marker, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -93,9 +94,7 @@ async function runCi(pr, head, base) {
 /** 回退：找 pull_request 事件、head 与 base 都吻合的已完成 CI 运行（GitHub 在运行记录里给出当时的 base.sha） */
 function pullRequestCi(pr, head, base) {
   const runs = JSON.parse(sh('gh', ['api', `repos/${REPO}/actions/runs?event=pull_request&head_sha=${head}&per_page=20`])).workflow_runs ?? [];
-  const run = runs.find(
-    (r) => r.path === '.github/workflows/ci.yml' && r.status === 'completed' && r.pull_requests?.some((p) => p.number === pr && p.head.sha === head && p.base.sha === base),
-  );
+  const run = matchPrRun(runs, { pr, head, base });
   if (!run) return { status: 'error', base, url: null, note: '无法触发 dispatch CI，也没有 head 与 base 都吻合的 pull_request CI' };
   const note = '回退：使用该 PR 的 pull_request CI（head 与 base 均已核对）';
   if (run.conclusion === 'success') return { status: 'ok', base, url: run.html_url, note };
@@ -107,13 +106,9 @@ function pullRequestCi(pr, head, base) {
 function gptReview(pr, meta, base) {
   mkdirSync(HOME, { recursive: true });
   // 缓存键 = head + base：只有代码和基准都没变时才复用结论（main 变了就重新审核）
-  const cache = join(HOME, `review-${pr}-${meta.headRefOid}-${base.slice(0, 12)}.json`);
+  const cache = join(HOME, reviewCacheKey(pr, meta.headRefOid, base));
   if (existsSync(cache)) return JSON.parse(readFileSync(cache, 'utf8'));
-  const dir = join(HOME, `pr-${pr}`);
-  spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_DIR });
-  rmSync(dir, { recursive: true, force: true });
-  git(['worktree', 'add', '-q', '--detach', dir, meta.headRefOid]);
-  try {
+  return withWorktree(REPO_DIR, uniqueDir(HOME, `pr-${pr}`), meta.headRefOid, (dir) => {
     const stat = sh('git', ['diff', '--stat', `${base}...${meta.headRefOid}`], { cwd: dir });
     const prompt = [
       readFileSync(join(HERE, 'review-prompt.md'), 'utf8'),
@@ -122,7 +117,7 @@ function gptReview(pr, meta, base) {
       `\n### 改动文件\n\n\`\`\`\n${stat}\n\`\`\``,
       `\n用 \`git diff ${base}...HEAD\` 查看完整改动。测试与构建由 CI 在合并后的代码上另行执行，你只需审代码。`,
     ].join('\n');
-    const out = `${cache}.tmp`;
+    const out = `${cache}.${process.pid}.tmp`;
     log(`GPT（${REVIEW_MODEL}）审核 #${pr} @ ${meta.headRefOid.slice(0, 8)}`);
     const r = spawnSync(
       'codex',
@@ -133,10 +128,9 @@ function gptReview(pr, meta, base) {
     if (r.status !== 0 || !existsSync(out)) throw new Error(`codex 审核失败：${tail(`${r.stdout}${r.stderr}`)}`);
     const review = JSON.parse(readFileSync(out, 'utf8'));
     writeFileSync(cache, JSON.stringify(review));
+    rmSync(out, { force: true });
     return review;
-  } finally {
-    spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_DIR });
-  }
+  });
 }
 
 function format({ pr, head, review, ci, d }) {
@@ -166,6 +160,17 @@ function format({ pr, head, review, ci, d }) {
 }
 
 export async function review(pr, { merge }) {
+  const release = acquireLock(HOME);
+  if (!release) throw new Error('另一个 devloop 进程正在审核或合并，稍后再试');
+  try {
+    return await reviewLocked(pr, { merge });
+  } finally {
+    release();
+  }
+}
+
+async function reviewLocked(pr, { merge }) {
+  git(['fetch', '-q', 'origin', 'main', `pull/${pr}/head`]);
   const meta = prState(pr);
   if (!eligible(meta)) throw new Error(`PR #${pr} 不是“打开、非草稿、目标 main”（state=${meta.state} draft=${meta.isDraft} base=${meta.baseRefName}）`);
   git(['fetch', '-q', 'origin', 'main', `pull/${pr}/head`]);
@@ -192,42 +197,32 @@ export async function review(pr, { merge }) {
   if (d.addLabel) gh(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
   if (d.merge) {
     try {
-      const sha = mergeTested(pr, now, head, ci.base);
-      d.text += `\n\n合并提交 \`${sha.slice(0, 8)}\`（父提交：main \`${ci.base.slice(0, 8)}\` + PR \`${head.slice(0, 8)}\`，与 CI 测试的组合一致）。`;
+      const { sha, branchDeleted } = mergeAndPush({
+        repoDir: REPO_DIR,
+        home: HOME,
+        base: ci.base,
+        head,
+        message: `合并 PR #${pr}：${now.title}\n\ndevloop：GPT 审核通过，CI 在 ${ci.base.slice(0, 8)} + ${head.slice(0, 8)} 上测试通过。`,
+        branch: now.isCrossRepository ? null : now.headRefName,
+        // 推送前一刻再读一次 PR：已关闭 / 改草稿 / 改目标 / 有新提交 / 加了暂停标签 → 中止
+        beforePush: () => {
+          const last = prState(pr);
+          if (!eligible(last) || last.headRefOid !== head || last.labels.some((l) => l === 'hold' || l === 'needs-user')) {
+            throw new Error('推送前 PR 状态已变化');
+          }
+        },
+      });
+      d.text += `\n\n合并提交 \`${sha.slice(0, 8)}\`（父提交：main \`${ci.base.slice(0, 8)}\` + PR \`${head.slice(0, 8)}\`，与 CI 测试的组合一致）${branchDeleted ? '' : '；分支上有新提交或已删除，未删除分支'}。`;
     } catch (e) {
       d.state = 'retry';
       d.merge = false;
-      d.text = `审核与测试都通过，但合并失败（${e.message.split('\n')[0]}），下一轮扫描重试。`;
+      d.text = `审核与测试都通过，但合并未完成（${e.message.split('\n')[0]}），下一轮扫描重试。`;
     }
   }
   comment(pr, format({ pr, head, review: rv, ci, d }));
   const result = { pr, head, state: d.state, ci: ci.status, verdict: rv.verdict, findings: rv.findings.length };
   console.log(JSON.stringify(result));
   return result;
-}
-
-/**
- * 在测试基准 base 上生成合并提交并普通推送到 main。
- * 与 CI 一样是 `git merge --no-ff <head>`，所以合入的树就是 CI 测试过的树；main 已不是 base 时推送被拒。
- */
-function mergeTested(pr, meta, head, base) {
-  const dir = join(HOME, `merge-${pr}`);
-  spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_DIR });
-  rmSync(dir, { recursive: true, force: true });
-  git(['fetch', '-q', 'origin', 'main', `pull/${pr}/head`]);
-  git(['worktree', 'add', '-q', '--detach', dir, base]);
-  try {
-    git(['merge', '--no-ff', '--no-edit', '-m', `合并 PR #${pr}：${meta.title}\n\ndevloop：GPT 审核通过，CI 在 ${base.slice(0, 8)} + ${head.slice(0, 8)} 上测试通过。`, head], dir);
-    const sha = git(['rev-parse', 'HEAD'], dir);
-    git(['push', '-q', 'origin', `${sha}:refs/heads/main`], dir);
-    // 只有分支仍停在合入的那个 head 时才删除；执行者在此之后推了新提交则保留分支（租约不符，删除被拒）
-    if (!meta.isCrossRepository) {
-      spawnSync('git', ['push', '-q', `--force-with-lease=refs/heads/${meta.headRefName}:${head}`, 'origin', `:refs/heads/${meta.headRefName}`], { cwd: REPO_DIR });
-    }
-    return sha;
-  } finally {
-    spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_DIR });
-  }
 }
 
 async function watch(intervalSec) {

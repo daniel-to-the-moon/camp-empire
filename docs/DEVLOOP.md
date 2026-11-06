@@ -29,7 +29,8 @@ Muse 验收 / 用户 / 讨论结论 ──► issue，打 devloop 标签
 |---|---|---|
 | `.github/workflows/claude.yml` | GitHub Actions | `implement`：issue 打上 `devloop` 标签时实现并开 PR；`fix`：GPT 审核评论要求修改时在同一 PR 修复 |
 | `scripts/devloop/devloop.mjs` | 用户 Mac | `watch`：常驻审核；`review <PR>`：手动审核一次 |
-| `scripts/devloop/policy.mjs`（+ `policy.test.mjs`） | — | 合并决策与评论标记（纯函数，CI 里用 `node --test` 自测） |
+| `scripts/devloop/policy.mjs`（+ `policy.test.mjs`） | — | 合并决策与评论标记（CI 里用 `node --test` 自测） |
+| `scripts/devloop/gitops.mjs`（+ `gitops.test.mjs`） | — | 合并推送、删分支、CI 运行匹配、进程锁（本地临时仓库集成测试） |
 | `scripts/devloop/review-prompt.md`、`review-schema.json` | — | GPT 审核必查项与结构化结论格式 |
 | `.github/workflows/ci.yml` | GitHub Actions | devloop 触发：PR 合并到指定 main 后测试；人工 PR；main 构建并上传发布产物 |
 
@@ -68,6 +69,10 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 只处理“打开、非草稿、目标 main”的 PR；草稿 PR 要先转为 ready 才会进入审核。
 
 合并方式：在 CI 测试过的 main 提交上生成合并提交（与 CI 相同的 `git merge --no-ff`），普通推送到 main；main 已变化时推送被拒，不会合入未测试的组合。合并后只有分支仍停在合入的提交上才删除分支（`--force-with-lease`），之后若有新提交则保留。
+
+推送前一刻会再读一次 PR（打开、非草稿、目标 main、头部未变、无暂停标签），任一不符即中止。这一刻到推送之间仍有约一秒的窗口；要由 GitHub 强制“状态检查通过才能进 main”，需要分支保护（私有仓库需 GitHub Pro），**待用户决定**。
+
+同一时刻只允许一个 devloop 进程审核或合并（`../ce-devloop/devloop.lock`）；工作区目录每次唯一。git 操作在 `gitops.test.mjs` 里用本地临时仓库做了集成测试。
 
 | 标签 | 含义 |
 |---|---|
