@@ -64,12 +64,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   fix:
-    # GPT 审核评论（由用户账号经 devloop 发出，开头固定为“执行者：GPT”）带 state=changes 标记时触发
+    # GPT 审核评论带 state=changes 标记时触发。只认仓库所有者账号发出的（审核方用该账号评论）；
+    # 标记签名在审核方本机校验，这里只做触发过滤，伪造的标记最多让 Claude 多跑一次修复，不会影响合并判断
     if: >-
       github.event_name == 'issue_comment' &&
       github.event.issue.pull_request &&
+      github.event.comment.user.login == github.repository_owner &&
       startsWith(github.event.comment.body, '执行者：GPT') &&
-      contains(github.event.comment.body, '<!-- devloop state=changes ') &&
+      contains(github.event.comment.body, ' state=changes head=') &&
       !contains(github.event.issue.labels.*.name, 'needs-user') &&
       !contains(github.event.issue.labels.*.name, 'hold')
     runs-on: ubuntu-latest

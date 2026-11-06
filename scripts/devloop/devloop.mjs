@@ -8,15 +8,17 @@
  * 安全边界：本机不执行 PR 里的任何代码。
  * - 测试与构建：触发 GitHub Actions（ci.yml，workflow_dispatch），在一次性 runner 上把 PR 头部合并到当前 main 后再测；
  * - GPT 审核：Codex CLI 只读沙箱（-s read-only），并忽略仓库内的执行策略文件（--ignore-rules）；
- * - 合并：policy.decide 判定通过后，以 --match-head-commit 合并，且合并前确认 main 没在测试后变化。
+ * - 合并：policy.decide 判定通过后，在测试基准上本地生成与 CI 相同的合并提交，普通推送到 main。
+ *   main 若在测试后变化，推送是非快进而被拒绝 → 不会合入未经测试的组合（原子的“比较并交换”）。
+ *   GitHub 发现 PR 头部已在 main 中，会把 PR 自动标为已合并。
  * 依赖：gh（已登录）、codex CLI、Node ≥ 22，只用 Node 内置模块。
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { decide, marker, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, marker, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = resolve(HERE, '../..');
@@ -33,11 +35,27 @@ function sh(cmd, args, opts = {}) {
   return execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts }).trim();
 }
 const gh = (args) => sh('gh', [...args, '-R', REPO]);
-const git = (args) => sh('git', args, { cwd: REPO_DIR });
+const git = (args, cwd = REPO_DIR) => sh('git', args, { cwd });
+
+/** 标记签名密钥：只在本机，首次运行生成，权限 600 */
+function markerKey() {
+  mkdirSync(HOME, { recursive: true });
+  const f = join(HOME, 'marker.key');
+  if (!existsSync(f)) {
+    writeFileSync(f, randomBytes(32).toString('hex'), { mode: 0o600 });
+    chmodSync(f, 0o600);
+  }
+  return readFileSync(f, 'utf8').trim();
+}
+const KEY = markerKey();
+const REVIEWER = sh('gh', ['api', 'user', '-q', '.login']);
 
 function prState(pr) {
-  const m = JSON.parse(gh(['pr', 'view', String(pr), '--json', 'title,body,headRefOid,baseRefName,state,isDraft,mergeable,labels,comments']));
-  return { ...m, labels: m.labels.map((l) => l.name), bodies: m.comments.map((c) => c.body) };
+  const m = JSON.parse(
+    gh(['pr', 'view', String(pr), '--json', 'title,body,headRefOid,headRefName,isCrossRepository,baseRefName,state,isDraft,mergeable,labels,comments']),
+  );
+  const comments = m.comments.map((c) => ({ author: c.author?.login ?? '', body: c.body }));
+  return { ...m, labels: m.labels.map((l) => l.name), markers: parseMarkers(comments, { key: KEY, reviewer: REVIEWER, pr }) };
 }
 
 function comment(pr, body) {
@@ -72,8 +90,8 @@ async function runCi(pr, head, base) {
 /** GPT 只读审核 PR 头部提交 */
 function gptReview(pr, meta, base) {
   mkdirSync(HOME, { recursive: true });
-  const cache = join(HOME, `review-${pr}-${meta.headRefOid}.json`);
-  // 同一 head 已有审核结论（例如上次因 main 变化而 retry）：直接复用，不重复消耗额度
+  // 缓存键 = head + base：只有代码和基准都没变时才复用结论（main 变了就重新审核）
+  const cache = join(HOME, `review-${pr}-${meta.headRefOid}-${base.slice(0, 12)}.json`);
   if (existsSync(cache)) return JSON.parse(readFileSync(cache, 'utf8'));
   const dir = join(HOME, `pr-${pr}`);
   spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_DIR });
@@ -88,7 +106,7 @@ function gptReview(pr, meta, base) {
       `\n### 改动文件\n\n\`\`\`\n${stat}\n\`\`\``,
       `\n用 \`git diff ${base}...HEAD\` 查看完整改动。测试与构建由 CI 在合并后的代码上另行执行，你只需审代码。`,
     ].join('\n');
-    const out = join(HOME, `review-${pr}-${meta.headRefOid}.tmp.json`);
+    const out = `${cache}.tmp`;
     log(`GPT（${REVIEW_MODEL}）审核 #${pr} @ ${meta.headRefOid.slice(0, 8)}`);
     const r = spawnSync(
       'codex',
@@ -105,7 +123,7 @@ function gptReview(pr, meta, base) {
   }
 }
 
-function format({ head, review, ci, d }) {
+function format({ pr, head, review, ci, d }) {
   const sev = { blocker: '🛑 blocker', major: '⚠️ major', minor: '💬 minor' };
   const findings = review.findings.length
     ? review.findings.map((f, i) => `${i + 1}. **${sev[f.severity]}** \`${f.file}:${f.line}\`\n   - 问题：${f.issue}\n   - 建议：${f.suggestion}`).join('\n')
@@ -127,7 +145,7 @@ function format({ head, review, ci, d }) {
     '### 流水线动作',
     d.text,
     '',
-    marker(d.state, head, ci.base),
+    marker(KEY, { pr, state: d.state, head, base: ci.base }),
   ].join('\n');
 }
 
@@ -153,24 +171,45 @@ export async function review(pr, { merge }) {
     ci,
     review: rv,
     now: { labels: now.labels, base: git(['rev-parse', 'origin/main']), mergeable: now.mergeable },
-    roundsBefore: roundsUsed(now.bodies),
+    roundsBefore: roundsUsed(now.markers),
     allowMerge: merge,
   });
   if (d.addLabel) gh(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
   if (d.merge) {
     try {
-      if (now.isDraft) gh(['pr', 'ready', String(pr)]);
-      gh(['pr', 'merge', String(pr), '--squash', '--delete-branch', '--match-head-commit', head]);
+      const sha = mergeTested(pr, now, head, ci.base);
+      d.text += `\n\n合并提交 \`${sha.slice(0, 8)}\`（父提交：main \`${ci.base.slice(0, 8)}\` + PR \`${head.slice(0, 8)}\`，与 CI 测试的组合一致）。`;
     } catch (e) {
       d.state = 'retry';
       d.merge = false;
       d.text = `审核与测试都通过，但合并失败（${e.message.split('\n')[0]}），下一轮扫描重试。`;
     }
   }
-  comment(pr, format({ head, review: rv, ci, d }));
+  comment(pr, format({ pr, head, review: rv, ci, d }));
   const result = { pr, head, state: d.state, ci: ci.status, verdict: rv.verdict, findings: rv.findings.length };
   console.log(JSON.stringify(result));
   return result;
+}
+
+/**
+ * 在测试基准 base 上生成合并提交并普通推送到 main。
+ * 与 CI 一样是 `git merge --no-ff <head>`，所以合入的树就是 CI 测试过的树；main 已不是 base 时推送被拒。
+ */
+function mergeTested(pr, meta, head, base) {
+  const dir = join(HOME, `merge-${pr}`);
+  spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_DIR });
+  rmSync(dir, { recursive: true, force: true });
+  git(['fetch', '-q', 'origin', 'main', `pull/${pr}/head`]);
+  git(['worktree', 'add', '-q', '--detach', dir, base]);
+  try {
+    git(['merge', '--no-ff', '--no-edit', '-m', `合并 PR #${pr}：${meta.title}\n\ndevloop：GPT 审核通过，CI 在 ${base.slice(0, 8)} + ${head.slice(0, 8)} 上测试通过。`, head], dir);
+    const sha = git(['rev-parse', 'HEAD'], dir);
+    git(['push', '-q', 'origin', `${sha}:refs/heads/main`], dir);
+    if (!meta.isCrossRepository) spawnSync('git', ['push', '-q', 'origin', '--delete', meta.headRefName], { cwd: REPO_DIR });
+    return sha;
+  } finally {
+    spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_DIR });
+  }
 }
 
 async function watch(intervalSec) {
@@ -180,7 +219,7 @@ async function watch(intervalSec) {
       const prs = JSON.parse(gh(['pr', 'list', '--state', 'open', '--base', 'main', '--json', 'number', '--limit', '50']));
       for (const { number } of prs.sort((a, b) => a.number - b.number)) {
         const m = prState(number);
-        if (!shouldReview({ head: m.headRefOid, labels: m.labels, bodies: m.bodies })) continue;
+        if (!shouldReview({ head: m.headRefOid, labels: m.labels, markers: m.markers })) continue;
         try {
           const r = await review(number, { merge: true });
           // 合并后退出，由 launchd 重启并拉取最新 main：审核方自身的更新也随之生效

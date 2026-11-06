@@ -1,27 +1,46 @@
 /**
- * devloop 决策逻辑（纯函数，无 I/O），由 policy.test.mjs 覆盖。
+ * devloop 决策逻辑（无网络、无文件 I/O），由 policy.test.mjs 覆盖。
  *
- * 每条审核评论末尾带一个机器可读标记：<!-- devloop state=<状态> head=<提交> base=<提交> -->
+ * 每条审核评论末尾带一个签名的机器标记（每条评论只认最后一个）：
+ *   <!-- devloop pr=<编号> state=<状态> head=<提交> base=<提交> sig=<HMAC> -->
  *   changes  需要执行者改（GPT 要求修改 / 测试失败 / 冲突）→ 触发云端 Claude 修复；同一 head 不再审
  *   merged   已合并
  *   stopped  达到轮次上限，加 needs-user，停止自动循环
- *   retry    暂时不能合并（合并失败、基准分支在测试后变了、CI 基础设施出错、hold、--no-merge）→ 下一轮扫描重试同一 head
+ *   retry    暂时不能合并（暂停标签、main 在测试后变化、合并失败、CI 基础设施出错、--no-merge）→ 下一轮重试
+ *
+ * 防伪：签名密钥只存在审核方本机（$DEVLOOP_HOME/marker.key），不进仓库也不进 GitHub；
+ * 并且只认审核方账号发出、以“执行者：GPT”开头的评论。其他评论里写的标记一律无效（GPT 审核 #6 第二轮 major）。
  */
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export const MAX_ROUNDS = 5;
 export const SKIP_LABELS = ['needs-user', 'hold'];
 const TERMINAL = new Set(['changes', 'merged', 'stopped']);
+const REVIEW_PREFIX = '执行者：GPT';
 
-export function marker(state, head, base) {
-  return `<!-- devloop state=${state} head=${head} base=${base ?? ''} -->`;
+function sign(key, pr, state, head, base) {
+  return createHmac('sha256', key).update(`${pr}|${state}|${head}|${base}`).digest('hex').slice(0, 32);
 }
 
-export function parseMarkers(bodies) {
+export function marker(key, { pr, state, head, base }) {
+  return `<!-- devloop pr=${pr} state=${state} head=${head} base=${base} sig=${sign(key, pr, state, head, base)} -->`;
+}
+
+/**
+ * comments: [{ author, body }]；reviewer：审核方 GitHub 账号。
+ * 返回有效标记（签名正确、作者是审核方、评论以审核前缀开头、PR 号一致），每条评论至多一个。
+ */
+export function parseMarkers(comments, { key, reviewer, pr }) {
   const out = [];
-  for (const b of bodies) {
-    for (const m of b.matchAll(/<!-- devloop state=(\w+) head=([0-9a-f]+) base=([0-9a-f]*) -->/g)) {
-      out.push({ state: m[1], head: m[2], base: m[3] || null });
-    }
+  for (const c of comments) {
+    if (c.author !== reviewer || !c.body.startsWith(REVIEW_PREFIX)) continue;
+    const all = [...c.body.matchAll(/<!-- devloop pr=(\d+) state=(\w+) head=([0-9a-f]{40}) base=([0-9a-f]{40}) sig=([0-9a-f]{32}) -->/g)];
+    const m = all.at(-1);
+    if (!m || Number(m[1]) !== pr) continue;
+    const want = Buffer.from(sign(key, m[1], m[2], m[3], m[4]));
+    const got = Buffer.from(m[5]);
+    if (want.length !== got.length || !timingSafeEqual(want, got)) continue;
+    out.push({ state: m[2], head: m[3], base: m[4] });
   }
   return out;
 }
@@ -31,14 +50,14 @@ export function hasSkipLabel(labels) {
 }
 
 /** watch 是否要审这个 PR 的当前 head */
-export function shouldReview({ head, labels, bodies }) {
+export function shouldReview({ head, labels, markers }) {
   if (hasSkipLabel(labels)) return false;
-  return !parseMarkers(bodies).some((m) => m.head === head && TERMINAL.has(m.state));
+  return !markers.some((m) => m.head === head && TERMINAL.has(m.state));
 }
 
-/** 已经消耗的轮次 = 之前 state=changes 的审核次数（不同 head 各算一轮） */
-export function roundsUsed(bodies) {
-  return new Set(parseMarkers(bodies).filter((m) => m.state === 'changes').map((m) => m.head)).size;
+/** 已经消耗的轮次 = 得到 changes 结论的不同 head 数 */
+export function roundsUsed(markers) {
+  return new Set(markers.filter((m) => m.state === 'changes').map((m) => m.head)).size;
 }
 
 export function isBlocking(findings) {
@@ -48,9 +67,14 @@ export function isBlocking(findings) {
 /**
  * 合并前的最终决定。
  * ci: { status: 'ok' | 'failed' | 'error', base }，base 为 CI 实际测试的基准提交
- * now: { labels, base, mergeable }：合并前一刻重新读取的 PR 状态与基准分支
+ * now: { labels, base, mergeable }：决定前一刻重新读取的 PR 状态与 main
  */
 export function decide({ ci, review, now, roundsBefore, allowMerge }) {
+  // 暂停标签最先判断：审核期间被暂停的 PR 只记 retry，去掉标签后会重新审核（不写终态）
+  if (hasSkipLabel(now.labels)) {
+    return { state: 'retry', merge: false, text: `PR 带有 ${now.labels.filter((l) => SKIP_LABELS.includes(l)).join('、')} 标签，本轮结论不生效；去掉标签后重新审核。` };
+  }
+  if (ci.status === 'error') return { state: 'retry', merge: false, text: 'CI 未能完成（基础设施问题），下一轮扫描重试。' };
   const approved = review.verdict === 'approve' && !isBlocking(review.findings);
   const needsChange = ci.status === 'failed' || !approved || now.mergeable === 'CONFLICTING';
   if (needsChange) {
@@ -65,9 +89,7 @@ export function decide({ ci, review, now, roundsBefore, allowMerge }) {
     ].filter(Boolean);
     return { state: 'changes', merge: false, text: `第 ${round} 轮未通过：${why.join('；')}。执行者修复后自动重新审核。` };
   }
-  if (ci.status === 'error') return { state: 'retry', merge: false, text: 'CI 未能完成（基础设施问题），下一轮扫描重试。' };
-  if (hasSkipLabel(now.labels)) return { state: 'retry', merge: false, text: `PR 带有 ${now.labels.filter((l) => SKIP_LABELS.includes(l)).join('、')} 标签，审核通过但不合并。` };
   if (!allowMerge) return { state: 'retry', merge: false, text: '审核通过（本次指定 --no-merge，未合并）。' };
-  if (ci.base !== now.base) return { state: 'retry', merge: false, text: '测试之后 main 有了新提交，测试结果不再代表合并后的代码，下一轮扫描用新 main 重测。' };
-  return { state: 'merged', merge: true, text: '审核通过 + 合并后代码测试通过 → 自动 squash 合并。' };
+  if (ci.base !== now.base) return { state: 'retry', merge: false, text: '测试之后 main 有了新提交，测试结果不再代表合并后的代码，下一轮用新 main 重新审核与测试。' };
+  return { state: 'merged', merge: true, text: '审核通过 + 合并后代码测试通过 → 合并（只有 main 仍等于测试基准时才推送成功）。' };
 }

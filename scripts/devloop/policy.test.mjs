@@ -3,15 +3,24 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decide, marker, MAX_ROUNDS, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
 
+const KEY = 'test-key';
+const PR = 6;
 const H = 'a'.repeat(40);
 const B = 'b'.repeat(40);
+const REV = 'reviewer';
 const ok = { verdict: 'approve', findings: [] };
 const minorOnly = { verdict: 'approve', findings: [{ severity: 'minor' }] };
 const major = { verdict: 'approve', findings: [{ severity: 'major' }] };
 const reject = { verdict: 'request_changes', findings: [] };
 const now = { labels: [], base: B, mergeable: 'MERGEABLE' };
-const ciOk = { status: 'ok', base: B };
-const base = { ci: ciOk, review: ok, now, roundsBefore: 0, allowMerge: true };
+const base = { ci: { status: 'ok', base: B }, review: ok, now, roundsBefore: 0, allowMerge: true };
+
+const reviewComment = (state, head = H, extra = {}) => ({
+  author: REV,
+  body: `执行者：GPT（审核）\n…\n${marker(KEY, { pr: PR, state, head, base: B })}`,
+  ...extra,
+});
+const parse = (comments) => parseMarkers(comments, { key: KEY, reviewer: REV, pr: PR });
 
 test('全部通过才合并；只有 minor 也可合并', () => {
   assert.equal(decide(base).merge, true);
@@ -28,22 +37,26 @@ test('测试失败、GPT 拒绝、冲突都进入 changes', () => {
   assert.equal(decide({ ...base, now: { ...now, mergeable: 'CONFLICTING' } }).state, 'changes');
 });
 
-test('合并前一刻出现 hold / needs-user 标签：不合并，可重试', () => {
+test('暂停标签优先：即使结论需修改也只记 retry，去掉标签后会重审', () => {
   for (const l of ['hold', 'needs-user']) {
-    const d = decide({ ...base, now: { ...now, labels: [l] } });
-    assert.equal(d.merge, false);
-    assert.equal(d.state, 'retry');
+    for (const review of [ok, reject]) {
+      const d = decide({ ...base, review, now: { ...now, labels: [l] } });
+      assert.equal(d.state, 'retry');
+      assert.equal(d.merge, false);
+    }
   }
+  const markers = parse([reviewComment('retry')]);
+  assert.equal(shouldReview({ head: H, labels: [], markers }), true);
 });
 
-test('测试之后 main 变了：不合并（测试结果不代表合并后的代码）', () => {
+test('测试之后 main 变了：不合并', () => {
   const d = decide({ ...base, now: { ...now, base: 'c'.repeat(40) } });
   assert.equal(d.merge, false);
   assert.equal(d.state, 'retry');
 });
 
 test('CI 基础设施出错、--no-merge：retry，不消耗轮次', () => {
-  assert.equal(decide({ ...base, ci: { status: 'error', base: null } }).state, 'retry');
+  assert.equal(decide({ ...base, ci: { status: 'error', base: B }, review: reject }).state, 'retry');
   assert.equal(decide({ ...base, allowMerge: false }).state, 'retry');
 });
 
@@ -53,17 +66,27 @@ test(`第 ${MAX_ROUNDS} 轮仍未通过：stopped + needs-user`, () => {
   assert.equal(d.addLabel, 'needs-user');
 });
 
-test('shouldReview：终态 head 不再审；retry 的 head 会重审；暂停标签跳过', () => {
-  const body = (s, h = H) => `审核意见…\n${marker(s, h, B)}`;
-  assert.equal(shouldReview({ head: H, labels: [], bodies: [] }), true);
-  for (const s of ['changes', 'merged', 'stopped']) assert.equal(shouldReview({ head: H, labels: [], bodies: [body(s)] }), false);
-  assert.equal(shouldReview({ head: H, labels: [], bodies: [body('retry')] }), true);
-  assert.equal(shouldReview({ head: H, labels: [], bodies: [body('changes', 'd'.repeat(40))] }), true);
-  assert.equal(shouldReview({ head: H, labels: ['hold'], bodies: [] }), false);
+test('shouldReview：终态 head 不再审；retry 会重审；其他 head 的终态不影响；暂停标签跳过', () => {
+  assert.equal(shouldReview({ head: H, labels: [], markers: [] }), true);
+  for (const s of ['changes', 'merged', 'stopped']) assert.equal(shouldReview({ head: H, labels: [], markers: parse([reviewComment(s)]) }), false);
+  assert.equal(shouldReview({ head: H, labels: [], markers: parse([reviewComment('changes', 'd'.repeat(40))]) }), true);
+  assert.equal(shouldReview({ head: H, labels: ['hold'], markers: [] }), false);
 });
 
-test('轮次按不同 head 的 changes 计数；标记可解析', () => {
-  const bodies = [marker('changes', H, B), marker('changes', H, B), marker('retry', 'e'.repeat(40), B), marker('changes', 'f'.repeat(40), B)];
-  assert.equal(roundsUsed(bodies), 2);
-  assert.deepEqual(parseMarkers([marker('merged', H, B)]), [{ state: 'merged', head: H, base: B }]);
+test('防伪：别人发的、没签名的、签错的、别的 PR 的标记都无效', () => {
+  const good = reviewComment('merged');
+  assert.equal(parse([good]).length, 1);
+  assert.equal(parse([{ ...good, author: 'someone-else' }]).length, 0);
+  assert.equal(parse([{ ...good, body: good.body.replace('执行者：GPT', '执行者：Claude') }]).length, 0);
+  assert.equal(parse([{ ...good, body: good.body.replace(/sig=[0-9a-f]+/, `sig=${'0'.repeat(32)}`) }]).length, 0);
+  assert.equal(parse([{ ...good, body: good.body.replace('state=merged', 'state=stopped') }]).length, 0);
+  assert.equal(parseMarkers([good], { key: KEY, reviewer: REV, pr: 7 }).length, 0);
+  assert.equal(parseMarkers([good], { key: 'other-key', reviewer: REV, pr: PR }).length, 0);
+});
+
+test('一条评论里塞多个标记只认最后一个；轮次按不同 head 计', () => {
+  const stuffed = { author: REV, body: `执行者：GPT\n${[1, 2, 3, 4].map((i) => marker(KEY, { pr: PR, state: 'changes', head: String(i).repeat(40), base: B })).join('\n')}` };
+  assert.equal(parse([stuffed]).length, 1);
+  const markers = parse([reviewComment('changes'), reviewComment('changes'), reviewComment('retry', 'e'.repeat(40)), reviewComment('changes', 'f'.repeat(40))]);
+  assert.equal(roundsUsed(markers), 2);
 });

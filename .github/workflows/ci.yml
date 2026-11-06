@@ -30,17 +30,27 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.base || '' }}
           fetch-depth: 0
           persist-credentials: false
-      - name: 合并 PR 头部提交到指定 main（仅 devloop 触发）
+      # 私有仓库拉 PR 头部需要认证：用第二个 checkout（同样不保留凭据）取到子目录，再从本地目录 fetch，
+      # 这样后续执行 PR 代码的步骤里不存在任何令牌（GPT 审核 #6 第二轮 major）
+      - name: 取 PR 头部（仅 devloop 触发）
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ inputs.pr }}/head
+          path: _devloop_pr
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 合并 PR 头部到指定 main（仅 devloop 触发）
         if: github.event_name == 'workflow_dispatch'
         env:
-          PR: ${{ inputs.pr }}
           HEAD_SHA: ${{ inputs.head }}
           BASE_SHA: ${{ inputs.base }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$BASE_SHA"
-          git fetch -q origin "pull/$PR/head"
-          test "$(git rev-parse FETCH_HEAD)" = "$HEAD_SHA" || { echo "::error::PR 头部已变化"; exit 1; }
+          test "$(git rev-parse HEAD)" = "$BASE_SHA" || { echo "::error::main 提交与预期不符"; exit 1; }
+          test "$(git -C _devloop_pr rev-parse HEAD)" = "$HEAD_SHA" || { echo "::error::PR 头部已变化"; exit 1; }
+          git fetch -q ./_devloop_pr "$HEAD_SHA"
+          rm -rf _devloop_pr
           git -c user.name=ci -c user.email=ci@localhost merge --no-ff --no-edit "$HEAD_SHA" \
             || { echo "::error::与 main 冲突"; exit 1; }
       - uses: actions/setup-node@v4

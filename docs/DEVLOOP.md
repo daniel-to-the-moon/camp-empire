@@ -15,7 +15,7 @@ Muse 验收 / 用户 / 讨论结论 ──► issue，打 devloop 标签
                                    │
          ┌── 需修改 / 测试失败 / 冲突 → 评论触发云端 Claude 在同一分支修复 → 新提交 → 再审（最多 5 轮）
          │
-         └── 通过 → 确认 main 没在测试后变化 → squash 合并（--match-head-commit）→ CI 构建 main 并上传发布产物
+         └── 通过 → 在测试过的 main 上生成合并提交并推送（main 变了推送失败）→ CI 构建 main 并上传发布产物
                                    │
                          Muse 验收 → 新 issue（回到开头）
 ```
@@ -45,7 +45,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 |---|---|---|
 | Claude（云端，`claude-opus-5-5`） | 认领 `devloop` issue、写代码与测试、开 PR、按审核意见修复 | 不审核、不合并自己的 PR |
 | GPT（Codex CLI，`gpt-6-astra`） | 每个新提交独立审核：只读检出、自己读代码、按必查项给 approve / request_changes | 不改代码 |
-| 流水线 | CI 测试合并后的代码；GPT 通过且测试通过、main 未变、无暂停标签才合并；只合入审核过的那个提交 | 不在本机执行 PR 代码 |
+| 流水线 | CI 测试合并后的代码；GPT 通过且测试通过、main 未变、无暂停标签才合并；合入的就是测试过的那个组合 | 不在本机执行 PR 代码 |
 | Muse | 验收，按第四节格式提 issue | — |
 | 用户 | 收费 / 广告 / 商家投放开关、对公众上线、托管位置、裁决 `needs-user` | — |
 
@@ -61,7 +61,11 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 ## 五、停止条件、标签与评论标记
 
-审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；GPT 结论按提交缓存复用）。
+审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交）。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
+
+标记带 HMAC 签名，密钥只在审核方本机（`../ce-devloop/marker.key`）；只认审核方账号发出、以“执行者：GPT”开头的评论，每条评论只认最后一个标记。其他人写的标记无效。
+
+合并方式：在 CI 测试过的 main 提交上生成合并提交（与 CI 相同的 `git merge --no-ff`），普通推送到 main；main 已变化时推送被拒，不会合入未测试的组合。
 
 | 标签 | 含义 |
 |---|---|
