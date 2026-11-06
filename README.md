@@ -15,6 +15,29 @@
 - `MODEL_PACKAGE.md`：车模型供给包（尺寸、锚点、性能预算、许可证闸门）
 - `models.json`：9 款基础车型、25 个高度变体的公开尺寸数据
 - `GDD-v0.1-讨论稿.md`：游戏策划案讨论稿（已核实与待核实严格区分）
+- `docs/ECONOMY_M1.md`：M1 原型数值推演表（提案，待讨论）
+- `docs/SWEPT_PATH.md`：转弯半径与扫掠包络（游戏手感参数，非工程标准）
+
+## M1 原型（讨论用，未经批准上线）
+
+在一块有边界的营地里：选车 → 开车兜圈 / 一键泊回家位 → NPC 露营者自己来停你的车位、离开时自动付费 → 买侧边帐。
+车辆外观是按公告三围生成的占位几何，场景是占位色块。
+
+```bash
+npm install
+npm run dev            # 本地开发服务器；地址加 ?dev 显示时间快进面板
+npm test               # 单元测试：账本、NPC 回放、运动学、全部车型 × 车位的进出路径、占位几何 bbox
+npm run build          # 类型检查 + 生产构建
+npm run economy:table  # 重算 docs/ECONOMY_M1.md 的数字
+npm run swept:table    # 重算 docs/SWEPT_PATH.md 的数字
+```
+
+操作：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 或方向键驾驶，空格刹车，<kbd>P</kbd> 自动泊回家位，<kbd>O</kbd> 从家位开出，<kbd>C</kbd> 俯瞰。
+
+目录：
+- `src/shared/`：玩法纯逻辑（账本、NPC 停车、运动学、Dubins 路径、营地布局、泊车规划、存档状态），不依赖渲染，可原样迁到服务端
+- `src/geometry/`：占位车辆几何与升级件锚点（对齐口径见 `MODEL_PACKAGE.md`）
+- `src/client/`：Three.js 场景与界面
 
 ## 两条硬边界（先说清楚）
 
