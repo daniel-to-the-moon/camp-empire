@@ -1,7 +1,7 @@
 // 集成测试：在临时目录里建真实的 git 远端与克隆，验证合并 / 推送 / 删分支的实际行为
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
@@ -102,6 +102,21 @@ test('进程锁：同时只有一个持有者；持有进程退出后可接管',
   const code = await new Promise((r) => other.on('exit', r));
   assert.equal(code, 3);
   release();
+  // 并发：8 个进程同时抢锁，任一时刻只有一个能拿到（各自拿到后持有 300ms 再释放，统计重叠）
+  const script = `import { acquireLock } from ${JSON.stringify(new URL('./gitops.mjs', import.meta.url).href)};
+    import { appendFileSync } from 'node:fs';
+    const log = ${JSON.stringify(join(home, 'events'))};
+    const r = acquireLock(${JSON.stringify(home)});
+    if (r) { appendFileSync(log, 'in ' + Date.now() + '\\n'); await new Promise((x) => setTimeout(x, 300)); appendFileSync(log, 'out ' + Date.now() + '\\n'); r(); }`;
+  const kids = Array.from({ length: 8 }, () => spawn(process.execPath, ['--input-type=module', '-e', script]));
+  await Promise.all(kids.map((k) => new Promise((r) => k.on('exit', r))));
+  let depth = 0;
+  let maxDepth = 0;
+  for (const line of readFileSync(join(home, 'events'), 'utf8').trim().split('\n').sort((a, b) => Number(a.split(' ')[1]) - Number(b.split(' ')[1]) || (a.startsWith('out') ? -1 : 1))) {
+    depth += line.startsWith('in') ? 1 : -1;
+    maxDepth = Math.max(maxDepth, depth);
+  }
+  assert.equal(maxDepth, 1);
   // 写入一个已不存在的 pid，模拟过期锁
   writeFileSync(join(home, 'devloop.lock'), '999999');
   const again = acquireLock(home);

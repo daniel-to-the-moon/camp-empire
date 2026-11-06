@@ -27,7 +27,7 @@ Muse 验收 / 用户 / 讨论结论 ──► issue，打 devloop 标签
 
 | 组件 | 位置 | 作用 |
 |---|---|---|
-| `.github/workflows/claude.yml` | GitHub Actions | `implement`：issue 打上 `devloop` 标签时实现并开 PR；`fix`：GPT 审核评论要求修改时在同一 PR 修复 |
+| `.github/workflows/claude.yml` | GitHub Actions | issue 打上 `devloop` 标签时实现；GPT 审核评论带 `state=changes` 时在同一 PR 修复。分两个任务：`work`（只读令牌，Claude 改代码跑测试，打包提交）→ `publish`（有写权限但不执行仓库代码，只把提交推到 `claude/*` 分支并开 PR 或评论） |
 | `scripts/devloop/devloop.mjs` | 用户 Mac | `watch`：常驻审核；`review <PR>`：手动审核一次 |
 | `scripts/devloop/policy.mjs`（+ `policy.test.mjs`） | — | 合并决策与评论标记（CI 里用 `node --test` 自测） |
 | `scripts/devloop/gitops.mjs`（+ `gitops.test.mjs`） | — | 合并推送、删分支、CI 运行匹配、进程锁（本地临时仓库集成测试） |
@@ -85,7 +85,12 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
 3. issue 之间互相矛盾，或与 CHARTER 硬边界冲突；
 4. 信息不足以动手。
 
-## 六、本机审核方的安装
+## 六、残余风险（如实列出）
+
+- `work` 任务里有 Anthropic API key（Claude 运行必需），并会执行仓库代码与依赖安装脚本。依赖被投毒时这个 key 可能泄露，但拿不到能写仓库的令牌。缓解：在 Anthropic 控制台给这个 key 设用量上限。
+- 推送 main 前的最后核对与推送之间约一秒窗口；彻底由 GitHub 强制需要分支保护（GitHub Pro），待用户决定。
+
+## 七、本机审核方的安装
 
 launchd 常驻（`~/Library/LaunchAgents/com.camp-empire.devloop.plist`），日志在 `../ce-devloop/watch.log`。
 审核方从独立克隆 `../ce-devloop/repo` 运行，不影响日常工作的检出。
@@ -96,13 +101,13 @@ launchctl bootout gui/$(id -u)/com.camp-empire.devloop          # 停掉
 tail -f ../ce-devloop/watch.log                                 # 看日志
 ```
 
-## 七、发布与托管
+## 八、发布与托管
 
 - 现在：main 每次更新，CI 测试并构建，`dist` 上传为 GitHub Actions 发布产物 `camp-empire-<提交号>`（私有，保留 90 天）。**不部署到任何对外地址。**
 - 不用 Vercel：当前账号是 Hobby 套餐，条款只允许非商业用途；vercel.app 在中国大陆访问也不稳定。
 - 正式托管位置**待用户拍板**（会影响费用、备案与合规）。面向中国大陆公众上线需 ICP 备案；网络游戏商业运营涉及版号、实名与防沉迷（CHARTER 第五节第 5 条），具体要求**待核实**。
 
-## 八、费用（待核实）
+## 九、费用（待核实）
 
 - 云端 Claude 按 Anthropic API 用量计费，每次实现 / 修复上限 120 轮对话；单次花费没有实测数据，跑过几次后按账单补到 #2 预算讨论里。
 - GitHub Actions：私有仓库免费额度每月 2000 分钟，超出另计。

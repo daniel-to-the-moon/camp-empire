@@ -3,7 +3,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -62,28 +62,60 @@ export function reviewCacheKey(pr, head, base) {
 }
 
 /**
- * 进程锁：同一时刻只允许一个 devloop 进程审核或合并。持锁进程已退出时视为过期锁并接管。
- * 返回释放函数；拿不到锁返回 null。
+ * 进程锁：同一时刻只允许一个 devloop 进程审核或合并。返回释放函数；拿不到锁返回 null。
+ * 原子性：先把 pid 写进私有临时文件，再 link 成锁文件——link 要么整个成功、要么 EEXIST，
+ * 别的进程永远读不到“已创建但还没写 pid”的锁（GPT 审核 #6 第五轮 major）。
+ * 过期锁（持有进程已退出）接管：先把锁文件 rename 到私有名字（同一时刻只有一个进程能 rename 成功），
+ * 再确认挪走的确实是刚才看到的那把过期锁；不是的话原样放回、放弃本次。
  */
 export function acquireLock(home) {
   mkdirSync(home, { recursive: true });
   const f = join(home, 'devloop.lock');
-  for (let i = 0; i < 2; i++) {
-    try {
-      const fd = openSync(f, 'wx');
-      writeFileSync(fd, String(process.pid));
-      closeSync(fd);
-      return () => {
-        if (existsSync(f) && readFileSync(f, 'utf8').trim() === String(process.pid)) rmSync(f, { force: true });
-      };
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      const pid = Number(readFileSync(f, 'utf8').trim());
-      if (pid && pidAlive(pid)) return null;
-      rmSync(f, { force: true }); // 过期锁
+  const mine = `${f}.${process.pid}.${randomBytes(4).toString('hex')}`;
+  writeFileSync(mine, String(process.pid));
+  try {
+    for (let i = 0; i < 3; i++) {
+      try {
+        linkSync(mine, f);
+        return () => {
+          try {
+            if (readFileSync(f, 'utf8').trim() === String(process.pid)) unlinkSync(f);
+          } catch {
+            /* 已不存在 */
+          }
+        };
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+      }
+      let seen;
+      try {
+        seen = readFileSync(f, 'utf8').trim();
+      } catch {
+        continue; // 刚被释放，重试
+      }
+      if (pidAlive(Number(seen))) return null;
+      const moved = `${mine}.stale`;
+      try {
+        renameSync(f, moved);
+      } catch {
+        continue; // 别的进程先挪走了，重试
+      }
+      if (readFileSync(moved, 'utf8').trim() !== seen) {
+        // 挪走的不是那把过期锁（别人刚接管了）：放回去，放弃
+        try {
+          linkSync(moved, f);
+        } catch {
+          /* 位置又被占了：对方持锁，照样放弃 */
+        }
+        unlinkSync(moved);
+        return null;
+      }
+      unlinkSync(moved);
     }
+    return null;
+  } finally {
+    rmSync(mine, { force: true });
   }
-  return null;
 }
 
 function pidAlive(pid) {
