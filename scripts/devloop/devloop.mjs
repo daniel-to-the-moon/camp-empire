@@ -24,7 +24,7 @@ import { decide, eligible, marker, parseMarkers, roundsUsed, shouldReview } from
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = resolve(HERE, '../..');
-const REPO = process.env.DEVLOOP_REPO ?? 'shengjun89/camp-empire';
+const REPO = process.env.DEVLOOP_REPO ?? 'daniel-to-the-moon/camp-empire';
 const HOME = resolve(process.env.DEVLOOP_HOME ?? join(REPO_DIR, '..', 'ce-devloop'));
 const REVIEW_MODEL = process.env.DEVLOOP_REVIEW_MODEL ?? 'gpt-6-astra';
 const CI_TIMEOUT_MS = 30 * 60_000;
@@ -50,14 +50,19 @@ function markerKey() {
   return readFileSync(f, 'utf8').trim();
 }
 const KEY = markerKey();
-const REVIEWER = sh('gh', ['api', 'user', '-q', '.login']);
+/**
+ * 审核方账号：每次读取都重新查询，不在启动时缓存。
+ * GitHub 账号改名后，历史评论的作者也显示为新用户名；若缓存旧名，审核方会认不出自己的签名标记，
+ * 对同一提交反复评论（2026-11-07 实际发生）。
+ */
+const reviewerLogin = () => sh('gh', ['api', 'user', '-q', '.login']);
 
 function prState(pr) {
   const m = JSON.parse(
     gh(['pr', 'view', String(pr), '--json', 'title,body,headRefOid,headRefName,isCrossRepository,baseRefName,state,isDraft,mergeable,labels,comments']),
   );
   const comments = m.comments.map((c) => ({ author: c.author?.login ?? '', body: c.body }));
-  return { ...m, labels: m.labels.map((l) => l.name), markers: parseMarkers(comments, { key: KEY, reviewer: REVIEWER, pr }) };
+  return { ...m, labels: m.labels.map((l) => l.name), markers: parseMarkers(comments, { key: KEY, reviewer: reviewerLogin(), pr }) };
 }
 
 function comment(pr, body) {

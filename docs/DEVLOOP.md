@@ -65,7 +65,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；同一提交因基础设施问题——CI 未完成或 GPT 审核本身失败——累计 3 次即转为 `stopped`）。CI 任务超时（`timed_out`）按测试失败处理，交执行者修。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
 
-标记带 HMAC 签名，密钥只在审核方本机（`../ce-devloop/marker.key`）；只认审核方账号发出、以“执行者：GPT”开头的评论，每条评论只认最后一个标记。其他人写的标记无效。
+标记带 HMAC 签名，密钥只在审核方本机；审核方账号每次都重新查询（账号改名后历史评论作者也会显示新名，缓存旧名会导致认不出自己的标记、重复评论）（`../ce-devloop/marker.key`）；只认审核方账号发出、以“执行者：GPT”开头的评论，每条评论只认最后一个标记。其他人写的标记无效。
 
 只处理“打开、非草稿、目标 main”的 PR；草稿 PR 要先转为 ready 才会进入审核。
 
@@ -94,7 +94,7 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
   2. 手动重跑该 PR 的修复：
 
 ```bash
-gh workflow run claude.yml -R shengjun89/camp-empire -f pr=<PR号>
+gh workflow run claude.yml -R daniel-to-the-moon/camp-empire -f pr=<PR号>
 ```
 
   3. 重跑成功推送修复后，发布步骤会自动移除 `needs-user`，本机审核方随即审核新提交；`hold` 是用户的暂停意图，不会被移除。重跑仍失败则保持 `needs-user`。
