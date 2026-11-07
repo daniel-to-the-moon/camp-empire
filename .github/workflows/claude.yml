@@ -94,6 +94,10 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
+          # 完整输出：失败时能在日志里看到 Claude 的实际报错（用户 2026-11-07 同意开启）。
+          # 风险：日志含全部工具执行结果。以 secrets 登记的 ANTHROPIC_API_KEY、GITHUB_TOKEN 会被 GitHub 自动打码；
+          # 仓库为私有，日志仅有仓库权限的人可见。仓库若改为公开，应关闭此项。
+          show_full_output: true
           prompt: |
             你是 camp-empire 仓库的代码执行者 Claude（devloop 循环，见 docs/DEVLOOP.md）。
             本任务的 GitHub 令牌是只读的：你不能也不需要推送、开 PR 或评论。改完后只在本地 git commit，发布由后续任务完成。
