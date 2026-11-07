@@ -74,10 +74,10 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 评审方不要自己打 `devloop`：这个标签一打上就会触发自动开发。
 
-**GPT 云端参与讨论**（`.github/workflows/gpt-discuss.yml`，需仓库 secret `OPENAI_API_KEY`；仓库变量 `GPT_RESPONSES_ENDPOINT` 指定兼容 Responses API 的网关地址、`GPT_MODEL` 指定模型，均可留空走官方默认。当前 key 来自用户的 AI 网关，限速为个人并发 1、每分钟 6 次请求，排队较慢属正常）：
-- 讨论 issue 新建时带 `discussion` / `proposal` 标签，或被打上这两个标签时，GPT 读讨论全文与仓库规则，按 CHARTER 第二节四维逐条核对并发评论（开头“执行者：GPT（云端评审…）”）。
+**GPT 云端参与讨论**（`.github/workflows/gpt-discuss.yml`，需仓库 secret `OPENAI_API_KEY`；仓库变量 `GPT_RESPONSES_ENDPOINT` 指定兼容 Responses API 的网关地址、`GPT_MODEL` 指定模型，均可留空走官方默认。当前 key 来自用户的 AI 网关。限速：个人并发 1、每分钟 6 次请求——来源为用户网关账号说明（本机文件，2026-11-07 读取），以网关当前设置为准，**待核实**；可能使评审排队变慢）：
+- 讨论 issue 被打上 `discussion` / `proposal` 标签时（带标签新建也算，同一 issue 只首次评审一次），GPT 读讨论全文与仓库规则，按 CHARTER 第二节四维逐条核对并发评论（开头“执行者：GPT（云端评审…）”）。
 - 之后在评论里写 `@gpt` 可再次点名；其他评论不触发，控制费用。也可手动触发：`gh workflow run gpt-discuss.yml -R daniel-to-the-moon/camp-empire -f issue=<编号>`。
-- 触发判定在 `scripts/devloop/discuss-gate.mjs`（`discuss-gate.test.mjs` 覆盖）；评审任务只读、`:read-only` 权限配置，发评论任务不运行模型。
+- 触发判定在 `scripts/devloop/discuss-gate.mjs`、去重与提示词在 `discuss-build.mjs`（均有测试）；`@gpt` 点名时只回答触发的那条评论，长讨论截断不会截掉它；评审任务只读、`:read-only` 权限配置，发评论任务不运行模型。
 - GPT 只评审与提问，不拍板。目前这只是约定：`claude.yml` 只检查标签本身，不检查是谁打的；有写权限的账号打上 `devloop` 都会触发。若要强制只认用户，需要在工作流里校验打标签者，**待用户决定**。
 
 ## 五、停止条件、标签与评论标记
