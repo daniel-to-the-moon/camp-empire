@@ -74,6 +74,8 @@ jobs:
         uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1.13（标签指向的提交，非标签对象）
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          # 兼容 OpenAI Responses API 的网关（仓库变量）；为空时走官方地址
+          responses-api-endpoint: ${{ vars.GPT_RESPONSES_ENDPOINT }}
           prompt-file: ${{ runner.temp }}/gpt/prompt.md
           output-file: ${{ runner.temp }}/gpt/reply.md
           permission-profile: ':read-only'
