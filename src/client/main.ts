@@ -11,7 +11,8 @@ import { resolveDrive, type Impact } from '../shared/collision';
 import { displayGold } from '../shared/ledger';
 import { bodyCenter, footprint, specOf, stepDrive, type DriveState, type Pose } from '../shared/kinematics';
 import { feeCents, type CampEvent } from '../shared/npc';
-import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, planReverseOut, type PathPose } from '../shared/parking';
+import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, type PathPose } from '../shared/parking';
+import { departHome, type DepartResult } from '../shared/depart';
 import { hash32 } from '../shared/rng';
 import { devCommand, freshGameAt, isDevEntry, resetSave } from '../shared/devgate';
 import { IdbStore, requestWriter, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
@@ -21,7 +22,6 @@ import {
   buyAwning,
   claimDailyGift,
   currentVariant,
-  leaveHome,
   recordPose,
   selectVariant,
   setAwningWanted,
@@ -94,6 +94,8 @@ const home = stallById('home');
 
 let spec = specOf(currentVariant(state));
 let player: VehicleView = makeVehicle(currentVariant(state));
+/** 画面玩家车（spec / player）对应的车型；与 state.variantId 不同说明换车后的画面重建还没执行 */
+let playerVariantId = state.variantId;
 view.scene.add(player.root);
 
 type Mode = 'parked' | 'driving' | 'auto';
@@ -117,6 +119,7 @@ function rebuildPlayer() {
   disposeTree(player.root);
   spec = specOf(currentVariant(state));
   player = makeVehicle(currentVariant(state));
+  playerVariantId = state.variantId;
   view.scene.add(player.root);
   if (mode === 'parked') drive.pose = parkedPose(spec, home);
   placeVehicle(player.root, spec, drive.pose);
@@ -309,7 +312,8 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     const r = await act((s) => selectVariant(s, now(), id));
     if (!r) return;
     if (!r.ok) return toast(r.error!);
-    rebuildPlayer();
+    // 出库可能已抢先按新车型重建并起步：车型没变就不再重建（避免打断进行中的路线显示）
+    if (playerVariantId !== state.variantId) rebuildPlayer();
   },
   async buy() {
     const r = await act((s) => buyAwning(s, now()));
@@ -324,19 +328,22 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   async out() {
     if (mode !== 'parked' || modeBusy) return;
-    const plan = planReverseOut(spec, home, [...staticShapes(), ...parkedNpcShapes()]);
-    if (!plan.ok) return toast(plan.reason!);
-    const end = plan.path[plan.path.length - 1];
     modeBusy = true;
+    let r: DepartResult | null;
     try {
-      const r = await act((s) => leaveHome(s, now(), { x: end.x, y: end.y, yaw: end.yaw }));
+      // 路线在事务内按存档里的最新车型规划：排在未提交的换车之后也不会用旧车型路线（issue #12）
+      r = await act((s) => departHome(s, now(), home, () => [...staticShapes(), ...parkedNpcShapes()]));
       // 等待提交期间画面可能已按其他标签页的存档重建：只在仍停在家位时起步
       if (!r || mode !== 'parked' || state.player.parkedHome) return;
     } finally {
       modeBusy = false;
     }
+    if (!r.ok) return toast(r.error!);
+    // 换车的画面重建可能还没跑到：先按路线所用车型重建玩家车，起点就是新车型的家位位姿
+    if (playerVariantId !== r.variantId) rebuildPlayer();
+    const end = r.path[r.path.length - 1];
     player.setAwning(false);
-    startAuto(plan.path, () => {
+    startAuto(r.path, () => {
       mode = 'driving';
       drive = { pose: { x: end.x, y: end.y, yaw: end.yaw }, speed: 0, curvature: 0 };
     });
