@@ -9,12 +9,12 @@ import { DAILY_GIFT, ECONOMY, NPC, SIDE_AWNING } from '../shared/config';
 import { pointInPoly, type Shape } from '../shared/geom2d';
 import { resolveDrive, type Impact } from '../shared/collision';
 import { displayGold } from '../shared/ledger';
-import { bodyCenter, footprint, specOf, stepDrive, type DriveState } from '../shared/kinematics';
+import { bodyCenter, footprint, specOf, stepDrive, type DriveState, type Pose } from '../shared/kinematics';
 import { feeCents, type CampEvent } from '../shared/npc';
 import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, planReverseOut, type PathPose } from '../shared/parking';
 import { hash32 } from '../shared/rng';
 import { devCommand, isDevEntry } from '../shared/devgate';
-import { IdbStore, requestWriter, SaveSlot, serialQueue, type LocksLike } from '../shared/save';
+import { IdbStore, requestWriter, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
 import {
   arriveHome,
   awningOut,
@@ -28,7 +28,7 @@ import {
   setAwningWanted,
   type GameState,
 } from '../shared/state';
-import { stepTraffic, type Agent } from '../shared/traffic';
+import { guardAutoRoute, stepTraffic, type Agent } from '../shared/traffic';
 import { PathRunner, playerObstacles } from './drive';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, type VehicleView } from './scene';
 
@@ -51,7 +51,8 @@ const locks = (navigator as unknown as { locks?: LocksLike }).locks;
 const store = typeof indexedDB === 'undefined' ? null : await IdbStore.open(indexedDB, DB_NAME).catch(() => null);
 const slot = store ? new SaveSlot(store, SAVE_KEY) : null;
 if (slot && (await slot.importIfEmpty(localStorage.getItem(LEGACY_SAVE_KEY)).catch(() => false))) localStorage.removeItem(LEGACY_SAVE_KEY);
-let state: GameState = (slot && (await slot.read().catch(() => null))) ?? newGame(now(), hash32(`${Date.now()}:${Math.random()}`));
+const freshGame = () => newGame(now(), hash32(`${Date.now()}:${Math.random()}`));
+let state: GameState = (slot && (await slot.read().catch(() => null))) ?? freshGame();
 /** 没有可靠的原子写入或单写者机制：整页只读，提示原因（GPT 审核 #4 第 2 轮第 1 条） */
 const unsupported = !slot ? '这个浏览器打不开 IndexedDB（可能是隐私模式），无法可靠保存，本页只读。' : !locks ? '这个浏览器不支持 Web Locks，无法保证只有一个标签页写存档，本页只读。' : null;
 /** 本标签页是否持有写权；拿到锁之前一律只读 */
@@ -93,6 +94,11 @@ let drive: DriveState = {
 };
 let autoRun: PathRunner | null = null;
 let autoDone: (() => void) | null = null;
+/** 自动驾驶途中停好的车变了时，从当前位姿重规划剩余路线；null = 不能重规划（被挡就交还手动） */
+let autoReplan: ((from: Pose, parked: Shape[]) => PathPose[] | null) | null = null;
+const AUTO_SPEED = 6;
+/** 停好的 NPC 集合变了（到位、跳过、同步增删），自动驾驶需要重新验证剩余路线 */
+let parkedDirty = false;
 let overview = false;
 
 function rebuildPlayer() {
@@ -141,6 +147,7 @@ function clearNpcs() {
  * 所有状态动作的事件都经 act() 走到这里，不会因为动作“消费”了事件而漏掉车辆或留下幽灵车。
  */
 function syncNpcs(events: CampEvent[], animate: boolean) {
+  parkedDirty = true; // 可能增删了停好的车（未播放动画时直接停在车位里）
   for (const e of events) {
     if (e.type !== 'depart') continue;
     const c = npcs.get(e.spotId);
@@ -179,6 +186,11 @@ function syncNpcs(events: CampEvent[], animate: boolean) {
   }
 }
 
+/** 停在车位里的 NPC 车身（规划玩家自动驾驶路线时的障碍）。行驶中的车不算：它们由 stepTraffic 逐帧让行 */
+function parkedNpcShapes(): Shape[] {
+  return [...npcs.values()].filter((c) => !c.runner && !c.pending).map((c) => ({ type: 'poly', pts: footprint(c.spec, c.pose), tag: 'npc' }));
+}
+
 /** 正在行驶（已进场）的 NPC 车身：玩家手动驾驶时的动态障碍 */
 function movingNpcShapes(): Shape[] {
   const out: Shape[] = [];
@@ -211,6 +223,12 @@ function act<R extends { events: CampEvent[] }>(fn: (s: GameState) => R, opts: {
     try {
       tx = await slot.transact(state, fn);
     } catch (e) {
+      if (e instanceof SaveSupersededError) {
+        // 存档已换成另一局（其他标签页重开）或被删除：这次动作针对的是旧局，不重做；画面切到存档里的那一局
+        adoptState(e.latest ?? freshGame());
+        toast(`${e.message}，这次操作没有生效`);
+        return null;
+      }
       console.error(e);
       toast('存档写入失败，这次操作没有生效');
       return null;
@@ -228,6 +246,7 @@ function act<R extends { events: CampEvent[] }>(fn: (s: GameState) => R, opts: {
 function resyncView() {
   autoRun = null;
   autoDone = null;
+  autoReplan = null;
   mode = state.player.parkedHome ? 'parked' : 'driving';
   const s = specOf(currentVariant(state));
   drive = { pose: state.player.parkedHome || !state.player.pose ? parkedPose(s, home) : state.player.pose, speed: 0, curvature: 0 };
@@ -241,12 +260,16 @@ function adoptLatest(): Promise<void> {
   return enqueue(async () => {
     if (!slot) return;
     const latest = await slot.read().catch(() => null);
-    if (latest && latest.rev !== state.rev) {
-      state = latest;
-      resyncView();
-      renderHud();
-    }
+    // 同时比较局标识与修订号：重开后新局的修订号可能与旧局相同（GPT 审核 #4 第 3 轮第 1 条）
+    if (latest && !sameVersion(latest, state)) adoptState(latest);
   });
+}
+
+/** 采纳另一份权威状态（其他标签页写入或重开的存档），整体重建画面 */
+function adoptState(s: GameState) {
+  state = s;
+  resyncView();
+  renderHud();
 }
 
 /** 拿到写权后：离线回放 + 每日礼物 */
@@ -290,7 +313,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   async out() {
     if (mode !== 'parked' || modeBusy) return;
-    const plan = planReverseOut(spec, home, staticShapes());
+    const plan = planReverseOut(spec, home, [...staticShapes(), ...parkedNpcShapes()]);
     if (!plan.ok) return toast(plan.reason!);
     const end = plan.path[plan.path.length - 1];
     modeBusy = true;
@@ -310,13 +333,19 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   park() {
     if (mode !== 'driving' || modeBusy) return;
     if (!writer) return toast(unsupported ?? READONLY_MSG);
-    const parked = [...npcs.values()].map((c) => ({ type: 'poly' as const, pts: footprint(c.spec, c.pose), tag: 'npc' }));
-    const plan = planParkIn(spec, drive.pose, home, [...staticShapes(), ...parked]);
+    const plan = planParkIn(spec, drive.pose, home, [...staticShapes(), ...parkedNpcShapes()]);
     if (!plan.ok) return toast(plan.reason!);
-    startAuto(plan.path, () => {
-      mode = 'driving'; // 提交失败时停在家位前，可继续手动驾驶
-      void settleHome();
-    });
+    startAuto(
+      plan.path,
+      () => {
+        mode = 'driving'; // 提交失败时停在家位前，可继续手动驾驶
+        void settleHome();
+      },
+      (from, parkedNow) => {
+        const p = planParkIn(spec, from, home, [...staticShapes(), ...parkedNow]);
+        return p.ok ? p.path : null;
+      },
+    );
   },
   overview() {
     overview = !overview;
@@ -331,7 +360,8 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     if (cmd.kind === 'denied') return toast(cmd.reason);
     if (cmd.kind === 'reset') {
       await enqueue(async () => {
-        await slot?.clear();
+        // 一个事务整份换成新局（新 sid），旧局的标签页之后的写入都会被拒绝
+        await slot?.reset(freshGame());
         localStorage.removeItem(LEGACY_SAVE_KEY);
         localStorage.removeItem(DEV_KEY);
         location.reload();
@@ -346,10 +376,12 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
 };
 
-function startAuto(path: PathPose[], done: () => void) {
+function startAuto(path: PathPose[], done: () => void, replan: typeof autoReplan = null) {
   mode = 'auto';
-  autoRun = new PathRunner(path, 6);
+  autoRun = new PathRunner(path, AUTO_SPEED);
   autoDone = done;
+  autoReplan = replan;
+  playerAgent.waited = 0;
 }
 
 async function settleHome() {
@@ -422,7 +454,7 @@ let prev = performance.now();
 let timeScale = 1;
 
 /** 玩家车作为交通参与者：手动驾驶时静止（位姿由物理更新），自动驾驶时沿路径走并让行；从不跳过 */
-const playerAgent: Agent = { id: 'player', spec, pose: drive.pose, runner: null, pending: false, waited: 0 };
+const playerAgent: Agent = { id: 'player', spec, pose: drive.pose, runner: null, pending: false, waited: 0, avoidParked: true };
 
 function frame(t: number) {
   // 先排下一帧：本帧逻辑即使抛异常，主循环也不会停
@@ -464,13 +496,35 @@ function frame(t: number) {
     }
     traffic.push(playerAgent);
   }
-  for (const c of [...npcs.values(), ...leaving]) if (c.runner) traffic.push(c);
+  // 停好的 NPC 以 parked 身份参与：只挡玩家自动驾驶（GPT 审核 #4 第 3 轮第 2 条）
+  for (const c of [...npcs.values(), ...leaving]) {
+    c.parked = !c.runner && !c.pending;
+    if (c.runner || c.parked) traffic.push(c);
+  }
   const step = stepTraffic(traffic, dt);
+  if ([...step.finished, ...step.skipped].some((a) => a !== playerAgent)) parkedDirty = true;
+
+  if (mode === 'auto' && autoRun) {
+    // 停好的车变了（NPC 刚停好、跳过动画、存档重建）：重新验证剩余路线，被挡则重规划，规划不了或被挡太久就交还手动
+    const parkedNow = [...npcs.values()].filter((c) => !c.runner && !c.pending); // 含本帧刚停好 / 跳过到位的车
+    const g = guardAutoRoute(playerAgent, parkedNow, parkedDirty, autoReplan ?? (() => null), AUTO_SPEED);
+    if (g.kind === 'replanned') autoRun = playerAgent.runner;
+    else if (g.kind === 'abort') {
+      autoRun = null;
+      autoDone = null;
+      autoReplan = null;
+      mode = 'driving';
+      drive = { pose: { ...playerAgent.pose }, speed: 0, curvature: 0 };
+      toast(`${g.reason}，已切回手动驾驶`);
+    }
+  }
+  parkedDirty = false;
 
   if (mode === 'auto' && autoRun) {
     drive = { pose: playerAgent.pose, speed: 0, curvature: 0 };
     if (step.finished.includes(playerAgent)) {
       autoRun = null;
+      autoReplan = null;
       const d = autoDone;
       autoDone = null;
       d?.();

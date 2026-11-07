@@ -9,7 +9,10 @@
  *    且浏览器向其他标签页同步 localStorage 是异步的，修订号检查无法保证原子，已弃用。
  * 2. 单写者（体验层）：Web Locks 独占锁，同一存档只有一个标签页可写，其他标签页只读跟随。
  *    抢锁（steal）交接瞬间旧写者可能多提交一次，由第 1 层兜住（新写者下次事务发现修订号变化，按最新存档重做）。
- * 3. 没有可靠机制时禁止写入：浏览器不支持 IndexedDB 或 Web Locks 时，客户端整页只读并提示原因（见 client/main.ts）。
+ * 3. 局标识（GPT 审核 #4 第 3 轮第 1 条）：只比较修订号分不出“重开前后的两局”（新局推进到同一 rev 时，
+ *    旧标签页会把旧局写回）。每局有不复用的 sid，事务同时比较 sid 与 rev；sid 不同时拒绝写入，
+ *    重开用一个事务整份替换存档，不留“先删后建”的空窗。
+ * 4. 没有可靠机制时禁止写入：浏览器不支持 IndexedDB 或 Web Locks 时，客户端整页只读并提示原因（见 client/main.ts）。
  */
 import { loadSave, type GameState } from './state';
 
@@ -85,6 +88,23 @@ export interface TxResult<T> {
 
 const clone = (s: GameState): GameState => loadSave(JSON.stringify(s))!;
 
+/** 两份状态是否是同一局的同一版本（局标识 + 修订号都相同） */
+export function sameVersion(a: GameState, b: GameState): boolean {
+  return a.sid === b.sid && a.rev === b.rev;
+}
+
+/**
+ * 调用方内存里的那一局已被取代（GPT 审核 #4 第 3 轮第 1 条）：存档已换成另一局（重开），或已被删除。
+ * 此时动作是针对旧局发出的，不能在新局上重做，也不能把旧局写回：事务中止、什么都不写。
+ * latest 为存档里现在的那一局（已删除时为 null），调用方应以它为准重建画面。
+ */
+export class SaveSupersededError extends Error {
+  constructor(readonly latest: GameState | null) {
+    super(latest ? '存档已在其他标签页重开，本页的旧局不再写入' : '存档已被删除，本页的旧局不再写入');
+    this.name = 'SaveSupersededError';
+  }
+}
+
 export class SaveSlot {
   constructor(
     private readonly store: AtomicStore,
@@ -97,10 +117,14 @@ export class SaveSlot {
 
   /**
    * 原子事务。fn 必须同步、只依赖传入的状态。fn 作用在副本上：事务失败时调用方的内存状态不被改动。
+   * - 存档与内存是同一局（sid 相同）：修订号不同就以最新存档为准重做动作（resynced）。
+   * - 存档已是另一局，或内存这一局写过（rev > 0）而存档已不存在：抛 SaveSupersededError，不写入。
+   * - 存档为空且内存是从未写过的新局（rev = 0）：首次写入。
    */
   transact<T>(mem: GameState, fn: (s: GameState) => T): Promise<TxResult<T>> {
     return this.store.update(this.key, (prev) => {
       const latest = loadSave(prev);
+      if (latest ? latest.sid !== mem.sid : mem.rev > 0) throw new SaveSupersededError(latest);
       const resynced = !!latest && latest.rev !== mem.rev;
       const s = resynced ? latest! : clone(mem);
       const result = fn(s);
@@ -109,14 +133,20 @@ export class SaveSlot {
     });
   }
 
+  /**
+   * 重开：在一个事务里用新局整份替换存档（新局 sid 不同、rev = 0），没有“先删后建”的空窗。
+   * 旧局的标签页之后任何写入都会因 sid 不同被拒绝（SaveSupersededError）。
+   */
+  reset(fresh: GameState): Promise<void> {
+    if (fresh.rev !== 0) throw new Error('重开只能写入从未保存过的新局');
+    const value = JSON.stringify(fresh);
+    return this.store.update(this.key, () => ({ value, result: undefined }));
+  }
+
   /** 只在存档为空时导入旧版 localStorage 存档；返回是否导入 */
   importIfEmpty(legacy: string | null): Promise<boolean> {
     const s = loadSave(legacy);
     return this.store.update(this.key, (prev) => (prev || !s ? { result: false } : { value: JSON.stringify(s), result: true }));
-  }
-
-  clear(): Promise<void> {
-    return this.store.update(this.key, () => ({ value: null, result: undefined }));
   }
 }
 

@@ -1,6 +1,6 @@
 /**
  * 游戏状态与动作：纯函数风格（就地修改传入的 state，返回事件），时间由调用方注入。
- * M1 单机存档在 localStorage；迁服务端时这些函数作为权威逻辑，nowMs 改由服务器提供。
+ * M1 单机存档在 IndexedDB（save.ts）；迁服务端时这些函数作为权威逻辑，nowMs 改由服务器提供。
  */
 import { ALL_VARIANTS, findVariant, type Variant } from '../data/models';
 import { RENTAL_SPOTS } from './camp';
@@ -27,11 +27,23 @@ export interface GameState {
   lastGiftDay: number | null;
   /** 存档修订号：每次写入 +1，用于发现其他标签页的写入（见 save.ts） */
   rev: number;
+  /**
+   * 局标识：每开一局随机生成、不复用（GPT 审核 #4 第 3 轮第 1 条）。
+   * 重开后新局的修订号可能与旧局相同，只比较 rev 分不出两局；save.ts 同时比较 sid 与 rev。
+   */
+  sid: string;
 }
 
-export function newGame(nowMs: number, seed: number): GameState {
+/** 新局标识：优先用 crypto.randomUUID，没有时退回时间 + 随机数（只需在同一浏览器内不重复） */
+export function newSaveId(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return c?.randomUUID ? c.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
+export function newGame(nowMs: number, seed: number, sid: string = newSaveId()): GameState {
   return {
     version: SAVE_VERSION,
+    sid,
     seed,
     variantId: findVariant(DEFAULT_VARIANT) ? DEFAULT_VARIANT : ALL_VARIANTS[0].id,
     ledger: newLedger(nowMs),
@@ -145,6 +157,8 @@ export function loadSave(json: string | null): GameState | null {
     const s = JSON.parse(json) as GameState;
     if (s.version !== SAVE_VERSION || !s.ledger || !s.camp || !Number.isSafeInteger(s.ledger.balance)) return null;
     if (!Number.isSafeInteger(s.rev)) s.rev = 0; // 本字段加入前的存档
+    // 局标识加入前的存档：按种子确定性补一个，多个标签页读同一份旧存档时得到同一个标识
+    if (typeof s.sid !== 'string' || !s.sid) s.sid = `legacy:${s.seed}`;
     return s;
   } catch {
     return null;

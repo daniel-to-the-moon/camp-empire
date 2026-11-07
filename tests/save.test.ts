@@ -5,7 +5,7 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
 import { auditBalance } from '../src/shared/ledger';
-import { IdbStore, requestWriter, SaveSlot, serialQueue, type AtomicStore, type LocksLike } from '../src/shared/save';
+import { IdbStore, requestWriter, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type AtomicStore, type LocksLike } from '../src/shared/save';
 import { buyAwning, claimDailyGift, loadSave, newGame, recordPose, type GameState } from '../src/shared/state';
 
 const T0 = Date.UTC(2026, 10, 5, 2);
@@ -116,6 +116,99 @@ describe('两个标签页读到同一修订号后交错提交（第 2 轮 blocke
   });
 });
 
+describe('重开后旧标签页不能覆盖新局（第 3 轮 blocker）', () => {
+  /** 旧局 seed=17 推进到 rev=2 并买了侧边帐；另一页重开为 seed=99 并推进到同样的 rev=2 */
+  async function resetScenario() {
+    const factory = new IDBFactory();
+    const oldTab = new SaveSlot(await IdbStore.open(factory, 'camp'), KEY);
+    const newTab = new SaveSlot(await IdbStore.open(factory, 'camp'), KEY);
+    let old = (await oldTab.transact(newGame(T0, 17), (s) => claimDailyGift(s, T0))).state;
+    old = (await oldTab.transact(old, (s) => buyAwning(s, T0 + MIN))).state;
+    expect(old.rev).toBe(2);
+    expect(old.awningOwned).toBe(true);
+
+    const fresh = newGame(T0 + 2 * MIN, 99);
+    await newTab.reset(fresh);
+    let cur = (await newTab.read())!;
+    expect(cur.rev).toBe(0);
+    cur = (await newTab.transact(cur, (s) => claimDailyGift(s, T0 + 3 * MIN))).state;
+    cur = (await newTab.transact(cur, (s) => claimDailyGift(s, T0 + 4 * MIN))).state;
+    expect(cur.rev).toBe(old.rev); // 修订号相同，只比较 rev 分不出两局
+    expect(cur.sid).not.toBe(old.sid);
+    return { oldTab, newTab, old, cur };
+  }
+
+  it('复现：相同修订号下旧页写入被拒绝，新局（seed=99）保持不变', async () => {
+    const { oldTab, newTab, old, cur } = await resetScenario();
+    const before = JSON.stringify(await newTab.read());
+    const err = await oldTab.transact(old, (s) => recordPose(s, T0 + 5 * MIN, { x: 1, y: 2, yaw: 0 })).catch((e) => e);
+    expect(err).toBeInstanceOf(SaveSupersededError);
+    expect((err as SaveSupersededError).latest!.seed).toBe(99);
+    const saved = (await newTab.read())!;
+    expect(JSON.stringify(saved)).toBe(before);
+    expect(saved.seed).toBe(99);
+    expect(saved.awningOwned).toBe(false); // 旧局的侧边帐没有回来
+    expect(saved.ledger.entries.some((e) => e.key === 'buy:side_awning')).toBe(false);
+    expect(sameVersion(saved, cur)).toBe(true);
+  });
+
+  it('旧页接管时 adoptLatest 的判断：同 rev 不同局也算“需要刷新”', async () => {
+    const { oldTab, old } = await resetScenario();
+    const latest = (await oldTab.read())!;
+    expect(latest.rev).toBe(old.rev);
+    expect(sameVersion(latest, old)).toBe(false);
+    // 采纳最新存档后，旧页再写入就在新局上正常进行
+    const t = await oldTab.transact(latest, (s) => claimDailyGift(s, T0 + 5 * MIN));
+    expect(t.resynced).toBe(false);
+    expect(t.state.seed).toBe(99);
+  });
+
+  it('重开与旧页写入同时在途：无论谁先提交，最终存档都是完整的新局', async () => {
+    for (const oldFirst of [true, false]) {
+      const factory = new IDBFactory();
+      const oldTab = new SaveSlot(await IdbStore.open(factory, 'camp'), KEY);
+      const newTab = new SaveSlot(await IdbStore.open(factory, 'camp'), KEY);
+      const old = (await oldTab.transact(newGame(T0, 17), (s) => claimDailyGift(s, T0))).state;
+      const fresh = newGame(T0 + MIN, 99);
+      const write = () => oldTab.transact(old, (s) => buyAwning(s, T0 + 2 * MIN)).catch((e) => e);
+      const reset = () => newTab.reset(fresh);
+      // 事务按创建顺序串行提交
+      const writeResult = oldFirst ? (await Promise.all([write(), reset()]))[0] : (await Promise.all([reset(), write()]))[1];
+      if (oldFirst) expect(writeResult).not.toBeInstanceOf(Error); // 先提交的旧局写入随后被重开整份替换
+      else expect(writeResult).toBeInstanceOf(SaveSupersededError);
+      expect(JSON.stringify(await newTab.read())).toBe(JSON.stringify(fresh));
+    }
+  });
+
+  it('存档被删除的空窗内提交：写过的旧局不会被写回，从未写过的新局可以首次写入', async () => {
+    const factory = new IDBFactory();
+    const store = await IdbStore.open(factory, 'camp');
+    const slot = new SaveSlot(store, KEY);
+    const old = (await slot.transact(newGame(T0, 17), (s) => claimDailyGift(s, T0))).state;
+    await store.update(KEY, () => ({ value: null, result: undefined })); // 存档被删除（如用户清除站点数据）
+    const err = await slot.transact(old, (s) => buyAwning(s, T0 + MIN)).catch((e) => e);
+    expect(err).toBeInstanceOf(SaveSupersededError);
+    expect((err as SaveSupersededError).latest).toBeNull();
+    expect(await slot.read()).toBeNull();
+
+    const t = await slot.transact(newGame(T0, 23), (s) => claimDailyGift(s, T0));
+    expect(t.state.rev).toBe(1);
+    expect((await slot.read())!.seed).toBe(23);
+  });
+
+  it('reset 只接受从未保存过的新局', async () => {
+    const slot = new SaveSlot(await IdbStore.open(new IDBFactory(), 'camp'), KEY);
+    const g = newGame(T0, 1);
+    g.rev = 3;
+    expect(() => slot.reset(g)).toThrow();
+  });
+
+  it('每局的 sid 都不同', () => {
+    const ids = new Set(Array.from({ length: 50 }, () => newGame(T0, 1).sid));
+    expect(ids.size).toBe(50);
+  });
+});
+
 describe('顺序写入与事务细节', () => {
   it('B 先驾驶保存、A 再购买、B 再保存：三次写入都保留', async () => {
     const {
@@ -183,12 +276,12 @@ describe('顺序写入与事务细节', () => {
     expect(await new SaveSlot(await IdbStore.open(new IDBFactory(), 'x'), KEY).importIfEmpty('坏数据')).toBe(false);
   });
 
-  it('clear 删除存档', async () => {
-    const {
-      slots: [a],
-    } = await tabs(1);
-    await a.clear();
-    expect(await a.read()).toBeNull();
+  it('旧版存档没有局标识：按种子确定性补齐，两次读取得到同一个 sid', () => {
+    const legacy = newGame(T0, 5) as Partial<GameState>;
+    delete legacy.sid;
+    const json = JSON.stringify(legacy);
+    expect(loadSave(json)!.sid).toBe('legacy:5');
+    expect(loadSave(json)!.sid).toBe(loadSave(json)!.sid);
   });
 
   it('serialQueue：按调用顺序执行，前一个失败不影响后一个', async () => {
