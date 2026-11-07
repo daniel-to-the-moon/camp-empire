@@ -25,9 +25,11 @@ jobs:
     if: github.event_name != 'issue_comment' || contains(github.event.comment.body, '@gpt') || contains(github.event.comment.body, '@GPT')
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # queue: max 保留同一 issue 的全部排队请求（默认只留一个 pending，会挤掉尚未处理的 @gpt 点名）
     concurrency:
       group: gpt-discuss-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       issues: read
@@ -69,7 +71,7 @@ jobs:
           cat scripts/devloop/discuss-prompt.md "$RUNNER_TEMP/gpt/thread.md" > "$RUNNER_TEMP/gpt/prompt.md"
       - name: GPT 评审
         if: steps.gate.outputs.run == 'true'
-        uses: openai/codex-action@83eeca45b831921e73d1f6a7955efccc568fe4e8 # v1.13
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1.13（标签指向的提交，非标签对象）
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           prompt-file: ${{ runner.temp }}/gpt/prompt.md

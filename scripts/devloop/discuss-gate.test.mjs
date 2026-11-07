@@ -66,6 +66,8 @@ test('gpt-discuss.yml：评审任务只读、发评论任务不跑模型，并�
   assert.doesNotMatch(review, /: write$/m);
   assert.match(review, /permission-profile: ':read-only'/);
   assert.match(review, /node scripts\/devloop\/discuss-gate\.mjs/);
+  assert.match(review, /uses: openai\/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 /); // 固定为 v1.13 指向的提交
+  assert.match(review, /^ {6}cancel-in-progress: false\n {6}queue: max$/m); // 不挤掉排队中的 @gpt 点名
   assert.match(post, /^ {6}issues: write$/m);
   assert.doesNotMatch(post, /uses: openai\/codex-action/);
 });
