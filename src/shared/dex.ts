@@ -75,23 +75,34 @@ export function cycleOf(parkingId: string): number {
 /**
  * 按营地权威状态补算漏计的到访（幂等）：每个车位已结束的循环 0…cycle−1 加上正在停靠的那位。
  * 已离开的车型按种子确定（日期未知，记 null）；正在停靠的用存档里的车型与到达时刻。
+ *
+ * 分两遍：先回填所有车位已结束的循环，再记所有正在停靠的。已结束的循环一定早于任何车位当前停靠的到达，
+ * 若交替处理，A 车位当前停靠的车型 X 会先记下日期，B 车位随后回填的更早一次 X（日期未知）无法撤销它，
+ * 把较晚的日期误当“首次”，且结果依赖车位顺序（GPT 审核 #40 第 1 轮）。
+ * 迁移前已有的首次日期不受影响：recordVisit 的 null 不会清除已有日期（漏计的循环都发生在该图鉴写入之后）。
  */
 export function reconcileDex(dex: Dex, camp: CampSim): void {
   for (const sp of camp.spots) {
     for (let c = dex.counted[sp.id] ?? 0; c < sp.cycle; c++) recordVisit(dex, sp.id, c, variantForCycle(camp.seed, sp.id, c), null);
+  }
+  for (const sp of camp.spots) {
     if (sp.stay) recordVisit(dex, sp.id, sp.cycle, sp.stay.variantId, sp.stay.arriveMs);
   }
+}
+
+/** 普通对象（非 null、非数组）：数组上按字符串键写入的属性 JSON.stringify 不保存，会导致游标丢失、重复累计 */
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return !!x && typeof x === 'object' && !Array.isArray(x);
 }
 
 /** 存档结构校验：不合法时由 loadSave 重建（重建 = 空图鉴 + reconcileDex 回填，不拒绝整份存档） */
 export function validDex(x: unknown): x is Dex {
   const d = x as Dex;
-  if (!d || typeof d !== 'object' || !d.entries || typeof d.entries !== 'object' || !d.counted || typeof d.counted !== 'object') return false;
+  if (!isRecord(d) || !isRecord(d.entries) || !isRecord(d.counted)) return false;
   const okCount = Object.values(d.counted).every((v) => Number.isSafeInteger(v) && v >= 0);
   const okEntries = Object.values(d.entries).every(
     (e) =>
-      !!e &&
-      typeof e === 'object' &&
+      isRecord(e) &&
       Number.isSafeInteger(e.visits) &&
       e.visits >= 0 &&
       typeof e.driven === 'boolean' &&

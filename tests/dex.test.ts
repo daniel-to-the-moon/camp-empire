@@ -185,6 +185,55 @@ describe('存档迁移', () => {
     expect(totalVisits(m)).toBe(startedStays(m));
   });
 
+  it('跨车位同车型：历史到访（日期未知）早于另一车位当前停靠，首次日期仍为未记录，且与车位顺序无关', () => {
+    const base = newGame(T0, 17).camp;
+    const x = variantForCycle(base.seed, 'B', 0);
+    const spA = { id: 'A', kind: 'private' as const, cycle: 0, nextArrivalMs: null, stay: { parkingId: 'A#0', variantId: x, arriveMs: T0 + 5 * H, departMs: T0 + 9 * H } };
+    const spB = { id: 'B', kind: 'private' as const, cycle: 1, nextArrivalMs: T0 + 6 * H, stay: null };
+    const results = [
+      [spA, spB],
+      [spB, spA],
+    ].map((spots) => {
+      const d = emptyDex();
+      reconcileDex(d, { ...base, spots: structuredClone(spots) });
+      return d;
+    });
+    for (const d of results) expect(d.entries[x]).toMatchObject({ visits: 2, firstVisitMs: null });
+    expect(results[0]).toEqual(results[1]);
+    expect(dexView(results[0]).groups.flatMap((g) => g.slots).find((s) => s.id === x)!.firstVisit).toBe('unknown');
+  });
+
+  it('跨车位同车型、真实回放后丢失图鉴：迁移结果与车位顺序无关', () => {
+    const s = newGame(T0, 11);
+    tick(s, T0 + 6 * 24 * H);
+    const fwd = emptyDex();
+    reconcileDex(fwd, s.camp);
+    const rev = emptyDex();
+    reconcileDex(rev, { ...s.camp, spots: [...s.camp.spots].reverse() });
+    expect(rev.entries).toEqual(fwd.entries);
+  });
+
+  it.each([
+    ['entries 为数组', (o: { dex: Record<string, unknown> }) => (o.dex.entries = [])],
+    ['counted 为数组', (o: { dex: Record<string, unknown> }) => (o.dex.counted = [])],
+    ['dex 为数组', (o: { dex: unknown }) => (o.dex = [])],
+  ])('dex 结构损坏（%s）：拒绝并重建，连续存取档次数稳定、记录不丢', (_name, corrupt) => {
+    const s = newGame(T0, 13);
+    tick(s, T0 + 2 * 24 * H);
+    const o = JSON.parse(JSON.stringify(s));
+    corrupt(o);
+    expect(validDex(o.dex)).toBe(false);
+    const m = loadSave(JSON.stringify(o))!;
+    expect(m).not.toBeNull();
+    expect(validDex(m.dex)).toBe(true);
+    expect(Array.isArray(m.dex.entries) || Array.isArray(m.dex.counted)).toBe(false);
+    expect(totalVisits(m)).toBe(startedStays(m));
+    const again = reload(reload(m));
+    expect(again.dex).toEqual(m.dex);
+    expect(totalVisits(again)).toBe(startedStays(again));
+    expect(again.dex.entries[again.variantId].driven).toBe(true);
+  });
+
   it('reconcileDex 对新局不计任何到访', () => {
     const s = newGame(T0, 2);
     const d = emptyDex();
