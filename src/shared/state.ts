@@ -124,9 +124,23 @@ export function claimDailyGift(s: GameState, nowMs: number): { gift: DailyGift |
   return { gift: { gold, amount, streak: n, day: k }, events };
 }
 
-/** 界面公示：按有效时间所在的上海日，今天第几天、明天能领多少（只读，不改状态） */
-export function giftStreakView(s: GameState, nowMs: number): StreakView {
-  return streakView(s.giftStreak, dayKey(effectiveNow(s, nowMs)));
+/** 界面公示：梯度视图 + 今天实际已领金额（来自流水，不是梯度推算） */
+export interface GiftStreakView extends StreakView {
+  /**
+   * 今天实际已领的礼物毛额（金，软上限前，与回访面板的 gift.gold 同口径）；未领为 null。
+   * 读当天 gift:<day> 流水：旧版本按旧规则发的 50 / 80 金迁移后连续天数补为 1，梯度会算成 30，不能用梯度推算。
+   */
+  claimedGold: number | null;
+}
+
+/** 界面公示：按有效时间所在的上海日，今天第几天、明天能领多少、今天实际已领多少（只读，不改状态） */
+export function giftStreakView(s: GameState, nowMs: number): GiftStreakView {
+  const v = streakView(s.giftStreak, dayKey(effectiveNow(s, nowMs)));
+  if (!v.claimedToday) return { ...v, claimedGold: null };
+  const key = `gift:${s.giftStreak!.day}`;
+  const e = s.ledger.entries.find((x) => x.kind === 'daily_gift' && x.key === key);
+  // 找不到流水（理论上不会发生：领取与记流水同一步完成）时退回梯度金额
+  return { ...v, claimedGold: e ? Math.floor(e.gross / 100) : v.todayGold };
 }
 
 /**

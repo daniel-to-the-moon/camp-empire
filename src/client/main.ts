@@ -691,7 +691,7 @@ function renderHud() {
     <h2>每日</h2>
     <p class="hint">每天首次登录，营地管理员巡视送礼。连续登录 7 日梯度（金额固定，无抽取，第 8 天起循环）：</p>
     <ol class="ladder">${LADDER.map((gold, i) => `<li class="${i + 1 === sv.today ? 'today' : ''}"><span>第 ${i + 1} 天</span><b>${gold}</b></li>`).join('')}</ol>
-    <p>今天第 ${sv.today} 天（连续 ${sv.streak} 天）${sv.claimedToday ? `，已领 ${sv.todayGold} 金` : `，可领 ${sv.todayGold} 金`}；明天继续登录可领 ${sv.tomorrowGold} 金。</p>
+    <p>今天第 ${sv.today} 天（连续 ${sv.streak} 天）${sv.claimedToday ? `，已领 ${sv.claimedGold} 金` :`，可领 ${sv.todayGold} 金`}；明天继续登录可领 ${sv.tomorrowGold} 金。</p>
     <p class="fine">断签只回到第 1 天，已领的金币不扣、不清零。连续 7 天共 ${LADDER.reduce((s, g) => s + g, 0)} 金，平均每天 ${ladderMeanGold().toFixed(1)} 金（提案值）。日界为上海时间 0 点。</p>
     <p class="fine">今日已入账 ${displayGold(today.issued)} 金；当日收入超过 ${ECONOMY.softCapThresholdGold} 金的部分按 ${ECONOMY.softCapRateAbove * 100}% 发放。</p>`;
 

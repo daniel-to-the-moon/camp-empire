@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { DAILY_GIFT } from '../src/shared/config';
-import { auditBalance, dayKey } from '../src/shared/ledger';
+import { auditBalance, credit, dayKey } from '../src/shared/ledger';
 import { claimDailyGift, giftStreakView, loadSave, newGame, type GameState } from '../src/shared/state';
 import { cycleDay, giftGoldForStreak, LADDER, ladderMeanGold, nextStreak, streakView } from '../src/shared/streak';
 
@@ -129,6 +129,44 @@ describe('存档迁移', () => {
     expect(claimDailyGift(m, nov(5)).gift).toMatchObject({ gold: 40, streak: 2 });
   });
 
+  /** 模拟旧版（三档随机）当天领取：直接按旧规则入账 gift:<day>，只推进 lastGiftDay */
+  const legacyClaim = (s: GameState, at: number, gold: number) => {
+    credit(s.ledger, { key: `gift:${dayKey(at)}`, atMs: at, kind: 'daily_gift', gross: gold * 100, note: `旧版礼物 ${gold} 金` });
+    s.lastGiftDay = dayKey(at);
+  };
+
+  it.each([50, 80])('旧版当天已领 %i 金后迁移：显示实际已领金额，余额保留，当天不重复发放', (gold) => {
+    const s = newGame(nov(1), 7);
+    legacyClaim(s, nov(1), gold);
+    const legacy = JSON.parse(JSON.stringify(s));
+    delete legacy.giftStreak;
+    const m = loadSave(JSON.stringify(legacy))!;
+    expect(m.ledger.balance).toBe(s.ledger.balance);
+    expect(auditBalance(m.ledger)).toBe(true);
+    const v = giftStreakView(m, nov(1, 20));
+    expect(v).toMatchObject({ claimedToday: true, streak: 1, todayGold: 30, claimedGold: gold, tomorrowGold: 40 });
+    expect(claimDailyGift(m, nov(1, 21)).gift).toBeNull();
+    expect(m.ledger.balance).toBe(s.ledger.balance);
+    expect(giftsOf(m)).toHaveLength(1);
+    // 次日按梯度第 2 天
+    expect(claimDailyGift(m, nov(2)).gift).toMatchObject({ gold: 40, streak: 2 });
+    expect(giftStreakView(m, nov(2, 20)).claimedGold).toBe(40);
+  });
+
+  it('旧版本标签页当天按旧规则领了 80 金后切回新版：显示 80 金，当天不重复发放', () => {
+    const s = newGame(nov(1), 7);
+    claimDailyGift(s, nov(1));
+    claimDailyGift(s, nov(2));
+    legacyClaim(s, nov(3), 80); // 旧标签页 3 日领取，giftStreak 仍停在 2 日
+    const before = s.ledger.balance;
+    const m = reload(s);
+    expect(m.giftStreak).toEqual({ day: dayKey(nov(3)), n: 1 });
+    expect(giftStreakView(m, nov(3, 20))).toMatchObject({ claimedToday: true, todayGold: 30, claimedGold: 80 });
+    expect(claimDailyGift(m, nov(3, 21)).gift).toBeNull();
+    expect(m.ledger.balance).toBe(before);
+    expect(giftsOf(m).map((e) => e.gross / 100)).toEqual([30, 40, 80]);
+  });
+
   it('giftStreak 结构损坏：按 lastGiftDay 补齐而不是丢弃存档', () => {
     const s = newGame(nov(1), 7);
     claimDailyGift(s, nov(1));
@@ -140,9 +178,9 @@ describe('存档迁移', () => {
 describe('界面公示', () => {
   it('今天第几天、明天能领多少（今天未领 / 已领）', () => {
     const s = newGame(nov(1), 7);
-    expect(giftStreakView(s, nov(1))).toEqual({ streak: 1, today: 1, todayGold: 30, claimedToday: false, tomorrowGold: 40 });
+    expect(giftStreakView(s, nov(1))).toEqual({ streak: 1, today: 1, todayGold: 30, claimedToday: false, tomorrowGold: 40, claimedGold: null });
     for (let d = 1; d <= 7; d++) claimDailyGift(s, nov(d));
-    expect(giftStreakView(s, nov(7, 20))).toEqual({ streak: 7, today: 7, todayGold: 120, claimedToday: true, tomorrowGold: 30 });
+    expect(giftStreakView(s, nov(7, 20))).toEqual({ streak: 7, today: 7, todayGold: 120, claimedToday: true, tomorrowGold: 30, claimedGold: 120 });
     // 8 日还没领：按现在领取计算
     expect(giftStreakView(s, nov(8))).toMatchObject({ streak: 8, today: 1, todayGold: 30, claimedToday: false });
     // 断签一天后再看：第 1 天
