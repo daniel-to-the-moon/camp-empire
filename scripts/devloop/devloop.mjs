@@ -20,11 +20,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCi } from './ci.mjs';
 import { acquireLock, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
-import { decide, eligible, marker, parseMarkers, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, eligible, marker, roundsUsed, shouldReview } from './policy.mjs';
+import { createPrState } from './prstate.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = resolve(HERE, '../..');
-const REPO = process.env.DEVLOOP_REPO ?? 'shengjun89/camp-empire';
+const REPO = process.env.DEVLOOP_REPO ?? 'daniel-to-the-moon/camp-empire';
 const HOME = resolve(process.env.DEVLOOP_HOME ?? join(REPO_DIR, '..', 'ce-devloop'));
 const REVIEW_MODEL = process.env.DEVLOOP_REVIEW_MODEL ?? 'gpt-6-astra';
 const CI_TIMEOUT_MS = 30 * 60_000;
@@ -50,15 +51,8 @@ function markerKey() {
   return readFileSync(f, 'utf8').trim();
 }
 const KEY = markerKey();
-const REVIEWER = sh('gh', ['api', 'user', '-q', '.login']);
-
-function prState(pr) {
-  const m = JSON.parse(
-    gh(['pr', 'view', String(pr), '--json', 'title,body,headRefOid,headRefName,isCrossRepository,baseRefName,state,isDraft,mergeable,labels,comments']),
-  );
-  const comments = m.comments.map((c) => ({ author: c.author?.login ?? '', body: c.body }));
-  return { ...m, labels: m.labels.map((l) => l.name), markers: parseMarkers(comments, { key: KEY, reviewer: REVIEWER, pr }) };
-}
+/** PR 状态与审核方标记；审核方账号每次重新查询（原因见 prstate.mjs，测试见 prstate.test.mjs） */
+const prState = createPrState({ gh: (args) => sh('gh', args), repo: REPO, key: KEY });
 
 function comment(pr, body) {
   mkdirSync(HOME, { recursive: true });
