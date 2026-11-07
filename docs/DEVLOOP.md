@@ -127,7 +127,7 @@ tail -f ../ce-devloop/watch.log                                 # 看日志
 
 ## 八、发布与托管
 
-- **内部验收环境：Cloudflare Pages + Cloudflare Access**（用户 2026-11-07 选定）。main 每次更新：`ci.yml` 的 `test` 任务构建 `dist` 并上传为 Actions 产物；`pages` 任务下载产物，用固定版本的 wrangler 上传。`pages` 任务不检出、不执行仓库代码，Cloudflare 凭据只在该任务中。
+- **内部验收环境：Cloudflare Pages + Cloudflare Access**（用户 2026-11-07 选定）。main 每次更新：`ci.yml` 的 `test` 任务构建 `dist` 并上传为 Actions 产物；`pages` 任务下载产物，用固定版本的 wrangler 上传（逻辑在 `scripts/devloop/pages.sh`，`pages.test.mjs` 覆盖）。`pages` 任务只稀疏检出 main 的 `scripts/devloop`，不执行应用代码，Cloudflare 凭据只在该任务中。项目按名字经 Cloudflare API 精确查询或创建；发布串行，上传前核对提交仍是 main 最新，过期运行跳过。
   - 凭据：secret `CLOUDFLARE_API_TOKEN`（只含 Account → Cloudflare Pages → Edit 权限）、`CLOUDFLARE_ACCOUNT_ID`。
   - 开关：仓库变量 `PAGES_DEPLOY=true` 才上传；未开启时只确保项目存在并在运行摘要里打印 `pages.dev` 地址。
   - **顺序**：先在 Cloudflare Zero Trust → Access 为该地址（含 `*.<项目>.pages.dev` 预览地址）建应用、只允许指定邮箱，再设 `PAGES_DEPLOY=true`。未配 Access 就上传等于对公众开放。
