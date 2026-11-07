@@ -27,9 +27,10 @@ const server = createServer((req, res) => {
       // 假的 pages.dev 站点：按 Host 判断是否被 Access 保护
       const host = (req.headers.host || '').split(':')[0];
       const mode = state.access[host] ?? state.access['*'] ?? 'open';
-      if (mode === 'redirect') { res.writeHead(302, { location: 'https://team.cloudflareaccess.com/cdn-cgi/access/login' }); return res.end(); }
-      if (mode === 'forbidden') { res.writeHead(403); return res.end(); }
-      if (mode === 'elsewhere') { res.writeHead(302, { location: 'https://example.com/' }); return res.end(); }
+      if (mode === 'redirect') { res.writeHead(302, { location: `https://team.cloudflareaccess.com/cdn-cgi/access/login/${host}?kid=k&redirect_url=%2F` }); return res.end(); }
+      if (mode === 'forbidden') { res.writeHead(403); return res.end('Browser Integrity Check'); }
+      if (mode === 'unauthorized') { res.writeHead(401); return res.end(); }
+      if (mode.startsWith('to:')) { res.writeHead(302, { location: mode.slice(3) }); return res.end(); }
       res.writeHead(200); return res.end('<html>');
     }
     const m = req.url.match(/^\/accounts\/([^/]+)\/pages\/projects(?:\/([^/]+))?$/);
@@ -141,20 +142,29 @@ test('开关开启且是 main 最新提交：上传正确的产物目录与提�
   assert.match(t.wrangler(), /^pages deploy \S+\/dist --project-name camp-empire --branch main --commit-hash sha1 /m);
 });
 
-test('Access 兜底：正式或预览地址未被拦截（直接可访问、跳到别处）→ 拒绝上传；403 拦截也算受保护', async () => {
-  for (const access of [
+test('Access 兜底：只有重定向到 https://<团队>.cloudflareaccess.com/cdn-cgi/access/login 才算受保护', async () => {
+  const refuse = [
     { '*': 'open' },
-    { '*': 'elsewhere' },
-    { 'camp-empire.pages.dev': 'redirect', '*': 'open' }, // 只保护了正式地址，预览地址公开
+    { '*': 'forbidden' }, // 反机器人 403：不能证明有 Access
+    { '*': 'unauthorized' },
+    { '*': 'to:https://example.com/' },
+    { '*': 'to:https://evil.com/?next=team.cloudflareaccess.com/cdn-cgi/access/login' },
+    { '*': 'to:http://team.cloudflareaccess.com/cdn-cgi/access/login' }, // 非 https
+    { '*': 'to:https://team.cloudflareaccess.com.evil.com/cdn-cgi/access/login' }, // 主机后缀伪装
+    { '*': 'to:https://cloudflareaccess.com/cdn-cgi/access/login' }, // 缺团队子域
+    { '*': 'to:https://team.cloudflareaccess.com/other' }, // 路径不对
+    { '*': 'to:https://team.cloudflareaccess.com/cdn-cgi/access/loginx' },
+    { 'camp-empire.pages.dev': 'redirect', '*': 'open' }, // 只保护了正式地址
     { 'camp-empire.pages.dev': 'open', '*': 'redirect' }, // 只保护了预览地址
-  ]) {
+  ];
+  for (const access of refuse) {
     const t = setup({ projects: ['camp-empire'], access });
     const r = await t.run({ DEPLOY: 'true' });
     assert.notEqual(r.code, 0, JSON.stringify(access));
-    assert.match(r.err, /未被 Cloudflare Access 保护/);
-    assert.equal(t.wrangler(), '');
+    assert.match(r.err, /未确认受 Cloudflare Access 保护/);
+    assert.equal(t.wrangler(), '', JSON.stringify(access));
   }
-  const ok = setup({ projects: ['camp-empire'], access: { '*': 'forbidden' } });
+  const ok = setup({ projects: ['camp-empire'], access: { '*': 'redirect' } });
   assert.equal((await ok.run({ DEPLOY: 'true' })).code, 0);
   assert.notEqual(ok.wrangler(), '');
 });

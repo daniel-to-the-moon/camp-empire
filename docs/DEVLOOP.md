@@ -127,7 +127,7 @@ tail -f ../ce-devloop/watch.log                                 # 看日志
 
 ## 八、发布与托管
 
-- **内部验收环境：Cloudflare Pages + Cloudflare Access**（用户 2026-11-07 选定）。main 每次更新：`ci.yml` 的 `test` 任务构建 `dist` 并上传为 Actions 产物；`pages` 任务下载产物，用固定版本的 wrangler 上传（逻辑在 `scripts/devloop/pages.sh`，`pages.test.mjs` 覆盖）。`pages` 任务只稀疏检出 main 的 `scripts/devloop`，不执行应用代码，Cloudflare 凭据只在该任务中。项目按名字经 Cloudflare API 精确查询或创建；发布串行且保留全部排队（`queue: max`），上传前核对提交仍是 main 最新、过期运行跳过，并确认正式与预览地址都被 Access 拦截。
+- **内部验收环境：Cloudflare Pages + Cloudflare Access**（用户 2026-11-07 选定）。main 每次更新：`ci.yml` 的 `test` 任务构建 `dist` 并上传为 Actions 产物；`pages` 任务下载产物，用固定版本的 wrangler 上传（逻辑在 `scripts/devloop/pages.sh`，`pages.test.mjs` 覆盖）。`pages` 任务只稀疏检出 main 的 `scripts/devloop`，不执行应用代码，Cloudflare 凭据只在该任务中。项目按名字经 Cloudflare API 精确查询或创建；发布串行且保留全部排队（`queue: max`），上传前核对提交仍是 main 最新、过期运行跳过，并确认正式与预览地址都重定向到 Access 登录页。
   - 凭据：secret `CLOUDFLARE_API_TOKEN`（只含 Account → Cloudflare Pages → Edit 权限）、`CLOUDFLARE_ACCOUNT_ID`。
   - 开关：仓库变量 `PAGES_DEPLOY=true` 才上传；未开启时只确保项目存在并在运行摘要里打印 `pages.dev` 地址。
   - **顺序**（按 [Cloudflare 官方步骤](https://developers.cloudflare.com/pages/platform/known-issues/#enable-access-on-your-pagesdev-domain)）：
@@ -137,7 +137,7 @@ tail -f ../ce-devloop/watch.log                                 # 看日志
     4. 回到项目 Settings → General，**再次 Enable access policy**，重新生成预览地址 `*.<项目>.pages.dev` 的策略。确认共有两条：正式地址一条、预览地址一条。
     5. 两条策略的规则都只允许指定邮箱（Include → Emails）。
     6. **验证**：无痕窗口分别打开正式地址和任一预览地址（如 `x.<项目>.pages.dev`），都应跳到 Cloudflare Access 登录页；用允许的邮箱能登录。
-    7. 再设 `PAGES_DEPLOY=true`。另有兜底：`pages.sh` 每次上传前用未登录请求检查正式与预览地址都被 Access 拦截（401/403 或跳到 `cloudflareaccess.com`），否则拒绝上传。
+    7. 再设 `PAGES_DEPLOY=true`。另有兜底：`pages.sh` 每次上传前用未登录请求检查正式与预览地址，都必须重定向到 `https://<团队>.cloudflareaccess.com/cdn-cgi/access/login…`（协议、主机后缀、路径严格匹配），否则拒绝上传。普通 401/403 不算：Cloudflare 的 Browser Integrity Check 等反机器人机制也会对 CI 返回 403。
   - 绑定自定义域名时，需在 Zero Trust → Access → Applications 另建 Self-hosted 应用覆盖该域名；且已有 Access 策略的域名不能再添加为 Pages 自定义域名（官方已知问题）。
   - 不用 Vercel：Hobby 套餐条款限非商业用途。Cloudflare 免费套餐条款未见商用限制（禁止在免费服务上收集信用卡信息），官方条款原文**待核实**。
 - **对国内公众上线（待用户决定）**：Cloudflare 在中国大陆访问偏慢，`*.pages.dev` 常不可达。届时改用国内平台（如腾讯 EdgeOne Pages、阿里云 ESA Pages）+ ICP 备案域名；网络游戏商业运营还涉及版号、实名与防沉迷，具体要求**待核实**。构建产物是纯静态文件，更换平台只需改发布任务。
