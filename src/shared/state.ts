@@ -4,11 +4,11 @@
  */
 import { ALL_VARIANTS, findVariant, type Variant } from '../data/models';
 import { RENTAL_SPOTS } from './camp';
-import { DAILY_GIFT, SIDE_AWNING } from './config';
+import { SIDE_AWNING } from './config';
 import { collect, credit, dayKey, emptyPending, newLedger, spend, validPending, type Ledger } from './ledger';
 import type { Pose } from './kinematics';
 import { advanceCamp, newCampSim, type CampEvent, type CampSim } from './npc';
-import { pickWeighted, uniform } from './rng';
+import { cycleDay, giftGoldForStreak, nextStreak, streakView, validStreak, type GiftStreak, type StreakView } from './streak';
 
 /** 3：账本加入待收取池（#28）。v2 存档在 loadSave 中迁移，已入账余额与流水原样保留 */
 export const SAVE_VERSION = 3;
@@ -26,6 +26,11 @@ export interface GameState {
   /** 玩家车：停在家位，或在营地里某个位姿 */
   player: { parkedHome: boolean; pose: Pose | null };
   lastGiftDay: number | null;
+  /**
+   * 连续登录（#29）：上次领取的上海日与当时的连续天数，day 恒等于 lastGiftDay。
+   * 不一致（本字段加入前的存档，或旧版本标签页按旧规则领过礼物）时 loadSave 按“lastGiftDay 那天是第 1 天”补齐。
+   */
+  giftStreak: GiftStreak | null;
   /** 存档修订号：每次写入 +1，用于发现其他标签页的写入（见 save.ts） */
   rev: number;
   /**
@@ -53,6 +58,7 @@ export function newGame(nowMs: number, seed: number, sid: string = newSaveId()):
     awningWanted: true,
     player: { parkedHome: true, pose: null },
     lastGiftDay: null,
+    giftStreak: null,
     rev: 0,
   };
 }
@@ -91,20 +97,36 @@ export interface ActionResult {
   events: CampEvent[];
 }
 
-/** 每日首次登录礼物（营地管理员巡视）。同一上海日只发一次；按有效时间计日，领取日期只进不退。 */
-export function claimDailyGift(s: GameState, nowMs: number): { gift: { gold: number; amount: number } | null; events: CampEvent[] } {
+/** 发放的每日礼物：streak 为连续天数，day 为 7 日循环的第几天（1…7） */
+export interface DailyGift {
+  gold: number;
+  amount: number;
+  streak: number;
+  day: number;
+}
+
+/**
+ * 每日首次登录礼物（营地管理员巡视，#29 7 日梯度）。同一上海日只发一次；按有效时间计日，领取日期只进不退
+ * （时钟回拨时有效时间停在已回放到的时刻，不会重复发放）。昨天领过则连续天数 +1，否则回到第 1 天；
+ * 断签不扣已得、不清零。金额固定，无概率。
+ */
+export function claimDailyGift(s: GameState, nowMs: number): { gift: DailyGift | null; events: CampEvent[] } {
   const events = tick(s, nowMs);
   const t = effectiveNow(s, nowMs);
   const day = dayKey(t);
   if (s.lastGiftDay !== null && day <= s.lastGiftDay) return { gift: null, events };
-  const i = pickWeighted(
-    uniform(s.seed, `gift:${day}`),
-    DAILY_GIFT.map((g) => g.p),
-  );
-  const gold = DAILY_GIFT[i].gold;
-  const amount = credit(s.ledger, { key: `gift:${day}`, atMs: t, kind: 'daily_gift', gross: gold * 100, note: `管理员巡视送礼 ${gold} 金` });
+  const n = nextStreak(s.giftStreak, day);
+  const gold = giftGoldForStreak(n);
+  const k = cycleDay(n);
+  const amount = credit(s.ledger, { key: `gift:${day}`, atMs: t, kind: 'daily_gift', gross: gold * 100, note: `连续登录第 ${k} 天，管理员巡视送礼 ${gold} 金` });
   s.lastGiftDay = day;
-  return { gift: { gold, amount }, events };
+  s.giftStreak = { day, n };
+  return { gift: { gold, amount, streak: n, day: k }, events };
+}
+
+/** 界面公示：按有效时间所在的上海日，今天第几天、明天能领多少（只读，不改状态） */
+export function giftStreakView(s: GameState, nowMs: number): StreakView {
+  return streakView(s.giftStreak, dayKey(effectiveNow(s, nowMs)));
 }
 
 /**
@@ -179,6 +201,13 @@ export function loadSave(json: string | null): GameState | null {
     if (!Number.isSafeInteger(s.rev)) s.rev = 0; // 本字段加入前的存档
     // 局标识加入前的存档：按种子确定性补一个，多个标签页读同一份旧存档时得到同一个标识
     if (typeof s.sid !== 'string' || !s.sid) s.sid = `legacy:${s.seed}`;
+    if (s.lastGiftDay === undefined) s.lastGiftDay = null;
+    if (s.lastGiftDay !== null && !Number.isSafeInteger(s.lastGiftDay)) return null;
+    // 连续登录（#29）加入前的存档，或旧版本标签页按旧规则领过礼物（只推进了 lastGiftDay）：
+    // 以 lastGiftDay 那天为第 1 天平滑接上，不改余额与流水；明天继续登录即第 2 天
+    if (!validStreak(s.giftStreak) || s.giftStreak.day !== s.lastGiftDay) {
+      s.giftStreak = s.lastGiftDay === null ? null : { day: s.lastGiftDay, n: 1 };
+    }
     return s;
   } catch {
     return null;

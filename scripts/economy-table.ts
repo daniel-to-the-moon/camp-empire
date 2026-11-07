@@ -5,16 +5,19 @@
  * 停车费离开时进入待收取池（#28），所以模拟收入按离开事件的停靠费毛额统计，不看余额。
  */
 import { RENTAL_SPOTS } from '../src/shared/camp';
-import { DAILY_GIFT, ECONOMY, NPC, PENDING, SIDE_AWNING } from '../src/shared/config';
+import { ECONOMY, NPC, PENDING, SIDE_AWNING } from '../src/shared/config';
 import { derivedPendingCapGold, expectedParking, MEAN_STAY_MINUTES, PRIVATE_SPOTS } from '../src/shared/economy';
 import { newLedger } from '../src/shared/ledger';
 import { advanceCamp, newCampSim, type CampEvent } from '../src/shared/npc';
+import { LADDER, ladderMeanGold } from '../src/shared/streak';
 
 const DAY = 86_400_000;
 const H = 3_600_000;
 const f = (n: number, d = 1) => n.toFixed(d);
 
-const giftMean = DAILY_GIFT.reduce((s, g) => s + g.gold * g.p, 0);
+/** 每日礼物：7 日梯度连续登录时的日均（#29）；断签的玩家更低，见 docs/ECONOMY_M1.md */
+const giftMean = ladderMeanGold();
+const giftMax = Math.max(...LADDER);
 const grossOf = (ev: CampEvent[]) => ev.reduce((s, e) => s + (e.type === 'depart' ? e.gross : 0), 0);
 const pct = (xs: number[], p: number) => xs[Math.min(xs.length - 1, Math.floor(xs.length * p))];
 
@@ -61,7 +64,7 @@ console.log('## 输入参数\n');
 console.log(`- 私家车位 ${PRIVATE_SPOTS} 个，爱心车位 ${RENTAL_SPOTS.length - PRIVATE_SPOTS} 个（不付费）`);
 console.log(`- 停靠费 ${NPC.rateCentsPerHour / 100} 金/小时；停靠时长 U[${NPC.minStayMinutes}, ${NPC.capMinutes}] 分钟，均值 ${MEAN_STAY_MINUTES}`);
 console.log(`- 空位等待 Exp(均值 ${NPC.meanGapMinutes} 分钟)；侧边帐展开 ×${NPC.awningGapFactor}`);
-console.log(`- 每日礼物期望 ${f(giftMean)} 金；开局 ${ECONOMY.startingGold} 金；侧边帐 ${SIDE_AWNING.priceGold} 金`);
+console.log(`- 每日礼物 7 日梯度 ${LADDER.join(' / ')} 金，连续登录日均 ${f(giftMean, 2)} 金（单日最多 ${giftMax}）；开局 ${ECONOMY.startingGold} 金；侧边帐 ${SIDE_AWNING.priceGold} 金`);
 console.log(`- 待收取池上限 ${PENDING.capGold} 金（${PENDING.capHours} h 期望，按侧边帐展开情形推出 ${derivedPendingCapGold()}）\n`);
 
 console.log('## 日收入（稳态）\n');
@@ -96,4 +99,5 @@ const daily = expectedParking(false).goldPerDay + giftMean;
 console.log('\n## 开局资金路径（无侧边帐，期望值）\n');
 console.log(`- 开局 ${ECONOMY.startingGold} 金即可买侧边帐（剩 ${ECONOMY.startingGold - SIDE_AWNING.priceGold}）`);
 console.log(`- 日收入期望 ${f(daily)} 金，低于软上限阈值 ${ECONOMY.softCapThresholdGold} 金；但收取按收取时刻计日，长时间离开后同日收取两次仍可能触发软上限（见 docs/ECONOMY_M1.md 发现 3）`);
+console.log(`- 每天只收取一次：当日毛收入 ≤ 池上限 ${PENDING.capGold} + 礼物单日最多 ${giftMax} = ${PENDING.capGold + giftMax} 金，${PENDING.capGold + giftMax < ECONOMY.softCapThresholdGold ? '低于' : '不低于'}软上限阈值 ${ECONOMY.softCapThresholdGold} 金`);
 console.log(`- 软上限触发所需日毛收入 ${ECONOMY.softCapThresholdGold} 金 ≈ ${f(ECONOMY.softCapThresholdGold / daily, 2)} 倍当前期望`);

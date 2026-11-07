@@ -24,9 +24,9 @@ const cap = pendingCapCents();
 
 describe('回访面板', () => {
   it('礼物与待收取在同一个面板里，有收取按钮', () => {
-    const p = returnPanel([dep(5_000, 5_000)], { gold: 50, amount: 5_000 }, pendingView(pool({ gross: 5_000, stays: 1 }), false))!;
+    const p = returnPanel([dep(5_000, 5_000)], { gold: 50, day: 3, streak: 3 }, pendingView(pool({ gross: 5_000, stays: 1 }), false))!;
     expect(p.lines.join('\n')).toContain('1 位露营者停完离开，50 金进入待收取');
-    expect(p.lines.join('\n')).toContain('营地管理员巡视送来 50 金');
+    expect(p.lines.join('\n')).toContain('连续登录第 3 天：营地管理员巡视送来 50 金（已入账）。明天继续登录可领 60 金。');
     expect(p.lines.join('\n')).toContain('待收取 50 金');
     expect(p.collect).toBe('收取 50 金');
   });
@@ -44,7 +44,10 @@ describe('回访面板', () => {
 
   it('只有礼物、没有待收取：无收取按钮；什么都没有：不弹', () => {
     const empty = pendingView(emptyPending(), false);
-    expect(returnPanel([], { gold: 30, amount: 3_000 }, empty)).toEqual({ lines: ['营地管理员巡视送来 30 金（每日首次登录，已入账）。'], collect: null });
+    expect(returnPanel([], { gold: 120, day: 7, streak: 14 }, empty)).toEqual({
+      lines: ['连续登录第 7 天：营地管理员巡视送来 120 金（已入账）。明天继续登录可领 30 金。'],
+      collect: null,
+    });
     expect(returnPanel([], null, empty)).toBeNull();
     expect(returnPanel([dep(0, 0, 'love')], null, empty)).toBeNull(); // 爱心车位不付费，不算
   });

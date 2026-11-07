@@ -55,6 +55,11 @@ section:last-child { border-bottom: 0; }
 h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss); font-weight: 700; }
 .hint { margin: 0 0 8px; color: rgba(236, 230, 214, 0.7); font-size: 12px; }
 .fine { margin: 6px 0 0; font-size: 11px; color: rgba(236, 230, 214, 0.5); }
+.ladder { list-style: none; margin: 0 0 6px; padding: 0; display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.ladder li { display: flex; flex-direction: column; align-items: center; padding: 3px 0; border: 1px solid var(--line); border-radius: 4px; font-size: 10px; }
+.ladder li span { color: rgba(236, 230, 214, 0.5); }
+.ladder li b { font-family: var(--mono); font-size: 12px; }
+.ladder li.today { border-color: var(--moss); background: rgba(255, 255, 255, 0.06); }
 
 .models { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .model-name { font-family: var(--mono); font-size: 12px; display: flex; justify-content: space-between; }
