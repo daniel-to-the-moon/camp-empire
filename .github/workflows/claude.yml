@@ -159,8 +159,11 @@ jobs:
 
   publish:
     needs: work
-    # work 失败或超时也运行：把失败说明发出去并加 needs-user，循环不会无声卡住
-    if: always() && needs.work.result != 'skipped'
+    # work 失败也运行：把失败说明发出去并加 needs-user，循环不会无声卡住。
+    # work 被取消（同一编号的新任务排进 concurrency 队列时，旧的排队任务会被取消）则不发：否则会留下误导性的
+    # “失败”说明并错误地加上 needs-user（2026-11-07 #4 实际发生）。Claude 步骤有比任务更短的超时，
+    # 正常超时表现为 failure 而不是 cancelled。
+    if: always() && needs.work.result != 'skipped' && needs.work.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
