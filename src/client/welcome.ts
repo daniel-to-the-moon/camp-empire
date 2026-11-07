@@ -8,6 +8,8 @@
 import type { PendingView } from '../shared/economy';
 import { displayGold } from '../shared/ledger';
 import type { CampEvent } from '../shared/npc';
+import type { DailyGift } from '../shared/state';
+import { giftGoldForStreak } from '../shared/streak';
 
 type Depart = Extract<CampEvent, { type: 'depart' }>;
 
@@ -64,12 +66,17 @@ export interface ReturnPanel {
   collect: string | null;
 }
 
+/** 礼物一句话：7 日循环第几天、领了多少、明天继续登录能领多少（#29） */
+export function giftLine(gift: Pick<DailyGift, 'gold' | 'day' | 'streak'>): string {
+  return `连续登录第 ${gift.day} 天：营地管理员巡视送来 ${gift.gold} 金（已入账）。明天继续登录可领 ${giftGoldForStreak(gift.streak + 1)} 金。`;
+}
+
 /** 回访面板：离线汇总、礼物、待收取放在一起；什么都没有返回 null（不弹） */
-export function returnPanel(events: CampEvent[], gift: { gold: number; amount: number } | null, v: PendingView): ReturnPanel | null {
+export function returnPanel(events: CampEvent[], gift: Pick<DailyGift, 'gold' | 'day' | 'streak'> | null, v: PendingView): ReturnPanel | null {
   const lines: string[] = [];
   const off = offlineSummary(events);
   if (off) lines.push(`你不在的时候，${off}。`);
-  if (gift) lines.push(`营地管理员巡视送来 ${gift.gold} 金（每日首次登录，已入账）。`);
+  if (gift) lines.push(giftLine(gift));
   if (v.pending > 0) {
     lines.push(`待收取 ${g(v.pending)} 金${v.full ? `（已满，上限 ${g(v.cap)} 金）` : ''}。`);
     const { lost } = pendingLines(v);

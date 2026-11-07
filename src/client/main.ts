@@ -5,7 +5,7 @@
 import '../style.css';
 import { CATALOG, findVariant } from '../data/models';
 import { stallById, stallRect, staticShapes } from '../shared/camp';
-import { DAILY_GIFT, ECONOMY, NPC, PENDING, SIDE_AWNING } from '../shared/config';
+import { ECONOMY, NPC, PENDING, SIDE_AWNING } from '../shared/config';
 import { pointInPoly, type Shape } from '../shared/geom2d';
 import { resolveDrive, type Impact } from '../shared/collision';
 import { displayGold } from '../shared/ledger';
@@ -22,14 +22,17 @@ import {
   claimDailyGift,
   collectPending,
   currentVariant,
+  giftStreakView,
   recordPose,
   setAwningWanted,
+  type DailyGift,
   type GameState,
 } from '../shared/state';
+import { LADDER, ladderMeanGold } from '../shared/streak';
 import { guardAutoRoute, stepTraffic, type Agent } from '../shared/traffic';
 import { PathRunner, playerObstacles } from './drive';
 import { homeFlow, type Mode, type ModeLock } from './homeflow';
-import { closeWelcomeAfterCollect, departToast, offlineSummary, pendingLines, returnPanel } from './welcome';
+import { closeWelcomeAfterCollect, departToast, giftLine, offlineSummary, pendingLines, returnPanel } from './welcome';
 import { pendingView } from '../shared/economy';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, type VehicleView } from './scene';
 
@@ -83,7 +86,7 @@ function toast(msg: string, ms = 3200) {
 }
 
 /** 回访面板（#28）：离线汇总 + 每日礼物 + 待收取放在同一个面板里，收取一键完成 */
-function showReturnPanel(events: CampEvent[], gift: { gold: number; amount: number } | null) {
+function showReturnPanel(events: CampEvent[], gift: DailyGift | null) {
   const p = returnPanel(events, gift, pendingView(state.ledger.pending, awningOut(state)));
   if (!p) return;
   $('#welcome').innerHTML = `
@@ -600,7 +603,7 @@ function frame(t: number) {
       // 写者回放 + 结算；只读页不回放、不写存档，每秒从存档跟随刷新
       const job = writer
         ? act((s) => claimDailyGift(s, now())).then((r) => {
-            if (r?.gift) toast(`新的一天！营地管理员巡视送来 ${r.gift.gold} 金`);
+            if (r?.gift) toast(`新的一天！${giftLine(r.gift)}`);
           })
         : adoptLatest();
       void job.finally(() => (ticking = false));
@@ -683,9 +686,13 @@ function renderHud() {
     <p class="fine">上限 = ${PENDING.capHours} 小时的期望停车收入（${PENDING.capGold} 金，提案值）。收取的金额按收取当天计入每日软上限。</p>`;
 
   const today = state.ledger.today;
+  const sv = giftStreakView(state, now());
   $('#daily').innerHTML = `
     <h2>每日</h2>
-    <p class="hint">每天首次登录，营地管理员巡视送礼：${DAILY_GIFT.map((g) => `${g.gold} 金 ${Math.round(g.p * 100)}%`).join(' / ')}（期望 ${DAILY_GIFT.reduce((s, g) => s + g.gold * g.p, 0)} 金）。日界为上海时间 0 点。</p>
+    <p class="hint">每天首次登录，营地管理员巡视送礼。连续登录 7 日梯度（金额固定，无抽取，第 8 天起循环）：</p>
+    <ol class="ladder">${LADDER.map((gold, i) => `<li class="${i + 1 === sv.today ? 'today' : ''}"><span>第 ${i + 1} 天</span><b>${gold}</b></li>`).join('')}</ol>
+    <p>今天第 ${sv.today} 天（连续 ${sv.streak} 天）${sv.claimedToday ? `，已领 ${sv.claimedGold} 金` :`，可领 ${sv.todayGold} 金`}；明天继续登录可领 ${sv.tomorrowGold} 金。</p>
+    <p class="fine">断签只回到第 1 天，已领的金币不扣、不清零。连续 7 天共 ${LADDER.reduce((s, g) => s + g, 0)} 金，平均每天 ${ladderMeanGold().toFixed(1)} 金（提案值）。日界为上海时间 0 点。</p>
     <p class="fine">今日已入账 ${displayGold(today.issued)} 金；当日收入超过 ${ECONOMY.softCapThresholdGold} 金的部分按 ${ECONOMY.softCapRateAbove * 100}% 发放。</p>`;
 
   $('#log').innerHTML = state.ledger.entries
