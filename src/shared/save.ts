@@ -143,11 +143,33 @@ export class SaveSlot {
     return this.store.update(this.key, () => ({ value, result: undefined }));
   }
 
-  /** 只在存档为空时导入旧版 localStorage 存档；返回是否导入 */
+  /** 只在存档为空时导入旧版存档（会经 loadSave 迁移到当前版本）；返回是否导入 */
   importIfEmpty(legacy: string | null): Promise<boolean> {
     const s = loadSave(legacy);
     return this.store.update(this.key, (prev) => (prev || !s ? { result: false } : { value: JSON.stringify(s), result: true }));
   }
+}
+
+/**
+ * 存档槽位按版本分开（GPT 审核 #32 第 1 条）。
+ * 若 v3 仍写 save.v2：基准版本的旧标签页抢回写权后读不懂 v3 → 当作“存档被删除” → 新开一局并以 rev 0 覆盖同一槽位，
+ * 余额、购买与待收取全部丢失。分槽后旧标签页只读写 save.v2，新版本只读写 save.v3，互不覆盖；
+ * 代价：迁移之后旧标签页里继续玩的进度不会进入新版本存档（旧页刷新即加载新版本，读 save.v3）。
+ */
+export const SAVE_KEY = 'save.v3';
+/** 上一版（v2）的 IndexedDB 存档键：只读，不删除（旧标签页可能还在用） */
+export const PREV_SAVE_KEY = 'save.v2';
+
+/**
+ * 启动迁移：只在 v3 槽位为空时，先导入 IndexedDB 里的 v2 存档，没有再导入更早的 localStorage 存档。
+ * 判空与写入在同一个事务里（importIfEmpty），两个新标签页同时迁移也只会写入一次；v3 槽位已有存档时什么都不做。
+ * 返回导入来源：'idb' / 'legacy' / null（未导入）。
+ */
+export async function migrateSave(store: AtomicStore, legacy: string | null): Promise<'idb' | 'legacy' | null> {
+  const slot = new SaveSlot(store, SAVE_KEY);
+  if (await slot.importIfEmpty(await store.get(PREV_SAVE_KEY))) return 'idb';
+  if (await slot.importIfEmpty(legacy)) return 'legacy';
+  return null;
 }
 
 /** Web Locks 的最小接口（便于测试替身） */

@@ -7,8 +7,12 @@
  * - 因为是对同一累计函数做差，逐笔实得之和恒等于 floor(g(当日毛收入总额))，
  *   与事件如何拆分、合并无关（GPT 指出的“两笔 0.01 各打五折都取整为 0”问题不会出现）；
  * - 毛收入、实得、未发放三项分开记账，未发放 = 毛收入 − 实得，不是没收。
+ *
+ * 待收取池（issue #28，来源提案 #22）：NPC 离开时停靠费先进 pending，不改余额；玩家“收取”时才 credit 入账，
+ * 软上限按收取时刻所在的上海日计（口径不变）。池上限 PENDING.capGold（提案值），满了之后新的停车费不再累积，
+ * 未累积的部分单独记在 lost，不从余额里扣任何钱。
  */
-import { ECONOMY } from './config';
+import { ECONOMY, PENDING } from './config';
 
 export type Cents = number;
 
@@ -26,7 +30,8 @@ export interface LedgerEntry {
   key: string;
   atMs: number;
   day: number;
-  kind: 'start' | 'npc_parking' | 'daily_gift' | 'purchase';
+  /** npc_parking：旧版（v2）离开即入账的停车费；parking_collect：从待收取池收取（#28） */
+  kind: 'start' | 'npc_parking' | 'parking_collect' | 'daily_gift' | 'purchase';
   /** 毛额（购买为负） */
   gross: Cents;
   /** 实际入账（购买为负） */
@@ -34,11 +39,26 @@ export interface LedgerEntry {
   note: string;
 }
 
+/** 待收取池（毛额，未过软上限）。不计入余额 */
+export interface PendingPool {
+  /** 待收取的停车费毛额，0 ≤ gross ≤ 上限 */
+  gross: Cents;
+  /** 待收取包含的停靠笔数（只累积了一部分的那笔也算） */
+  stays: number;
+  /** 自上次收取以来，因池已满而未累积的停车费（不是扣款：从未进过余额） */
+  lost: Cents;
+  /** 其中完全或部分未累积的停靠笔数 */
+  lostStays: number;
+  /** 已收取次数，作收取流水的幂等键序号 */
+  collections: number;
+}
+
 export interface Ledger {
   balance: Cents;
   today: DayBucket;
   entries: LedgerEntry[];
   seen: Record<string, true>;
+  pending: PendingPool;
 }
 
 export function assertCents(v: number, what: string): void {
@@ -79,8 +99,17 @@ function rational(r: number): [number, number] {
   return [num, den];
 }
 
+export function emptyPending(): PendingPool {
+  return { gross: 0, stays: 0, lost: 0, lostStays: 0, collections: 0 };
+}
+
+/** 待收取池上限（分）。配置见 config.ts PENDING（提案值，推演见 docs/ECONOMY_M1.md） */
+export function pendingCapCents(): Cents {
+  return PENDING.capGold * 100;
+}
+
 export function newLedger(nowMs: number): Ledger {
-  const l: Ledger = { balance: 0, today: { day: dayKey(nowMs), gross: 0, issued: 0 }, entries: [], seen: {} };
+  const l: Ledger = { balance: 0, today: { day: dayKey(nowMs), gross: 0, issued: 0 }, entries: [], seen: {}, pending: emptyPending() };
   const start = ECONOMY.startingGold * 100;
   l.balance = start;
   l.entries.push({ key: 'start', atMs: nowMs, day: l.today.day, kind: 'start', gross: start, amount: start, note: '开局资金' });
@@ -94,7 +123,7 @@ export function newLedger(nowMs: number): Ledger {
  */
 export function credit(
   l: Ledger,
-  e: { key: string; atMs: number; kind: 'npc_parking' | 'daily_gift'; gross: Cents; note: string },
+  e: { key: string; atMs: number; kind: 'npc_parking' | 'parking_collect' | 'daily_gift'; gross: Cents; note: string },
 ): Cents {
   assertCents(e.gross, 'gross');
   if (e.gross < 0) throw new Error('收入不能为负');
@@ -110,6 +139,66 @@ export function credit(
   l.seen[e.key] = true;
   l.entries.push({ key: e.key, atMs: e.atMs, day, kind: e.kind, gross: e.gross, amount, note: e.note });
   return amount;
+}
+
+/**
+ * 停车费存入待收取池（不改余额）。超过上限的部分不累积，记入 lost。
+ * 幂等：同一 parking_id 只存一次（重复返回 0 / 0）。
+ */
+export function deposit(l: Ledger, e: { key: string; gross: Cents }): { pooled: Cents; lost: Cents } {
+  assertCents(e.gross, 'gross');
+  if (e.gross < 0) throw new Error('收入不能为负');
+  if (l.seen[e.key]) return { pooled: 0, lost: 0 };
+  l.seen[e.key] = true;
+  const p = l.pending;
+  const pooled = Math.max(0, Math.min(e.gross, pendingCapCents() - p.gross));
+  const lost = e.gross - pooled;
+  p.gross += pooled;
+  if (pooled > 0) p.stays += 1;
+  if (lost > 0) {
+    p.lost += lost;
+    p.lostStays += 1;
+  }
+  return { pooled, lost };
+}
+
+/**
+ * 收取：把待收取池按收取时刻 atMs 入账（过当日软上限），清空池与“未累积”计数。
+ * 池为空时返回 null 且不改账。调用方须保证 atMs 不早于当前账日（state.ts 用有效时间）。
+ */
+export function collect(l: Ledger, atMs: number): { gross: Cents; amount: Cents; stays: number } | null {
+  const p = l.pending;
+  if (p.gross <= 0) return null;
+  const gross = p.gross;
+  const stays = p.stays;
+  const key = `collect:${p.collections}`;
+  // 收取序号与已有流水冲突说明账本损坏：credit 会按重复键返回 0，若继续清空池就会静默丢停车费（GPT 审核 #32 第 2 条）。
+  // 抛异常让存档事务回滚，池保持原样
+  if (l.seen[key]) throw new Error(`收取序号 ${key} 已用过，账本损坏，待收取池保持不动`);
+  const amount = credit(l, { key, atMs, kind: 'parking_collect', gross, note: `收取停车费（${stays} 位露营者）` });
+  l.pending = { gross: 0, stays: 0, lost: 0, lostStays: 0, collections: p.collections + 1 };
+  return { gross, amount, stays };
+}
+
+/**
+ * 待收取池结构与一致性校验（加载存档时用，GPT 审核 #32 第 2 条）。只接受 deposit / collect 能产生的状态：
+ * - 各字段为非负安全整数，gross ≤ 池上限（以后若下调 PENDING.capGold，须升存档版本并迁移，否则旧存档会被拒绝）；
+ * - gross > 0 ⇔ stays ≥ 1（每笔进池的停靠计一次）；lost > 0 ⇔ lostStays ≥ 1；
+ * - collections 等于已有收取流水（parking_collect）笔数，且这些流水正好是 collect:0 … collect:(n−1)，
+ *   下一个收取键 collect:n 未被使用——否则收取会撞重复键。
+ */
+export function validPending(l: Pick<Ledger, 'pending' | 'entries' | 'seen'>): boolean {
+  const p = l.pending;
+  if (!p || typeof p !== 'object' || !Array.isArray(l.entries) || !l.seen || typeof l.seen !== 'object') return false;
+  if (![p.gross, p.stays, p.lost, p.lostStays, p.collections].every((v) => Number.isSafeInteger(v) && v >= 0)) return false;
+  if (p.gross > pendingCapCents()) return false;
+  if ((p.gross > 0) !== (p.stays > 0)) return false;
+  if ((p.lost > 0) !== (p.lostStays > 0)) return false;
+  const keys = l.entries.filter((e) => e && e.kind === 'parking_collect').map((e) => e.key);
+  if (keys.length !== p.collections) return false;
+  const expected = new Set(Array.from({ length: p.collections }, (_, i) => `collect:${i}`));
+  if (new Set(keys).size !== keys.length || !keys.every((k) => expected.has(k) && l.seen[k] === true)) return false;
+  return !l.seen[`collect:${p.collections}`];
 }
 
 /** 消费：余额不足返回 false 且不改账 */

@@ -17,6 +17,7 @@
       <section id="shop"></section>
     </aside>
     <aside class="panel right">
+      <section id="pending"></section>
       <section id="spots"></section>
       <section id="daily"></section>
       <section><h2>流水</h2><ul id="log"></ul></section>
@@ -31,11 +32,13 @@
       <button data-act="takeover">在这里玩</button>
     </div>
     <div id="toast" role="status" hidden></div>
+    <div id="welcome" role="dialog" aria-label="回访" hidden></div>
     <div id="dev" hidden>
       <span>开发快进</span>
       <button data-act="dev" data-arg="3600000">+1 小时</button>
       <button data-act="dev" data-arg="43200000">+12 小时</button>
       <button data-act="dev" data-arg="86400000">+1 天</button>
+      <button data-act="dev" data-arg="259200000">+3 天</button>
       <button data-act="dev" data-arg="reset">重开存档</button>
     </div>
     <script type="module" src="/src/client/main.ts"></script>

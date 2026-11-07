@@ -69,6 +69,7 @@ describe('NPC 停车', () => {
       expect(d.minutes).toBeGreaterThanOrEqual(NPC.minStayMinutes);
       expect(d.minutes).toBeLessThanOrEqual(NPC.capMinutes);
       expect(d.gross).toBe(d.spotId === 'love' ? 0 : feeCents(d.minutes));
+      expect(d.pooled + d.lost).toBe(d.gross);
     }
     expect(auditBalance(l)).toBe(true);
   });
@@ -82,22 +83,22 @@ describe('NPC 停车', () => {
     for (let t = T0; t <= end; t += 7 * 60_000) advanceCamp(sb, b, t, { awningOut: false });
     advanceCamp(sb, b, end, { awningOut: false });
     expect(b.balance).toBe(a.balance);
-    expect(b.entries.map((e) => e.key)).toEqual(a.entries.map((e) => e.key));
+    expect(b.pending).toEqual(a.pending);
+    expect(Object.keys(b.seen).sort()).toEqual(Object.keys(a.seen).sort());
   });
   it('时钟回拨：不倒退、不重复入账', () => {
     const l = newLedger(T0);
     const sim = newCampSim(1, T0, RENTAL_SPOTS);
     advanceCamp(sim, l, T0 + 48 * H, { awningOut: false });
     const bal = l.balance;
+    const pending = { ...l.pending };
     expect(advanceCamp(sim, l, T0 + 10 * H, { awningOut: false })).toEqual([]);
     expect(l.balance).toBe(bal);
+    expect(l.pending).toEqual(pending);
   });
-  it('侧边帐展开时 NPC 来得更勤（同种子 60 天收入更高）', () => {
-    const run = (awningOut: boolean) => {
-      const l = newLedger(T0);
-      advanceCamp(newCampSim(9, T0, RENTAL_SPOTS), l, T0 + 60 * 24 * H, { awningOut });
-      return l.balance;
-    };
+  it('侧边帐展开时 NPC 来得更勤（同种子 60 天停车费毛额更高）', () => {
+    const run = (awningOut: boolean) =>
+      advanceCamp(newCampSim(9, T0, RENTAL_SPOTS), newLedger(T0), T0 + 60 * 24 * H, { awningOut }).reduce((s, e) => s + (e.type === 'depart' ? e.gross : 0), 0);
     expect(run(true)).toBeGreaterThan(run(false));
   });
 });
