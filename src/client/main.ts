@@ -5,7 +5,7 @@
 import '../style.css';
 import { CATALOG, findVariant } from '../data/models';
 import { stallById, stallRect, staticShapes } from '../shared/camp';
-import { DAILY_GIFT, ECONOMY, NPC, SIDE_AWNING } from '../shared/config';
+import { DAILY_GIFT, ECONOMY, NPC, PENDING, SIDE_AWNING } from '../shared/config';
 import { pointInPoly, type Shape } from '../shared/geom2d';
 import { resolveDrive, type Impact } from '../shared/collision';
 import { displayGold } from '../shared/ledger';
@@ -20,6 +20,7 @@ import {
   awningOut,
   buyAwning,
   claimDailyGift,
+  collectPending,
   currentVariant,
   recordPose,
   setAwningWanted,
@@ -28,6 +29,8 @@ import {
 import { guardAutoRoute, stepTraffic, type Agent } from '../shared/traffic';
 import { PathRunner, playerObstacles } from './drive';
 import { homeFlow, type Mode, type ModeLock } from './homeflow';
+import { departToast, offlineSummary, pendingLines, returnPanel } from './welcome';
+import { pendingView } from '../shared/economy';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, type VehicleView } from './scene';
 
 /** IndexedDB 里的存档键 */
@@ -80,11 +83,18 @@ function toast(msg: string, ms = 3200) {
   toastTimer = window.setTimeout(() => (el.hidden = true), ms);
 }
 
-function summarizeOffline(events: CampEvent[]): string | null {
-  const departs = events.filter((e) => e.type === 'depart') as Extract<CampEvent, { type: 'depart' }>[];
-  if (!departs.length) return null;
-  const sum = departs.reduce((s, e) => s + e.amount, 0);
-  return `你不在的时候，${departs.length} 位露营者停完离开，自动结算入账 ${displayGold(sum)} 金`;
+/** 回访面板（#28）：离线汇总 + 每日礼物 + 待收取放在同一个面板里，收取一键完成 */
+function showReturnPanel(events: CampEvent[], gift: { gold: number; amount: number } | null) {
+  const p = returnPanel(events, gift, pendingView(state.ledger.pending, awningOut(state)));
+  if (!p) return;
+  $('#welcome').innerHTML = `
+    <h2>欢迎回到营地</h2>
+    ${p.lines.map((l) => `<p>${l}</p>`).join('')}
+    <div class="row">
+      ${p.collect ? `<button class="primary" data-act="collect" data-arg="close">${p.collect}</button>` : ''}
+      <button data-act="closeWelcome">${p.collect ? '稍后再收' : '知道了'}</button>
+    </div>`;
+  $('#welcome').hidden = false;
 }
 
 // ---------- 场景 ----------
@@ -214,7 +224,10 @@ function movingNpcShapes(): Shape[] {
 
 function announce(events: CampEvent[]) {
   for (const e of events) {
-    if (e.type === 'depart' && e.amount > 0) toast(`${stallById(e.spotId).label}的露营者停了 ${fmtDur(e.minutes)}，付你 ${displayGold(e.amount)} 金`);
+    if (e.type === 'depart') {
+      const msg = departToast(stallById(e.spotId).label, e, fmtDur(e.minutes));
+      if (msg) toast(msg);
+    }
     if (e.type === 'arrive') toast(`一位露营者开进了${stallById(e.spotId).label}`);
   }
 }
@@ -290,8 +303,7 @@ function adoptState(s: GameState) {
 async function startSession() {
   const r = await act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
   if (!r) return;
-  const parts = [summarizeOffline(r.events), r.gift ? `营地管理员巡视送来 ${r.gift.gold} 金（每日首次登录）` : null].filter(Boolean);
-  if (parts.length) toast(parts.join('；'), 6000);
+  showReturnPanel(r.events, r.gift);
 }
 
 function setWriter(w: boolean) {
@@ -396,7 +408,19 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     devClock.forward(state.sid, cmd.ms);
     const r = await act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
     if (!r) return;
-    toast([summarizeOffline(r.events) ?? '快进期间没有露营者离开', r.gift ? `管理员送来 ${r.gift.gold} 金` : null].filter(Boolean).join('；'));
+    if (!offlineSummary(r.events)) toast('快进期间没有露营者付费离开');
+    showReturnPanel(r.events, r.gift);
+  },
+  async collect(arg) {
+    const r = await act((s) => collectPending(s, now()));
+    if (!r) return;
+    if (arg === 'close') $('#welcome').hidden = true;
+    if (!r.collected) return toast(r.error!);
+    const { gross, amount, stays } = r.collected;
+    toast(`收取 ${stays} 位露营者的停车费 ${displayGold(amount)} 金${amount !== gross ? `（当日超过软上限，毛收入 ${displayGold(gross)} 金）` : ''}`);
+  },
+  closeWelcome() {
+    $('#welcome').hidden = true;
   },
 };
 
@@ -631,7 +655,7 @@ function renderHud() {
 
   $('#spots').innerHTML = `
     <h2>我的营地车位</h2>
-    <p class="hint">露营者自己开来、自己离开，离开时自动付费：${NPC.rateCentsPerHour / 100} 金 / 小时，单次最多 ${NPC.capMinutes / 60} 小时。爱心车位免费给露营者停。</p>
+    <p class="hint">露营者自己开来、自己离开，离开时付停车费进入待收取：${NPC.rateCentsPerHour / 100} 金 / 小时，单次最多 ${NPC.capMinutes / 60} 小时。爱心车位免费给露营者停。</p>
     ${state.camp.spots
       .map((sp) => {
         const label = stallById(sp.id).label;
@@ -645,6 +669,19 @@ function renderHud() {
       })
       .join('')}
     <p class="fine">爱心车位累计公益停靠 ${fmtDur(state.camp.loveMinutes)}</p>`;
+
+  const pv = pendingView(state.ledger.pending, out);
+  const pl = pendingLines(pv);
+  $('#pending').innerHTML = `
+    <h2>待收取</h2>
+    <div class="card">
+      <div class="row"><b>停车费</b><span class="coin">${displayGold(pv.pending).toLocaleString('zh-CN')}</span></div>
+      <div class="bar"><i style="width:${((pv.pending / pv.cap) * 100).toFixed(1)}%"></i></div>
+      <p class="${pv.full ? 'warn' : ''}">${pl.status}</p>
+      ${pl.lost ? `<p class="lost">${pl.lost}</p>` : ''}
+      <button data-act="collect" ${pv.pending > 0 ? '' : 'disabled'}>收取</button>
+    </div>
+    <p class="fine">上限 = ${PENDING.capHours} 小时的期望停车收入（${PENDING.capGold} 金，提案值）。收取的金额按收取当天计入每日软上限。</p>`;
 
   const today = state.ledger.today;
   $('#daily').innerHTML = `

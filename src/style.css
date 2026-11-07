@@ -99,6 +99,16 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
   position: fixed; left: 50%; top: 60px; transform: translateX(-50%); z-index: 6; max-width: 560px;
   padding: 10px 16px; border-radius: 10px; background: rgba(15, 26, 21, 0.92); border: 1px solid var(--canvas);
 }
+.card p.warn { color: var(--coin); }
+.card p.lost { color: rgba(236, 230, 214, 0.6); border-left: 2px solid var(--line); padding-left: 8px; }
+#welcome {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 8; width: min(420px, 90vw);
+  padding: 14px 18px; border-radius: 12px; background: var(--pine); border: 1px solid var(--canvas); backdrop-filter: blur(6px);
+}
+#welcome p { margin: 6px 0; }
+#welcome .row { gap: 8px; margin-top: 12px; }
+#welcome button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
+#welcome button.primary { background: var(--canvas); color: var(--ink); border: 0; font-weight: 700; }
 #readonly {
   position: fixed; left: 50%; top: 12px; transform: translateX(-50%); z-index: 7; display: flex; gap: 10px; align-items: center;
   padding: 8px 14px; border-radius: 10px; background: rgba(90, 60, 10, 0.92); border: 1px solid var(--line);

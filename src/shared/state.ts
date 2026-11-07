@@ -5,12 +5,13 @@
 import { ALL_VARIANTS, findVariant, type Variant } from '../data/models';
 import { RENTAL_SPOTS } from './camp';
 import { DAILY_GIFT, SIDE_AWNING } from './config';
-import { credit, dayKey, newLedger, spend, type Ledger } from './ledger';
+import { collect, credit, dayKey, emptyPending, newLedger, spend, type Ledger } from './ledger';
 import type { Pose } from './kinematics';
 import { advanceCamp, newCampSim, type CampEvent, type CampSim } from './npc';
 import { pickWeighted, uniform } from './rng';
 
-export const SAVE_VERSION = 2;
+/** 3：账本加入待收取池（#28）。v2 存档在 loadSave 中迁移，已入账余额与流水原样保留 */
+export const SAVE_VERSION = 3;
 export const DEFAULT_VARIANT = 'SH5043XLJH9DB-C_3116';
 
 export interface GameState {
@@ -106,6 +107,16 @@ export function claimDailyGift(s: GameState, nowMs: number): { gift: { gold: num
   return { gift: { gold, amount }, events };
 }
 
+/**
+ * 收取待收取池（#28）：先回放到有效时间（把此刻之前离开的露营者的停靠费也存进池），再按有效时间入账，
+ * 软上限计入收取时刻所在的上海日。池为空时 collected 为 null，不改账。
+ */
+export function collectPending(s: GameState, nowMs: number): ActionResult & { collected: { gross: number; amount: number; stays: number } | null } {
+  const events = tick(s, nowMs);
+  const collected = collect(s.ledger, effectiveNow(s, nowMs));
+  return collected ? { ok: true, events, collected } : { ok: false, error: '没有待收取的停车费', events, collected };
+}
+
 export function buyAwning(s: GameState, nowMs: number): ActionResult {
   const events = tick(s, nowMs);
   if (s.awningOwned) return { ok: false, error: '已拥有侧边帐', events };
@@ -150,12 +161,22 @@ export function recordPose(s: GameState, nowMs: number, pose: Pose): ActionResul
   return { ok: true, events };
 }
 
-/** 存档：结构校验失败或版本不符时返回 null（调用方新开一局） */
+function validPending(p: Ledger['pending'] | undefined): boolean {
+  return !!p && [p.gross, p.stays, p.lost, p.lostStays, p.collections].every((v) => Number.isSafeInteger(v) && v >= 0);
+}
+
+/** 存档：结构校验失败或版本不符时返回 null（调用方新开一局）；v2 存档迁移到 v3 */
 export function loadSave(json: string | null): GameState | null {
   if (!json) return null;
   try {
     const s = JSON.parse(json) as GameState;
-    if (s.version !== SAVE_VERSION || !s.ledger || !s.camp || !Number.isSafeInteger(s.ledger.balance)) return null;
+    if (!s || !s.ledger || !s.camp || !Number.isSafeInteger(s.ledger.balance)) return null;
+    if (s.version === 2) {
+      // v2 → v3（#28）：v2 的停车费离开即入账，已在余额与流水里，原样保留；从此刻起新的停车费进待收取池
+      s.ledger.pending = emptyPending();
+      s.version = 3;
+    }
+    if (s.version !== SAVE_VERSION || !validPending(s.ledger.pending)) return null;
     if (!Number.isSafeInteger(s.rev)) s.rev = 0; // 本字段加入前的存档
     // 局标识加入前的存档：按种子确定性补一个，多个标签页读同一份旧存档时得到同一个标识
     if (typeof s.sid !== 'string' || !s.sid) s.sid = `legacy:${s.seed}`;
