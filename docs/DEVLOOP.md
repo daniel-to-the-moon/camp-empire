@@ -99,7 +99,7 @@ gh workflow run claude.yml -R daniel-to-the-moon/camp-empire -f pr=<PR号>
 ```
 
   3. 重跑成功推送修复后，发布步骤会自动移除 `needs-user`，本机审核方随即审核新提交；`hold` 是用户的暂停意图，不会被移除。重跑仍失败则保持 `needs-user`。
-- 工作流里的判断与发布逻辑在 `scripts/devloop/ctx.sh`、`publish.sh`（`claude.test.mjs` 用假 gh 与本地 git 远端测试），运行时取 main 上的版本。
+- 工作流里的判断与发布逻辑在 `scripts/devloop/ctx.sh`、`publish.sh`（`claude.test.mjs` 用假 gh 与本地 git 远端测试，并读取 `claude.yml` 里 publish 的真实 `if:` 条件验证 work 被取消 / 跳过时不发布），运行时取 main 上的版本。
 
 ## 六、残余风险（如实列出）
 
