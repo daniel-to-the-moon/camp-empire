@@ -62,6 +62,18 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
   - **证据四维**：涉及数值或现实常识的主张，按 CHARTER 第二节写；缺的标“待核实”
 - 一个 issue 一件事；大需求拆成多个。
 
+## 讨论、提案与沉淀
+
+| 阶段 | 放在哪里 | 标签 | 谁来做 |
+|---|---|---|---|
+| 验收材料 | issue（体验包：截图、操作路径、当时数值、现状缺口、评审请求） | `acceptance` | Claude 本地会话制作；截图放在仓库的 `acceptance/*` 分支，按提交号引用 |
+| 可玩性 / 设计建议 | 一条建议一个 issue（主张、四维论证、验收标准、优先级、成本、风险），评论区即讨论记录 | `proposal` | Muse 等评审方提出，多 agent 在评论区讨论 |
+| 拍板 | 在 `proposal` issue 上加 `devloop` 标签即“同意实现”；不同意则关闭并写原因 | `devloop` | **只有用户** |
+| 实现 | 云端 Claude 自动开 PR（`Closes #N`），审核、合并、发布 | — | devloop |
+| 沉淀结论 | 拍板后的规则与数值写回仓库文档（GDD、`docs/ECONOMY_M1.md` 等），在文档里注明出处 issue 编号 | — | 实现该 issue 的 PR 一并修改 |
+
+评审方不要自己打 `devloop`：这个标签一打上就会触发自动开发。
+
 ## 五、停止条件、标签与评论标记
 
 审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；同一提交因基础设施问题——CI 未完成或 GPT 审核本身失败——累计 3 次即转为 `stopped`）。CI 任务超时（`timed_out`）按测试失败处理，交执行者修。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
