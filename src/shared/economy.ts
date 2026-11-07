@@ -25,6 +25,21 @@ export function derivedPendingCapGold(): number {
   return Math.floor((expectedParking(true).goldPerDay * PENDING.capHours) / 24);
 }
 
+/**
+ * 收取后 hours 小时内，待收取池最多能进多少（分）。确定性上界，不是期望值（GPT 审核 #32 第 2 轮）：
+ * 这段时间里离开的露营者，停靠区间都落在 (收取时刻 − 单次停靠上限, 收取时刻 + hours] 内；
+ * 同一车位的停靠互不重叠，所以每车位计费分钟 ≤ hours × 60 + capMinutes，停靠费 = floor(分钟 × 费率 / 60) ≤ 分钟 × 费率 / 60。
+ * 侧边帐只缩短等待，不改变这个上界。
+ */
+export function maxPooledCentsWithin(hours: number): Cents {
+  return Math.floor((PRIVATE_SPOTS * (hours * 60 + NPC.capMinutes) * NPC.rateCentsPerHour) / 60);
+}
+
+/** 收取后至少要过多少小时池才可能满（由 maxPooledCentsWithin 反解）；收取间隔短于它时一定碰不到上限 */
+export function minHoursToFull(): number {
+  return pendingCapCents() / (PRIVATE_SPOTS * NPC.rateCentsPerHour) - NPC.capMinutes / 60;
+}
+
 export interface PendingView {
   /** 待收取（分，毛额） */
   pending: Cents;

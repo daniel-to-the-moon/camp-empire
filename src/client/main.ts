@@ -29,7 +29,7 @@ import {
 import { guardAutoRoute, stepTraffic, type Agent } from '../shared/traffic';
 import { PathRunner, playerObstacles } from './drive';
 import { homeFlow, type Mode, type ModeLock } from './homeflow';
-import { departToast, offlineSummary, pendingLines, returnPanel } from './welcome';
+import { closeWelcomeAfterCollect, departToast, offlineSummary, pendingLines, returnPanel } from './welcome';
 import { pendingView } from '../shared/economy';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, type VehicleView } from './scene';
 
@@ -413,7 +413,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   async collect(arg) {
     const r = await act((s) => collectPending(s, now()));
     if (!r) return;
-    if (arg === 'close') $('#welcome').hidden = true;
+    if (closeWelcomeAfterCollect(arg === 'close', !!r.collected)) $('#welcome').hidden = true;
     if (!r.collected) return toast(r.error!);
     const { gross, amount, stays } = r.collected;
     toast(`收取 ${stays} 位露营者的停车费 ${displayGold(amount)} 金${amount !== gross ? `（当日超过软上限，毛收入 ${displayGold(gross)} 金）` : ''}`);

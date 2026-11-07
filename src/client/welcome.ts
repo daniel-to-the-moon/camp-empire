@@ -49,6 +49,15 @@ export function pendingLines(v: PendingView): { status: string; lost: string | n
   return { status, lost };
 }
 
+/**
+ * 收取之后回访面板是否关闭（GPT 审核 #32 第 2 轮）：面板上的金额与按钮是打开时的快照，
+ * 不论从面板还是从侧栏收取，只要收取成功就关掉，避免面板继续显示已经收走的金额；
+ * 从面板点的收取即使失败（例如已被侧栏收走）也关掉，失败原因由提示说明。
+ */
+export function closeWelcomeAfterCollect(fromPanel: boolean, collected: boolean): boolean {
+  return fromPanel || collected;
+}
+
 export interface ReturnPanel {
   lines: string[];
   /** 有待收取时的收取按钮文字；没有为 null */

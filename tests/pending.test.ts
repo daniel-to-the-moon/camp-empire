@@ -3,7 +3,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ECONOMY, PENDING } from '../src/shared/config';
-import { derivedPendingCapGold, expectedParking, pendingView } from '../src/shared/economy';
+import { RENTAL_SPOTS } from '../src/shared/camp';
+import { derivedPendingCapGold, expectedParking, maxPooledCentsWithin, minHoursToFull, pendingView } from '../src/shared/economy';
+import { advanceCamp, newCampSim } from '../src/shared/npc';
 import { auditBalance, collect, credit, dayKey, deposit, issuedUpTo, newLedger, pendingCapCents } from '../src/shared/ledger';
 import { claimDailyGift, collectPending, loadSave, newGame, SAVE_VERSION, tick, type GameState } from '../src/shared/state';
 
@@ -20,6 +22,30 @@ describe('上限推演（提案值）', () => {
     expect(PENDING.capHours).toBe(48);
     expect(PENDING.capGold).toBe(derivedPendingCapGold());
     expect(PENDING.capGold).toBe(1300);
+  });
+  it('确定性上界：收取后 24 h 内池最多进 1080 金 < 上限；最早约 31.3 h 后才可能满', () => {
+    expect(maxPooledCentsWithin(24)).toBe(108_000);
+    expect(maxPooledCentsWithin(24)).toBeLessThan(cap);
+    expect(minHoursToFull()).toBeCloseTo(130_000 / 3_000 - 12, 9);
+    expect(maxPooledCentsWithin(minHoursToFull())).toBe(cap);
+  });
+  it('真实模拟器的任意时间窗不突破上界（40 个种子 × 20 天，两种侧边帐状态）', () => {
+    const H = 3_600_000;
+    const t0 = nov(1, 0);
+    for (const awningOut of [false, true]) {
+      for (let seed = 0; seed < 40; seed++) {
+        const sim = newCampSim(seed, t0, RENTAL_SPOTS);
+        const deps = advanceCamp(sim, newLedger(t0), t0 + 20 * 24 * H, { awningOut }).filter((e) => e.type === 'depart');
+        for (const win of [24, minHoursToFull()]) {
+          // 窗口 (c, c + win]：以每个离开时刻为起点 c（左开），统计之后 win 小时内的离开毛额
+          for (let i = 0; i < deps.length; i++) {
+            let sum = 0;
+            for (let j = i + 1; j < deps.length && deps[j].atMs <= deps[i].atMs + win * H; j++) sum += deps[j].gross;
+            expect(sum).toBeLessThanOrEqual(maxPooledCentsWithin(win));
+          }
+        }
+      }
+    }
   });
   it('空池按期望收入到满：展开约 48 h，不展开约 49.5 h', () => {
     const empty = newLedger(nov(5)).pending;

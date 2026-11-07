@@ -54,7 +54,7 @@ function hoursToFull(awning: boolean, seeds: number) {
     }
   }
   hs.sort((a, b) => a - b);
-  return { mean: hs.reduce((s, x) => s + x, 0) / hs.length, p5: pct(hs, 0.05), p50: pct(hs, 0.5), p95: pct(hs, 0.95) };
+  return { mean: hs.reduce((s, x) => s + x, 0) / hs.length, min: hs[0], p5: pct(hs, 0.05), p50: pct(hs, 0.5), p95: pct(hs, 0.95) };
 }
 
 console.log('## 输入参数\n');
@@ -80,12 +80,12 @@ for (const [name, aw] of rows) {
 }
 
 console.log('\n## 待收取池：收取后从 0 到满\n');
-console.log('| 情形 | 解析 小时（上限 / 期望时速） | 模拟均值 小时 | P5 / P50 / P95 小时 |');
+console.log('| 情形 | 解析 小时（上限 / 期望时速） | 模拟均值 小时 | 样本最小 / P5 / P50 / P95 小时 |');
 console.log('|---|---|---|---|');
 for (const [name, aw] of rows) {
   const a = expectedParking(aw);
   const mc = hoursToFull(aw, 200);
-  console.log(`| ${name} | ${f((PENDING.capGold / a.goldPerDay) * 24)} | ${f(mc.mean)} | ${f(mc.p5)} / ${f(mc.p50)} / ${f(mc.p95)} |`);
+  console.log(`| ${name} | ${f((PENDING.capGold / a.goldPerDay) * 24)} | ${f(mc.mean)} | ${f(mc.min)} / ${f(mc.p5)} / ${f(mc.p50)} / ${f(mc.p95)} |`);
 }
 
 const gain = expectedParking(true).goldPerDay - expectedParking(false).goldPerDay;
@@ -95,5 +95,5 @@ console.log(`- 日增收 ${f(gain, 2)} 金 → 回本 ${f(SIDE_AWNING.priceGold 
 const daily = expectedParking(false).goldPerDay + giftMean;
 console.log('\n## 开局资金路径（无侧边帐，期望值）\n');
 console.log(`- 开局 ${ECONOMY.startingGold} 金即可买侧边帐（剩 ${ECONOMY.startingGold - SIDE_AWNING.priceGold}）`);
-console.log(`- 日收入期望 ${f(daily)} 金，远低于软上限阈值 ${ECONOMY.softCapThresholdGold} 金 → M1 正常游玩不会触发软上限`);
+console.log(`- 日收入期望 ${f(daily)} 金，低于软上限阈值 ${ECONOMY.softCapThresholdGold} 金；但收取按收取时刻计日，长时间离开后同日收取两次仍可能触发软上限（见 docs/ECONOMY_M1.md 发现 3）`);
 console.log(`- 软上限触发所需日毛收入 ${ECONOMY.softCapThresholdGold} 金 ≈ ${f(ECONOMY.softCapThresholdGold / daily, 2)} 倍当前期望`);

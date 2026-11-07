@@ -2,7 +2,8 @@
  * 回访面板与待收取区文案（issue #28）：礼物与收取同一个面板；满额时“待收取”与“未累积”分开，明说不是扣钱。
  */
 import { describe, expect, it } from 'vitest';
-import { departToast, fmtHours, offlineSummary, pendingLines, returnPanel } from '../src/client/welcome';
+import { closeWelcomeAfterCollect, departToast, fmtHours, offlineSummary, pendingLines, returnPanel } from '../src/client/welcome';
+import { awningOut, claimDailyGift, collectPending, newGame } from '../src/shared/state';
 import { pendingView } from '../src/shared/economy';
 import { emptyPending, pendingCapCents, type PendingPool } from '../src/shared/ledger';
 import type { CampEvent, NpcStay } from '../src/shared/npc';
@@ -82,5 +83,29 @@ describe('离开提示', () => {
     expect(departToast('1 号位', dep(5_000, 0), '5 小时')).toContain('待收取已满');
     expect(departToast('爱心车位', dep(0, 0, 'love'), '5 小时')).toBeNull();
     expect(offlineSummary([dep(0, 0, 'love')])).toBeNull();
+  });
+});
+
+describe('收取后回访面板（GPT 审核 #32 第 2 轮）', () => {
+  const nov = (d: number, hour = 10) => Date.UTC(2026, 10, d, hour - 8);
+
+  it('面板打开时从侧栏收取成功：面板关闭；按收取后的账本重算已没有收取按钮', () => {
+    const s = newGame(nov(5, 8), 17);
+    claimDailyGift(s, nov(5, 8));
+    const r0 = claimDailyGift(s, nov(5, 20));
+    const panel = returnPanel(r0.events, r0.gift, pendingView(s.ledger.pending, awningOut(s)))!;
+    expect(panel.collect).not.toBeNull(); // 面板打开，显示收取按钮
+
+    const r = collectPending(s, nov(5, 20)); // 侧栏“收取”，没有 close 参数
+    expect(r.collected).not.toBeNull();
+    expect(closeWelcomeAfterCollect(false, r.collected !== null)).toBe(true);
+    // 面板的快照已过时：按当前账本重算，不再有待收取与收取按钮
+    expect(returnPanel([], null, pendingView(s.ledger.pending, awningOut(s)))).toBeNull();
+  });
+
+  it('侧栏收取失败（池为空）不动面板；从面板点的收取不论成败都关闭', () => {
+    expect(closeWelcomeAfterCollect(false, false)).toBe(false);
+    expect(closeWelcomeAfterCollect(true, false)).toBe(true);
+    expect(closeWelcomeAfterCollect(true, true)).toBe(true);
   });
 });
