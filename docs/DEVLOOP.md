@@ -103,6 +103,8 @@ gh workflow run claude.yml -R daniel-to-the-moon/camp-empire -f pr=<PR号>
 
 ## 六、残余风险（如实列出）
 
+- 云端 Claude 开启了完整输出（`show_full_output`），失败时可在 Actions 日志看到实际报错。日志含全部工具执行结果；以 secrets 登记的密钥会被自动打码，仓库私有。**仓库若改为公开，须先关闭此项。**
+
 - 云端 Claude 步骤失败、超时，或整个任务失败：`publish` 仍会运行，在 issue / PR 下发失败说明并加 `needs-user`，循环停下等用户，不会无声卡住。
 
 - `work` 任务里有 Anthropic API key（Claude 运行必需），并会执行仓库代码与依赖安装脚本。依赖被投毒时这个 key 可能泄露，但拿不到能写仓库的令牌。缓解：在 Anthropic 控制台给这个 key 设用量上限。
