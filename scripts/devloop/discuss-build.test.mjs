@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { alreadyReviewed, BOT_LOGIN, buildPrompt, REVIEW_MARKER, THREAD_LIMIT, threadText } from './discuss-build.mjs';
+import { alreadyReviewed, BOT_LOGIN, buildPrompt, PROMPT_BUDGET, REVIEW_MARKER, THREAD_LIMIT, THREAD_MIN, threadText } from './discuss-build.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'discuss-'));
@@ -52,6 +52,28 @@ test('长讨论截断：全文截断但保留开头与最近部分；点名评�
   assert.match(t, /第400条/);
   const p = buildPrompt({ header, issue, comments, mode: 'mention', triggerId: 5000 });
   assert.match(p.slice(p.indexOf('## 本次点名'), p.indexOf('## 讨论全文')), /这条早期点名必须回答/);
+});
+
+test('超长点名评论位于长讨论中部：点名完整保留（末尾问题仍在），全文用剩余预算截断', () => {
+  const before = Array.from({ length: 200 }, (_, i) => c(i + 1, `前${i + 1} ${'字'.repeat(600)}`));
+  const after_ = Array.from({ length: 200 }, (_, i) => c(i + 1001, `后${i + 1} ${'字'.repeat(600)}`));
+  const longBody = `@gpt 开头\n${'论'.repeat(45_000)}\n末尾问题：边界值要不要改？`;
+  const comments = [...before, c(5000, longBody), ...after_];
+  const p = buildPrompt({ header, issue, comments, mode: 'mention', triggerId: 5000 });
+  const sec = p.slice(p.indexOf('## 本次点名'), p.indexOf('## 讨论全文'));
+  assert.ok(sec.includes(longBody), '点名评论必须完整');
+  assert.match(sec, /末尾问题：边界值要不要改？/);
+  assert.doesNotMatch(sec, /已截断/);
+  const thread = p.slice(p.indexOf('## 讨论全文'));
+  assert.match(thread, /正文开头/);
+  assert.match(thread, /后200 /);
+  assert.ok(p.length - header.length <= PROMPT_BUDGET + 200, `总长 ${p.length} 超出预算`);
+  // 点名评论再长，讨论全文也至少保留 THREAD_MIN
+  const huge = c(6000, `@gpt ${'长'.repeat(PROMPT_BUDGET)}\n最后一问？`);
+  const p2 = buildPrompt({ header, issue, comments: [...before, huge, ...after_], mode: 'mention', triggerId: 6000 });
+  assert.match(p2, /最后一问？/);
+  const t2 = p2.slice(p2.indexOf('## 讨论全文'));
+  assert.ok(t2.length >= THREAD_MIN && t2.length <= THREAD_MIN + 200);
 });
 
 test('首次评审与手动触发没有“本次点名”一节', () => {
