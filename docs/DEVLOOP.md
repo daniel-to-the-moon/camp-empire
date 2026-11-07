@@ -103,6 +103,10 @@ gh workflow run claude.yml -R daniel-to-the-moon/camp-empire -f pr=<PR号>
 
 ## 六、残余风险（如实列出）
 
+- **工作流文件与 GITHUB_TOKEN**：GitHub 不允许 `GITHUB_TOKEN` 推送会改动 `.github/workflows/` 的提交。
+  - 新分支（implement）：`publish.sh` 先把新提交挪到当前 main 上再推，避免“从旧起点开分支”被视为改动工作流（#11、#12 曾因此失败）。
+  - 修复（fix）：若 PR 与 main 冲突、Claude 需要把 main 合进 PR 分支，而 main 期间改过工作流文件，推送仍会被拒，流程加 `needs-user` 停下。彻底解决需要给 `publish` 一个有 `workflows` 权限的令牌（例如仅限本仓库的 fine-grained PAT），**待用户决定**。
+
 - 云端 Claude 开启了完整输出（`show_full_output`），失败时可在 Actions 日志看到实际报错。日志含全部工具执行结果；以 secrets 登记的密钥会被自动打码，仓库私有。**仓库若改为公开，须先关闭此项。**
 
 - 云端 Claude 步骤失败、超时，或整个任务失败：`publish` 仍会运行，在 issue / PR 下发失败说明并加 `needs-user`，循环停下等用户，不会无声卡住。
