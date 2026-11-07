@@ -1,6 +1,6 @@
 /**
  * 入口：把 src/shared 的纯逻辑接到场景与界面。
- * 时间：now() = 本机时间 + 开发快进偏移（?dev 面板）。M1 单机原型，存档在 IndexedDB（src/shared/save.ts）。
+ * 时间：now() = 本机时间 + 当前这一局的开发快进偏移（?dev 面板；偏移与局标识绑定，见 DevClock）。M1 单机原型，存档在 IndexedDB（src/shared/save.ts）。
  */
 import '../style.css';
 import { CATALOG, findVariant } from '../data/models';
@@ -13,7 +13,7 @@ import { bodyCenter, footprint, specOf, stepDrive, type DriveState, type Pose } 
 import { feeCents, type CampEvent } from '../shared/npc';
 import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, planReverseOut, type PathPose } from '../shared/parking';
 import { hash32 } from '../shared/rng';
-import { devCommand, freshGameAt, isDevEntry, resetSave } from '../shared/devgate';
+import { devCommand, DevClock, freshGameAt, isDevEntry, resetSave } from '../shared/devgate';
 import { IdbStore, requestWriter, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
 import {
   arriveHome,
@@ -40,8 +40,9 @@ const DEV_KEY = 'camp-empire.devOffsetMs';
 const LOCK_NAME = 'camp-empire.writer';
 const DEV = isDevEntry(location.search);
 
-let devOffset = DEV ? Number(localStorage.getItem(DEV_KEY) ?? 0) || 0 : 0;
-const now = () => Date.now() + devOffset;
+/** 开发快进偏移只对记录它的那一局生效（issue #11）；普通入口不读不写 */
+const devClock = new DevClock(DEV ? localStorage : null, DEV_KEY, () => Date.now());
+const now = () => devClock.now(state.sid);
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
@@ -52,8 +53,7 @@ const slot = store ? new SaveSlot(store, SAVE_KEY) : null;
 if (slot && (await slot.importIfEmpty(localStorage.getItem(LEGACY_SAVE_KEY)).catch(() => false))) localStorage.removeItem(LEGACY_SAVE_KEY);
 const newSeed = () => hash32(`${Date.now()}:${Math.random()}`);
 function clearDevOffset() {
-  devOffset = 0;
-  localStorage.removeItem(DEV_KEY);
+  devClock.clear();
 }
 /**
  * 没有存档时新开一局：按真实时间建局，并清掉残留的开发快进偏移（GPT 审核 #4 第 4 轮第 1 条）。
@@ -278,6 +278,8 @@ function adoptLatest(): Promise<void> {
 
 /** 采纳另一份权威状态（其他标签页写入或重开的存档），整体重建画面 */
 function adoptState(s: GameState) {
+  // 换成另一局（其他标签页重开）时，本页属于旧局的快进偏移同步失效（issue #11）
+  devClock.adopt(s.sid);
   state = s;
   resyncView();
   renderHud();
@@ -393,8 +395,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
       });
       return;
     }
-    devOffset += cmd.ms;
-    localStorage.setItem(DEV_KEY, String(devOffset));
+    devClock.forward(state.sid, cmd.ms);
     const r = await act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
     if (!r) return;
     toast([summarizeOffline(r.events) ?? '快进期间没有露营者离开', r.gift ? `管理员送来 ${r.gift.gold} 金` : null].filter(Boolean).join('；'));
@@ -602,7 +603,7 @@ function renderHud() {
   const v = currentVariant(state);
   const t = now();
   $('#coins').textContent = displayGold(state.ledger.balance).toLocaleString('zh-CN');
-  $('#clock').textContent = `上海 ${clock(t)}${devOffset ? ' · 已快进' : ''}`;
+  $('#clock').textContent = `上海 ${clock(t)}${devClock.offsetFor(state.sid) ? ' · 已快进' : ''}`;
 
   const parkedHome = mode === 'parked';
   $('#garage').innerHTML = `

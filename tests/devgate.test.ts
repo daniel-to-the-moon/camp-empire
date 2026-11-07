@@ -39,7 +39,7 @@ describe('调试动作闸门', () => {
   it('main.ts 的 dev 动作经过闸门，且只有 ?dev 入口才取消面板的 hidden', () => {
     const dev = main.slice(main.indexOf('async dev(arg)'));
     expect(dev.indexOf('devCommand(DEV, writer, arg)')).toBeGreaterThan(0);
-    expect(dev.indexOf('devCommand(DEV')).toBeLessThan(dev.indexOf('devOffset +='));
+    expect(dev.indexOf('devCommand(DEV')).toBeLessThan(dev.indexOf('devClock.forward('));
     expect(main).toMatch(/if \(DEV\) \{\s*\$\('#dev'\)\.hidden = false;/);
     expect(main.match(/#dev'\)\.hidden/g)).toHaveLength(1);
   });

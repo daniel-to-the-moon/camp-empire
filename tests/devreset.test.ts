@@ -103,9 +103,12 @@ describe('main.ts 接线（静态检查）', () => {
   it('新局一律按 Date.now() 建立，不用带偏移的 now()', () => {
     expect(main).not.toMatch(/newGame\(/);
     expect(main).toMatch(/freshGameAt\(Date\.now\(\)/);
-    const reset = main.slice(main.indexOf("cmd.kind === 'reset'"), main.indexOf('devOffset +='));
+    const reset = main.slice(main.indexOf("cmd.kind === 'reset'"), main.indexOf('devClock.forward('));
+    expect(reset.length).toBeGreaterThan(0);
     expect(reset).toMatch(/resetSave\(\{\s*realNowMs: Date\.now\(\)/);
-    expect(reset).not.toMatch(/removeItem\(DEV_KEY\)/); // 偏移只在 resetSave 成功后经 clearDevState 清除
+    // 偏移只在 resetSave 成功后经 clearDevState 清除
+    expect(reset).not.toMatch(/removeItem\(DEV_KEY\)/);
+    expect(reset).not.toMatch(/devClock\.clear\(/);
     expect(reset.indexOf('location.reload()')).toBeGreaterThan(reset.indexOf('resetSave('));
   });
 
