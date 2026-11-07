@@ -89,11 +89,16 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
 ## 模型网关与手动重跑
 
 - 云端 Claude 通过仓库变量 `ANTHROPIC_BASE_URL` 指定的网关调用模型（用户的 key 来自第三方网关 `api.toolpai.com`，不是 Anthropic 官方 API；2026-11-07 用户本机实测该网关可用）。变量为空时走官方地址。代码会经过该网关，与用户桌面端 Claude 的现有路径相同。
-- 云端修复失败（例如 key 或网关故障）排除后，用手动触发重跑某个 PR 的修复：
+- 云端修复失败、PR 被加上 `needs-user` 后的恢复步骤：
+  1. 先看 PR 下的失败说明和 Actions 日志，确认停下的原因（key、网关、额度等）已经排除；
+  2. 手动重跑该 PR 的修复：
 
 ```bash
 gh workflow run claude.yml -R shengjun89/camp-empire -f pr=<PR号>
 ```
+
+  3. 重跑成功推送修复后，发布步骤会自动移除 `needs-user`，本机审核方随即审核新提交；`hold` 是用户的暂停意图，不会被移除。重跑仍失败则保持 `needs-user`。
+- 工作流里的判断与发布逻辑在 `scripts/devloop/ctx.sh`、`publish.sh`（`claude.test.mjs` 用假 gh 与本地 git 远端测试），运行时取 main 上的版本。
 
 ## 六、残余风险（如实列出）
 
