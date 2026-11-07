@@ -34,7 +34,9 @@ import { PathRunner, playerObstacles } from './drive';
 import { homeFlow, type Mode, type ModeLock } from './homeflow';
 import { closeWelcomeAfterCollect, departToast, giftLine, offlineSummary, pendingLines, returnPanel } from './welcome';
 import { pendingView } from '../shared/economy';
-import { createCampScene, disposeTree, makeVehicle, placeVehicle, type VehicleView } from './scene';
+import { createCampScene, disposeTree, makeVehicle, placeVehicle, toThree, type VehicleView } from './scene';
+import { cardData, cardFileName, copyMessage, copyPng, fmtMinutes, todayStats, type ClipboardEnv } from '../shared/card';
+import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
 const LEGACY_SAVE_KEY = 'camp-empire.save.v2';
@@ -424,7 +426,60 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   closeWelcome() {
     $('#welcome').hidden = true;
   },
+  // 露营卡片（#30）：只在玩家点按钮时生成，不自动弹出、不接分享渠道、无分享奖励
+  async card() {
+    try {
+      const { canvas, data } = makeCard();
+      const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
+      if (!blob) return toast('生成卡片失败');
+      if (cardShown) URL.revokeObjectURL(cardShown.url);
+      cardShown = { blob, url: URL.createObjectURL(blob), name: cardFileName(data) };
+      ($('#camp-card-img') as HTMLImageElement).src = cardShown.url;
+      $('#camp-card').hidden = false;
+    } catch (e) {
+      console.error(e);
+      toast('生成卡片失败');
+    }
+  },
+  cardDownload() {
+    if (!cardShown) return;
+    const a = document.createElement('a');
+    a.href = cardShown.url;
+    a.download = cardShown.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  },
+  async cardCopy() {
+    if (!cardShown) return;
+    const env: ClipboardEnv = {
+      clipboard: navigator.clipboard as unknown as ClipboardEnv['clipboard'],
+      ClipboardItem: (window as unknown as { ClipboardItem?: ClipboardEnv['ClipboardItem'] }).ClipboardItem,
+    };
+    toast(copyMessage(await copyPng(cardShown.blob, env)));
+  },
+  cardClose() {
+    $('#camp-card').hidden = true;
+  },
 };
+
+// ---------- 露营卡片 ----------
+/** 当前预览的卡片（下载 / 复制用） */
+let cardShown: { blob: Blob; url: string; name: string } | null = null;
+
+/** 取数（与界面同源）+ 车辆特写 + 营地俯视全景，排成一张竖版卡片 */
+function makeCard() {
+  const data = cardData(state, now());
+  const v = currentVariant(state);
+  const [cx, cy] = bodyCenter(spec, drive.pose);
+  // 车辆特写：从车头右前方 45°（侧边帐在右侧）稍高处看向车身中部
+  const a = drive.pose.yaw - Math.PI / 4;
+  const d = v.lengthM * 0.9 + 4;
+  const vehicleShot = view.snapshot(toThree(cx + Math.cos(a) * d, cy + Math.sin(a) * d, v.heightM + 2.2), toThree(cx, cy, v.heightM * 0.45), SHOT_W, VEHICLE_SHOT_H, { labels: false });
+  // 营地全景：从营地南侧上空 85 m 俯视营地中部（营地范围见 camp.ts WORLD），不加雾
+  const campShot = view.snapshot(toThree(0, -37, 85), toThree(0, -4, 0), SHOT_W, CAMP_SHOT_H, { fog: false });
+  return { canvas: drawCard(data, vehicleShot, campShot), data };
+}
 
 function startAuto(path: PathPose[], done: () => void, replan: typeof autoReplan = null) {
   mode = 'auto';
@@ -630,6 +685,7 @@ function renderHud() {
   $('#clock').textContent = `上海 ${clock(t)}${devClock.offsetFor(state.sid) ? ' · 已快进' : ''}`;
 
   const parkedHome = mode === 'parked';
+  const ts = todayStats(state, t);
   $('#garage').innerHTML = `
     <h2>车库</h2>
     <p class="hint">${parkedHome ? '选一辆你的车（尺寸为公告三围，占位外观）' : '停回家位后才能换车'}</p>
@@ -670,6 +726,7 @@ function renderHud() {
           <span class="sub">已停 ${fmtDur(Math.max(0, done))} / 共 ${fmtDur(total)} · ${pay}</span></div>`;
       })
       .join('')}
+    <p class="fine">今天到访 ${ts.visitors} 位露营者，爱心车位公益停靠 ${fmtMinutes(ts.loveMinutes)}（上海日，露营卡片同源）</p>
     <p class="fine">爱心车位累计公益停靠 ${fmtDur(state.camp.loveMinutes)}</p>`;
 
   const pv = pendingView(state.ledger.pending, out);
@@ -685,7 +742,6 @@ function renderHud() {
     </div>
     <p class="fine">上限 = ${PENDING.capHours} 小时的期望停车收入（${PENDING.capGold} 金，提案值）。收取的金额按收取当天计入每日软上限。</p>`;
 
-  const today = state.ledger.today;
   const sv = giftStreakView(state, now());
   $('#daily').innerHTML = `
     <h2>每日</h2>
@@ -693,7 +749,7 @@ function renderHud() {
     <ol class="ladder">${LADDER.map((gold, i) => `<li class="${i + 1 === sv.today ? 'today' : ''}"><span>第 ${i + 1} 天</span><b>${gold}</b></li>`).join('')}</ol>
     <p>今天第 ${sv.today} 天（连续 ${sv.streak} 天）${sv.claimedToday ? `，已领 ${sv.claimedGold} 金` :`，可领 ${sv.todayGold} 金`}；明天继续登录可领 ${sv.tomorrowGold} 金。</p>
     <p class="fine">断签只回到第 1 天，已领的金币不扣、不清零。连续 7 天共 ${LADDER.reduce((s, g) => s + g, 0)} 金，平均每天 ${ladderMeanGold().toFixed(1)} 金（提案值）。日界为上海时间 0 点。</p>
-    <p class="fine">今日已入账 ${displayGold(today.issued)} 金；当日收入超过 ${ECONOMY.softCapThresholdGold} 金的部分按 ${ECONOMY.softCapRateAbove * 100}% 发放。</p>`;
+    <p class="fine">今日已入账 ${displayGold(ts.issuedCents)} 金；当日收入超过 ${ECONOMY.softCapThresholdGold} 金的部分按 ${ECONOMY.softCapRateAbove * 100}% 发放。</p>`;
 
   $('#log').innerHTML = state.ledger.entries
     .slice(-6)

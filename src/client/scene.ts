@@ -269,6 +269,13 @@ export interface CampScene {
   dust(point: [number, number], n: [number, number], strength: number): void;
   /** 震屏：amount 0..1 */
   shake(amount: number): void;
+  /**
+   * 截图（露营卡片 #30）：用临时相机按 w × h 像素渲染一帧，渲染后立即在同一任务里拷进 2D 画布
+   *（WebGL 画布未开 preserveDrawingBuffer，合成前缓冲区内容有效），再恢复原尺寸重绘主画面。
+   * pos / look 为 three 坐标；opts.fog = false 时这一帧不加雾（俯视全景距离远，雾会把营地罩白）；
+   * opts.labels = false 时隐藏车位标牌（标牌不做深度测试，特写时会挡住车）。
+   */
+  snapshot(pos: THREE.Vector3, look: THREE.Vector3, w: number, h: number, opts?: { fog?: boolean; labels?: boolean }): HTMLCanvasElement;
   dispose(): void;
 }
 
@@ -441,6 +448,33 @@ export function createCampScene(container: HTMLElement): CampScene {
         flame.scale.set(1 + Math.sin(t * 9) * 0.06, 1 + Math.sin(t * 13) * 0.12, 1 + Math.cos(t * 7) * 0.06);
       }
       renderer.render(scene, camera);
+    },
+    snapshot(pos, look, w, h, { fog = true, labels: showLabels = true } = {}) {
+      const size = renderer.getSize(new THREE.Vector2());
+      const ratio = renderer.getPixelRatio();
+      const sceneFog = scene.fog;
+      const hidden = showLabels ? [] : [...labels.values()].filter((s) => s.visible);
+      const cam = new THREE.PerspectiveCamera(40, w / h, 0.1, 400);
+      cam.position.copy(pos);
+      cam.lookAt(look);
+      const out = document.createElement('canvas');
+      out.width = w;
+      out.height = h;
+      try {
+        if (!fog) scene.fog = null;
+        for (const s of hidden) s.visible = false;
+        renderer.setPixelRatio(1);
+        renderer.setSize(w, h, false);
+        renderer.render(scene, cam);
+        out.getContext('2d')!.drawImage(renderer.domElement, 0, 0, w, h);
+      } finally {
+        scene.fog = sceneFog;
+        for (const s of hidden) s.visible = true;
+        renderer.setPixelRatio(ratio);
+        renderer.setSize(size.x, size.y, false);
+        renderer.render(scene, camera);
+      }
+      return out;
     },
     dispose() {
       ro.disconnect();
