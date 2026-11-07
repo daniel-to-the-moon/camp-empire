@@ -30,6 +30,7 @@ Muse 验收 / 用户 / 讨论结论 ──► issue，打 devloop 标签
 | `.github/workflows/claude.yml` | GitHub Actions | issue 打上 `devloop` 标签时实现；GPT 审核评论带 `state=changes` 时在同一 PR 修复。分两个任务：`work`（只读令牌，Claude 改代码跑测试，打包提交）→ `publish`（有写权限但不执行仓库代码，只把提交推到 `claude/*` 分支并开 PR 或评论） |
 | `scripts/devloop/devloop.mjs` | 用户 Mac | `watch`：常驻审核；`review <PR>`：手动审核一次 |
 | `scripts/devloop/policy.mjs`（+ `policy.test.mjs`） | — | 合并决策与评论标记（CI 里用 `node --test` 自测） |
+| `scripts/devloop/prstate.mjs`（+ `prstate.test.mjs`） | — | 读取 PR 状态与审核方标记；审核方账号每次重新查询（假 gh 模拟账号改名做回归测试） |
 | `scripts/devloop/gitops.mjs`（+ `gitops.test.mjs`） | — | 合并推送、删分支、CI 运行匹配、进程锁（本地临时仓库集成测试） |
 | `scripts/devloop/ci.mjs`（+ `ci.test.mjs`） | — | 触发与等待 CI；任何查询异常都转为“基础设施问题”，不向外抛 |
 | `scripts/devloop/review-prompt.md`、`review-schema.json` | — | GPT 审核必查项与结构化结论格式 |
