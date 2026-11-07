@@ -171,9 +171,34 @@ export function collect(l: Ledger, atMs: number): { gross: Cents; amount: Cents;
   if (p.gross <= 0) return null;
   const gross = p.gross;
   const stays = p.stays;
-  const amount = credit(l, { key: `collect:${p.collections}`, atMs, kind: 'parking_collect', gross, note: `收取停车费（${stays} 位露营者）` });
+  const key = `collect:${p.collections}`;
+  // 收取序号与已有流水冲突说明账本损坏：credit 会按重复键返回 0，若继续清空池就会静默丢停车费（GPT 审核 #32 第 2 条）。
+  // 抛异常让存档事务回滚，池保持原样
+  if (l.seen[key]) throw new Error(`收取序号 ${key} 已用过，账本损坏，待收取池保持不动`);
+  const amount = credit(l, { key, atMs, kind: 'parking_collect', gross, note: `收取停车费（${stays} 位露营者）` });
   l.pending = { gross: 0, stays: 0, lost: 0, lostStays: 0, collections: p.collections + 1 };
   return { gross, amount, stays };
+}
+
+/**
+ * 待收取池结构与一致性校验（加载存档时用，GPT 审核 #32 第 2 条）。只接受 deposit / collect 能产生的状态：
+ * - 各字段为非负安全整数，gross ≤ 池上限（以后若下调 PENDING.capGold，须升存档版本并迁移，否则旧存档会被拒绝）；
+ * - gross > 0 ⇔ stays ≥ 1（每笔进池的停靠计一次）；lost > 0 ⇔ lostStays ≥ 1；
+ * - collections 等于已有收取流水（parking_collect）笔数，且这些流水正好是 collect:0 … collect:(n−1)，
+ *   下一个收取键 collect:n 未被使用——否则收取会撞重复键。
+ */
+export function validPending(l: Pick<Ledger, 'pending' | 'entries' | 'seen'>): boolean {
+  const p = l.pending;
+  if (!p || typeof p !== 'object' || !Array.isArray(l.entries) || !l.seen || typeof l.seen !== 'object') return false;
+  if (![p.gross, p.stays, p.lost, p.lostStays, p.collections].every((v) => Number.isSafeInteger(v) && v >= 0)) return false;
+  if (p.gross > pendingCapCents()) return false;
+  if ((p.gross > 0) !== (p.stays > 0)) return false;
+  if ((p.lost > 0) !== (p.lostStays > 0)) return false;
+  const keys = l.entries.filter((e) => e && e.kind === 'parking_collect').map((e) => e.key);
+  if (keys.length !== p.collections) return false;
+  const expected = new Set(Array.from({ length: p.collections }, (_, i) => `collect:${i}`));
+  if (new Set(keys).size !== keys.length || !keys.every((k) => expected.has(k) && l.seen[k] === true)) return false;
+  return !l.seen[`collect:${p.collections}`];
 }
 
 /** 消费：余额不足返回 false 且不改账 */

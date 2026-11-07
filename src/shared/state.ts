@@ -5,7 +5,7 @@
 import { ALL_VARIANTS, findVariant, type Variant } from '../data/models';
 import { RENTAL_SPOTS } from './camp';
 import { DAILY_GIFT, SIDE_AWNING } from './config';
-import { collect, credit, dayKey, emptyPending, newLedger, spend, type Ledger } from './ledger';
+import { collect, credit, dayKey, emptyPending, newLedger, spend, validPending, type Ledger } from './ledger';
 import type { Pose } from './kinematics';
 import { advanceCamp, newCampSim, type CampEvent, type CampSim } from './npc';
 import { pickWeighted, uniform } from './rng';
@@ -161,11 +161,10 @@ export function recordPose(s: GameState, nowMs: number, pose: Pose): ActionResul
   return { ok: true, events };
 }
 
-function validPending(p: Ledger['pending'] | undefined): boolean {
-  return !!p && [p.gross, p.stays, p.lost, p.lostStays, p.collections].every((v) => Number.isSafeInteger(v) && v >= 0);
-}
-
-/** 存档：结构校验失败或版本不符时返回 null（调用方新开一局）；v2 存档迁移到 v3 */
+/**
+ * 存档：结构校验失败或版本不符时返回 null（调用方新开一局）；v2 存档迁移到 v3。
+ * v3 存档放在独立槽位（save.ts SAVE_KEY），v2 槽位只在 v3 槽位为空时导入一次，见 migrateSave。
+ */
 export function loadSave(json: string | null): GameState | null {
   if (!json) return null;
   try {
@@ -176,7 +175,7 @@ export function loadSave(json: string | null): GameState | null {
       s.ledger.pending = emptyPending();
       s.version = 3;
     }
-    if (s.version !== SAVE_VERSION || !validPending(s.ledger.pending)) return null;
+    if (s.version !== SAVE_VERSION || !validPending(s.ledger)) return null;
     if (!Number.isSafeInteger(s.rev)) s.rev = 0; // 本字段加入前的存档
     // 局标识加入前的存档：按种子确定性补一个，多个标签页读同一份旧存档时得到同一个标识
     if (typeof s.sid !== 'string' || !s.sid) s.sid = `legacy:${s.seed}`;

@@ -208,4 +208,55 @@ describe('存档兼容', () => {
     expect(loadSave(JSON.stringify(bad))).toBeNull();
     expect(loadSave(JSON.stringify({ ...JSON.parse(json), version: 1 }))).toBeNull();
   });
+
+  /** 一份收取过一次、又积了一池待收取的正常存档（GPT 审核 #32 第 2 条的复现前提） */
+  function collectedThenRefilled(): GameState {
+    const s = newGame(nov(5, 8), 11);
+    claimDailyGift(s, nov(5, 20));
+    expect(collectPending(s, nov(5, 20)).ok).toBe(true);
+    claimDailyGift(s, nov(6, 20));
+    expect(s.ledger.pending.gross).toBeGreaterThan(0);
+    expect(s.ledger.pending.collections).toBe(1);
+    return s;
+  }
+  const corrupt = (s: GameState, f: (raw: GameState) => void) => {
+    const raw = JSON.parse(JSON.stringify(s)) as GameState;
+    f(raw);
+    return loadSave(JSON.stringify(raw));
+  };
+
+  it('正常存档（收取过、又积累了）能加载', () => {
+    const s = collectedThenRefilled();
+    expect(JSON.stringify(loadSave(JSON.stringify(s)))).toBe(JSON.stringify(s));
+  });
+
+  it('收取序号回退（collections 与已有 collect 流水不一致）：拒绝加载', () => {
+    const s = collectedThenRefilled();
+    expect(corrupt(s, (r) => (r.ledger.pending.collections = 0))).toBeNull();
+    expect(corrupt(s, (r) => (r.ledger.pending.collections = 2))).toBeNull(); // 超前也不对：流水只有 collect:0
+    expect(corrupt(s, (r) => (r.ledger.entries.find((e) => e.key === 'collect:0')!.key = 'collect:7'))).toBeNull();
+    expect(corrupt(s, (r) => delete r.ledger.seen['collect:0'])).toBeNull();
+    expect(corrupt(s, (r) => (r.ledger.seen['collect:1'] = true))).toBeNull(); // 下一个收取键已被占用
+  });
+
+  it('待收取毛额超过池上限：拒绝加载', () => {
+    const s = collectedThenRefilled();
+    expect(corrupt(s, (r) => (r.ledger.pending.gross = cap + 1))).toBeNull();
+    expect(corrupt(s, (r) => (r.ledger.pending.gross = cap))).not.toBeNull(); // 恰好满额是合法状态
+  });
+
+  it('笔数与金额不一致：拒绝加载', () => {
+    const s = collectedThenRefilled();
+    expect(corrupt(s, (r) => (r.ledger.pending.stays = 0))).toBeNull();
+    expect(corrupt(s, (r) => (r.ledger.pending.lost = 100))).toBeNull(); // 有未累积金额却没有笔数
+    expect(corrupt(s, (r) => (r.ledger.pending.lostStays = 1))).toBeNull();
+  });
+
+  it('收取遇到序号冲突：抛异常，不清空待收取池、不改余额', () => {
+    const s = collectedThenRefilled();
+    s.ledger.pending.collections = 0; // 绕过加载校验，直接在内存里制造冲突
+    const before = JSON.stringify(s.ledger);
+    expect(() => collect(s.ledger, nov(6, 20))).toThrow('收取序号');
+    expect(JSON.stringify(s.ledger)).toBe(before);
+  });
 });

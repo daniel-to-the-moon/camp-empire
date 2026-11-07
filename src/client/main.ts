@@ -14,7 +14,7 @@ import { feeCents, type CampEvent } from '../shared/npc';
 import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, type PathPose } from '../shared/parking';
 import { hash32 } from '../shared/rng';
 import { devCommand, DevClock, freshGameAt, isDevEntry, resetSave } from '../shared/devgate';
-import { IdbStore, requestWriter, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
+import { IdbStore, migrateSave, requestWriter, SAVE_KEY, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
 import {
   arriveHome,
   awningOut,
@@ -33,9 +33,7 @@ import { departToast, offlineSummary, pendingLines, returnPanel } from './welcom
 import { pendingView } from '../shared/economy';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, type VehicleView } from './scene';
 
-/** IndexedDB 里的存档键 */
-const SAVE_KEY = 'save.v2';
-/** 上一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除 */
+/** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
 const LEGACY_SAVE_KEY = 'camp-empire.save.v2';
 const DB_NAME = 'camp-empire';
 const DEV_KEY = 'camp-empire.devOffsetMs';
@@ -52,7 +50,8 @@ const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as
 const locks = (navigator as unknown as { locks?: LocksLike }).locks;
 const store = typeof indexedDB === 'undefined' ? null : await IdbStore.open(indexedDB, DB_NAME).catch(() => null);
 const slot = store ? new SaveSlot(store, SAVE_KEY) : null;
-if (slot && (await slot.importIfEmpty(localStorage.getItem(LEGACY_SAVE_KEY)).catch(() => false))) localStorage.removeItem(LEGACY_SAVE_KEY);
+// v3 槽位为空时导入 v2 槽位或 localStorage 旧存档（v2 槽位保留给仍开着的旧版本标签页，见 save.ts SAVE_KEY）
+if (store && (await migrateSave(store, localStorage.getItem(LEGACY_SAVE_KEY)).catch(() => null)) === 'legacy') localStorage.removeItem(LEGACY_SAVE_KEY);
 const newSeed = () => hash32(`${Date.now()}:${Math.random()}`);
 function clearDevOffset() {
   devClock.clear();
