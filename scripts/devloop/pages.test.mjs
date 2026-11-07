@@ -23,6 +23,15 @@ const server = createServer((req, res) => {
       res.writeHead(code, { 'content-type': 'application/json' });
       res.end(JSON.stringify(obj));
     };
+    if (!req.url.startsWith('/accounts/')) {
+      // 假的 pages.dev 站点：按 Host 判断是否被 Access 保护
+      const host = (req.headers.host || '').split(':')[0];
+      const mode = state.access[host] ?? state.access['*'] ?? 'open';
+      if (mode === 'redirect') { res.writeHead(302, { location: 'https://team.cloudflareaccess.com/cdn-cgi/access/login' }); return res.end(); }
+      if (mode === 'forbidden') { res.writeHead(403); return res.end(); }
+      if (mode === 'elsewhere') { res.writeHead(302, { location: 'https://example.com/' }); return res.end(); }
+      res.writeHead(200); return res.end('<html>');
+    }
     const m = req.url.match(/^\/accounts\/([^/]+)\/pages\/projects(?:\/([^/]+))?$/);
     if (!m || m[1] !== ACCOUNT || req.headers.authorization !== 'Bearer tok') return send(403, { success: false, errors: [{ message: 'forbidden' }] });
     if (req.method === 'GET' && m[2]) {
@@ -49,8 +58,8 @@ after(() => {
 });
 
 let n = 0;
-function setup({ projects = [], createFails = false, latest = 'sha1', dist = true } = {}) {
-  state = { projects: [...projects], createFails, calls: [] };
+function setup({ projects = [], createFails = false, latest = 'sha1', dist = true, access = { '*': 'redirect' } } = {}) {
+  state = { projects: [...projects], createFails, calls: [], access };
   const dir = join(root, `c${n++}`);
   const bin = join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
@@ -76,6 +85,8 @@ function setup({ projects = [], createFails = false, latest = 'sha1', dist = tru
           REPO: 'o/r',
           WRANGLER: join(bin, 'wrangler'),
           CF_API: base,
+          ACCESS_CHECK_SCHEME: 'http',
+          ACCESS_CHECK_CONNECT: base.replace('http://', ''),
           SUMMARY: join(dir, 'summary.md'),
           ...env,
         },
@@ -130,6 +141,24 @@ test('开关开启且是 main 最新提交：上传正确的产物目录与提�
   assert.match(t.wrangler(), /^pages deploy \S+\/dist --project-name camp-empire --branch main --commit-hash sha1 /m);
 });
 
+test('Access 兜底：正式或预览地址未被拦截（直接可访问、跳到别处）→ 拒绝上传；403 拦截也算受保护', async () => {
+  for (const access of [
+    { '*': 'open' },
+    { '*': 'elsewhere' },
+    { 'camp-empire.pages.dev': 'redirect', '*': 'open' }, // 只保护了正式地址，预览地址公开
+    { 'camp-empire.pages.dev': 'open', '*': 'redirect' }, // 只保护了预览地址
+  ]) {
+    const t = setup({ projects: ['camp-empire'], access });
+    const r = await t.run({ DEPLOY: 'true' });
+    assert.notEqual(r.code, 0, JSON.stringify(access));
+    assert.match(r.err, /未被 Cloudflare Access 保护/);
+    assert.equal(t.wrangler(), '');
+  }
+  const ok = setup({ projects: ['camp-empire'], access: { '*': 'forbidden' } });
+  assert.equal((await ok.run({ DEPLOY: 'true' })).code, 0);
+  assert.notEqual(ok.wrangler(), '');
+});
+
 test('过期运行（main 已有更新的提交，含历史重跑与逆序完成）：跳过上传', async () => {
   const t = setup({ projects: ['camp-empire'], latest: 'sha2' });
   const r = await t.run({ DEPLOY: 'true', SHA: 'sha1' });
@@ -150,13 +179,13 @@ test('项目名非法（防注入）：失败', async () => {
   for (const PROJECT of ['', 'Camp', 'a b', 'x;rm -rf /', '../x']) assert.notEqual((await t.run({ PROJECT })).code, 0, PROJECT);
 });
 
-test('ci.yml：pages 任务只在 push 到 main 时运行、串行且不取消排队中的发布，并调用 pages.sh', () => {
+test('ci.yml：pages 任务只在 push 到 main 时运行、串行且保留全部排队（queue: max），并调用 pages.sh', () => {
   const yml = readFileSync(join(HERE, '../../.github/workflows/ci.yml'), 'utf8');
   const job = yml.match(/^  pages:\n((?:(?: {4,}.*)?\n)*)/m);
   assert.ok(job, 'ci.yml 里找不到 pages 任务');
   const body = job[1];
   assert.match(body, /^ {4}if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'$/m);
-  assert.match(body, /^ {4}concurrency:\n {6}group: pages-deploy\n {6}cancel-in-progress: false$/m);
+  assert.match(body, /^ {4}concurrency:\n {6}group: pages-deploy\n {6}cancel-in-progress: false\n {6}queue: max$/m);
   assert.match(body, /bash _devloop\/scripts\/devloop\/pages\.sh/);
   assert.match(body, /DEPLOY: \$\{\{ vars\.PAGES_DEPLOY \}\}/);
 });

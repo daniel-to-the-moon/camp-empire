@@ -62,6 +62,24 @@ if [ "$latest" != "$SHA" ]; then
 fi
 
 [ -f "$DIST/index.html" ] || { echo "::error::构建产物 $DIST 不完整（缺 index.html）" >&2; exit 1; }
+
+# 4. Access 兜底：未登录访问正式地址与任一预览地址都必须被 Cloudflare Access 拦下，否则拒绝上传（防止配置失误导致公开）
+: "${ACCESS_CHECK_SCHEME:=https}"
+protected() { # protected <主机名>：未登录请求得到 401/403，或重定向到 cloudflareaccess.com 登录页
+  local r code loc
+  # ACCESS_CHECK_CONNECT 仅供测试：把任意主机名的连接转到本地假服务
+  r=$(curl -sS -o /dev/null --max-time 20 -w '%{http_code} %{redirect_url}' \
+    ${ACCESS_CHECK_CONNECT:+--connect-to "::$ACCESS_CHECK_CONNECT"} "$ACCESS_CHECK_SCHEME://$1/") || return 1
+  code=${r%% *}
+  loc=${r#* }
+  case "$code" in 401 | 403) return 0 ;; 301 | 302 | 303 | 307 | 308) [[ "$loc" == *cloudflareaccess.com* ]] ;; *) return 1 ;; esac
+}
+for host in "$subdomain" "devloop-access-check.$subdomain"; do
+  protected "$host" || {
+    echo "::error::$host 未被 Cloudflare Access 保护（未登录请求没有被拦截），拒绝上传。按 docs/DEVLOOP.md 第八节配置后重试。" >&2
+    exit 1
+  }
+done
 $WRANGLER pages deploy "$DIST" --project-name "$PROJECT" --branch main --commit-hash "$SHA" --commit-dirty=true
 echo "已发布 ${SHA:0:8} → https://$subdomain" | tee -a "$SUMMARY"
 echo "deployed=$SHA"

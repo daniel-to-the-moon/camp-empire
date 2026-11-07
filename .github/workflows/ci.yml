@@ -78,13 +78,16 @@ jobs:
   # 发布到 Cloudflare Pages（内部验收环境，用户 2026-11-07 选定）。只在 main 更新后运行。逻辑在 scripts/devloop/pages.sh（有测试）。
   # 不执行仓库里的应用代码：只稀疏检出 main 的 scripts/devloop，下载 test 任务构建好的 dist，用固定版本 wrangler 上传。凭据只在本任务。
   # 两道开关：每次都按名字精确确保 Pages 项目存在并打印地址；仓库变量 PAGES_DEPLOY=true 后才上传（未配 Access 即上传 = 公开）。
-  # 串行发布（不取消排队），上传前核对本次提交仍是 main 最新，避免慢的旧运行或历史重跑把环境回退。
+  # 串行发布、保留全部排队（queue: max），上传前核对本次提交仍是 main 最新，避免慢的旧运行或历史重跑把环境回退；
+  # 上传前还会确认正式与预览地址都被 Cloudflare Access 拦截，否则拒绝上传。
   pages:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # queue: max 保留所有排队中的发布（默认只留一个、会挤掉排队中的最新发布）；先后顺序不保证，由 pages.sh 的 SHA 检查兜底
     concurrency:
       group: pages-deploy
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
