@@ -12,7 +12,6 @@ import { displayGold } from '../shared/ledger';
 import { bodyCenter, footprint, specOf, stepDrive, type DriveState, type Pose } from '../shared/kinematics';
 import { feeCents, type CampEvent } from '../shared/npc';
 import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, type PathPose } from '../shared/parking';
-import { departHome, type DepartResult } from '../shared/depart';
 import { hash32 } from '../shared/rng';
 import { devCommand, freshGameAt, isDevEntry, resetSave } from '../shared/devgate';
 import { IdbStore, requestWriter, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
@@ -23,12 +22,12 @@ import {
   claimDailyGift,
   currentVariant,
   recordPose,
-  selectVariant,
   setAwningWanted,
   type GameState,
 } from '../shared/state';
 import { guardAutoRoute, stepTraffic, type Agent } from '../shared/traffic';
 import { PathRunner, playerObstacles } from './drive';
+import { homeFlow, type Mode, type ModeLock } from './homeflow';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, type VehicleView } from './scene';
 
 /** IndexedDB 里的存档键 */
@@ -98,7 +97,6 @@ let player: VehicleView = makeVehicle(currentVariant(state));
 let playerVariantId = state.variantId;
 view.scene.add(player.root);
 
-type Mode = 'parked' | 'driving' | 'auto';
 let mode: Mode = state.player.parkedHome ? 'parked' : 'driving';
 let drive: DriveState = {
   pose: state.player.parkedHome || !state.player.pose ? parkedPose(spec, home) : state.player.pose,
@@ -305,16 +303,30 @@ function setWriter(w: boolean) {
 
 // ---------- 操作 ----------
 /** 改变玩家车模式的动作（出发 / 停回家位）正在等存档提交：期间不重复触发 */
-let modeBusy = false;
+const modeLock: ModeLock = { busy: false };
+
+/** 换车与出库（逻辑在 ./homeflow.ts，tests/homeflow.test.ts 按真实提交时序测试） */
+const homeActions = homeFlow({
+  act: (fn) => act(fn),
+  state: () => state,
+  mode: () => mode,
+  now,
+  home,
+  obstacles: () => [...staticShapes(), ...parkedNpcShapes()],
+  viewVariantId: () => playerVariantId,
+  rebuildPlayer,
+  setAwning: (on) => player.setAwning(on),
+  startAuto: (path, done) => startAuto(path, done),
+  onDeparted: (end) => {
+    mode = 'driving';
+    drive = { pose: { x: end.x, y: end.y, yaw: end.yaw }, speed: 0, curvature: 0 };
+  },
+  toast,
+  lock: modeLock,
+});
 
 const actions: Record<string, (arg: string) => void | Promise<void>> = {
-  async variant(id) {
-    const r = await act((s) => selectVariant(s, now(), id));
-    if (!r) return;
-    if (!r.ok) return toast(r.error!);
-    // 出库可能已抢先按新车型重建并起步：车型没变就不再重建（避免打断进行中的路线显示）
-    if (playerVariantId !== state.variantId) rebuildPlayer();
-  },
+  variant: (id) => homeActions.variant(id),
   async buy() {
     const r = await act((s) => buyAwning(s, now()));
     if (!r) return;
@@ -326,30 +338,9 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     if (!(await act((s) => setAwningWanted(s, now(), !s.awningWanted)))) return;
     player.setAwning(awningOut(state));
   },
-  async out() {
-    if (mode !== 'parked' || modeBusy) return;
-    modeBusy = true;
-    let r: DepartResult | null;
-    try {
-      // 路线在事务内按存档里的最新车型规划：排在未提交的换车之后也不会用旧车型路线（issue #12）
-      r = await act((s) => departHome(s, now(), home, () => [...staticShapes(), ...parkedNpcShapes()]));
-      // 等待提交期间画面可能已按其他标签页的存档重建：只在仍停在家位时起步
-      if (!r || mode !== 'parked' || state.player.parkedHome) return;
-    } finally {
-      modeBusy = false;
-    }
-    if (!r.ok) return toast(r.error!);
-    // 换车的画面重建可能还没跑到：先按路线所用车型重建玩家车，起点就是新车型的家位位姿
-    if (playerVariantId !== r.variantId) rebuildPlayer();
-    const end = r.path[r.path.length - 1];
-    player.setAwning(false);
-    startAuto(r.path, () => {
-      mode = 'driving';
-      drive = { pose: { x: end.x, y: end.y, yaw: end.yaw }, speed: 0, curvature: 0 };
-    });
-  },
+  out: () => homeActions.out(),
   park() {
-    if (mode !== 'driving' || modeBusy) return;
+    if (mode !== 'driving' || modeLock.busy) return;
     if (!writer) return toast(unsupported ?? READONLY_MSG);
     const plan = planParkIn(spec, drive.pose, home, [...staticShapes(), ...parkedNpcShapes()]);
     if (!plan.ok) return toast(plan.reason!);
@@ -417,15 +408,15 @@ function startAuto(path: PathPose[], done: () => void, replan: typeof autoReplan
 }
 
 async function settleHome() {
-  if (modeBusy) return;
-  modeBusy = true;
+  if (modeLock.busy) return;
+  modeLock.busy = true;
   const from = mode;
   try {
     const r = await act((s) => arriveHome(s, now()));
     // 提交失败，或等待期间画面已按其他标签页的存档重建：不改模式
     if (!r || mode !== from || !state.player.parkedHome) return;
   } finally {
-    modeBusy = false;
+    modeLock.busy = false;
   }
   mode = 'parked';
   drive = { pose: parkedPose(spec, home), speed: 0, curvature: 0 };
@@ -495,7 +486,7 @@ function frame(t: number) {
   prev = t;
 
   // 停回家位正在提交时冻结手动输入，避免提交后位姿跳变
-  if (mode === 'driving' && writer && !modeBusy) {
+  if (mode === 'driving' && writer && !modeLock.busy) {
     let throttle = k('KeyW', 'ArrowUp') - k('KeyS', 'ArrowDown');
     if (keys.has('Space')) throttle = drive.speed > 0 ? -1 : drive.speed < 0 ? 1 : 0;
     const steer = k('KeyA', 'ArrowLeft') - k('KeyD', 'ArrowRight');
