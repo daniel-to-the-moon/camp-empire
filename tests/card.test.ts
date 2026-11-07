@@ -5,6 +5,14 @@ import { describe, expect, it } from 'vitest';
 import mainSrc from '../src/client/main.ts?raw';
 import cardSrc from '../src/shared/card.ts?raw';
 import html from '../index.html?raw';
+import css from '../src/style.css?raw';
+import * as THREE from 'three';
+import { CAMP_SHOT_H, CARD_H, CARD_W, drawCard, SHOT_W, VEHICLE_SHOT_H } from '../src/client/card';
+import { CARD_FAIL_MSG, createCardFlow } from '../src/client/cardflow';
+import { takeSnapshot } from '../src/client/snapshot';
+import { toThree } from '../src/client/scene';
+import { campFrameCorners, campShotCamera, projectNdc, SNAPSHOT_FOV_DEG } from '../src/shared/cardcam';
+import { WORLD } from '../src/shared/camp';
 import { CARD_STREAK_MIN, cardData, cardFileName, cardStats, copyMessage, copyPng, fmtMinutes, todayStats, type ClipboardEnv } from '../src/shared/card';
 import { dayKey, dayLabel, displayGold } from '../src/shared/ledger';
 import { advanceCamp, newCampSim, type CampEvent } from '../src/shared/npc';
@@ -204,13 +212,276 @@ describe('复制到剪贴板', () => {
   });
 });
 
+// ---------- 截图与导出的行为测试（GPT 审核 #39 第 1 轮 major） ----------
+
+/** 记录绘制调用的假 2D 上下文 / 画布 */
+function fakeCanvas() {
+  const calls: Array<{ fn: string; args: unknown[] }> = [];
+  const ctx = new Proxy({} as Record<string, unknown>, {
+    get(t, k: string) {
+      if (k in t) return t[k];
+      return (...args: unknown[]) => void calls.push({ fn: k, args });
+    },
+    set(t, k: string, v) {
+      t[k] = v;
+      return true;
+    },
+  });
+  const canvas = { width: 0, height: 0, getContext: (kind: string) => (kind === '2d' ? (ctx as unknown as CanvasRenderingContext2D) : null) };
+  return { canvas, ctx, calls };
+}
+
+describe('drawCard：卡片排版', () => {
+  const s = newGame(nov(1, 8), 9);
+  claimDailyGift(s, nov(1, 9));
+  const vShot = { tag: 'vehicle' } as unknown as CanvasImageSource;
+  const cShot = { tag: 'camp' } as unknown as CanvasImageSource;
+  const draw = (d: ReturnType<typeof cardData>) => {
+    const f = fakeCanvas();
+    const out = drawCard(d, vShot, cShot, () => f.canvas as unknown as HTMLCanvasElement);
+    return { ...f, out, texts: f.calls.filter((c) => c.fn === 'fillText').map((c) => String(c.args[0])) };
+  };
+
+  it('竖版 720 × 1440；两张截图按设定尺寸画在卡片内；四类内容都有文字', () => {
+    const d = cardData(s, nov(1, 20));
+    const r = draw(d);
+    expect([r.out.width, r.out.height]).toEqual([CARD_W, CARD_H]);
+    const imgs = r.calls.filter((c) => c.fn === 'drawImage');
+    expect(imgs.map((c) => c.args[0])).toEqual([vShot, cShot]);
+    expect(imgs.map((c) => c.args.slice(3))).toEqual([[SHOT_W, VEHICLE_SHOT_H], [SHOT_W, CAMP_SHOT_H]]);
+    for (const c of imgs) {
+      const [x, y, w, h] = c.args.slice(1) as number[];
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(x + w).toBeLessThanOrEqual(CARD_W);
+      expect(y + h).toBeLessThanOrEqual(CARD_H);
+    }
+    expect(r.texts).toEqual(expect.arrayContaining([d.game, d.date, d.vehicle.model, ...cardStats(d).flatMap((x) => [x.label, x.value])]));
+  });
+
+  it('没有里程碑时整块不画；有时逐条画出', () => {
+    const d = cardData(s, nov(1, 20));
+    expect(d.milestones).toEqual([]);
+    expect(draw(d).texts).not.toContain('营地里程碑');
+    const withM = draw({ ...d, milestones: ['连续登录 3 天', '已拥有侧边帐'] }).texts;
+    expect(withM).toEqual(expect.arrayContaining(['营地里程碑', '连续登录 3 天', '已拥有侧边帐']));
+  });
+});
+
+describe('takeSnapshot：截图并恢复渲染状态', () => {
+  function rig(opts: { failRender?: boolean; failCtx?: boolean } = {}) {
+    const fog = { tag: 'fog' };
+    const scene = { fog: fog as unknown };
+    const labels = [{ visible: true }, { visible: false }, { visible: true }];
+    const mainCamera = { tag: 'main' };
+    const shotCamera = { tag: 'shot' };
+    const seen: Array<{ cam: unknown; fog: unknown; labels: boolean[]; size: [number, number]; ratio: number }> = [];
+    let size: [number, number] = [1280, 720];
+    let ratio = 2;
+    const domElement = { tag: 'webgl' } as unknown as CanvasImageSource;
+    const renderer = {
+      domElement,
+      getSize: (v: { x: number; y: number; set(x: number, y: number): unknown }) => (v.set(size[0], size[1]), v),
+      getPixelRatio: () => ratio,
+      setPixelRatio: (r: number) => void (ratio = r),
+      setSize: (w: number, h: number) => void (size = [w, h]),
+      render(_s: typeof scene, cam: unknown) {
+        seen.push({ cam, fog: scene.fog, labels: labels.map((l) => l.visible), size: [...size], ratio });
+        if (opts.failRender && cam === shotCamera) throw new Error('context lost');
+      },
+    };
+    const f = fakeCanvas();
+    if (opts.failCtx) f.canvas.getContext = () => null;
+    const deps = { renderer, scene, mainCamera, labels, createCanvas: () => f.canvas };
+    const after = () => ({ fog: scene.fog, labels: labels.map((l) => l.visible), size, ratio });
+    return { deps, shotCamera, mainCamera, fog, seen, f, domElement, after };
+  }
+  const restored = (fog: unknown) => ({ fog, labels: [true, false, true], size: [1280, 720], ratio: 2 });
+
+  it('成功：截图那一帧无雾、隐藏标牌、像素比 1、尺寸 w × h，并拷进 2D 画布；之后全部恢复并用主相机重绘', () => {
+    const r = rig();
+    const out = takeSnapshot(r.deps, r.shotCamera, 640, 380, { fog: false, labels: false });
+    expect(out).toBe(r.f.canvas);
+    expect([out.width, out.height]).toEqual([640, 380]);
+    expect(r.seen[0]).toEqual({ cam: r.shotCamera, fog: null, labels: [false, false, false], size: [640, 380], ratio: 1 });
+    expect(r.f.calls).toEqual([{ fn: 'drawImage', args: [r.domElement, 0, 0, 640, 380] }]);
+    expect(r.seen[1]).toEqual({ cam: r.mainCamera, ...restored(r.fog) });
+    expect(r.after()).toEqual(restored(r.fog));
+  });
+
+  it('默认保留雾与标牌（原本隐藏的标牌仍隐藏）', () => {
+    const r = rig();
+    takeSnapshot(r.deps, r.shotCamera, 640, 340);
+    expect(r.seen[0]).toMatchObject({ fog: r.fog, labels: [true, false, true] });
+  });
+
+  it('渲染抛异常：照样恢复尺寸、像素比、雾与标牌，并用主相机重绘，异常继续抛出', () => {
+    const r = rig({ failRender: true });
+    expect(() => takeSnapshot(r.deps, r.shotCamera, 640, 380, { fog: false, labels: false })).toThrow('context lost');
+    expect(r.seen.at(-1)!.cam).toBe(r.mainCamera);
+    expect(r.after()).toEqual(restored(r.fog));
+  });
+
+  it('2D 画布不可用：抛异常并恢复', () => {
+    const r = rig({ failCtx: true });
+    expect(() => takeSnapshot(r.deps, r.shotCamera, 640, 380, { fog: false, labels: false })).toThrow();
+    expect(r.after()).toEqual(restored(r.fog));
+  });
+});
+
+describe('营地全景取景：整个营地在截图内', () => {
+  const aspect = SHOT_W / CAMP_SHOT_H;
+  const cam = campShotCamera(aspect);
+
+  it('自算投影：8 个角点（WORLD 外扩围栏 + 门柱 / 牌子高度）都落在 NDC [-1, 1] 内', () => {
+    for (const p of campFrameCorners()) {
+      const n = projectNdc(cam.pos, cam.look, SNAPSHOT_FOV_DEG, aspect, p)!;
+      expect(n).not.toBeNull();
+      expect(Math.abs(n[0])).toBeLessThanOrEqual(1);
+      expect(Math.abs(n[1])).toBeLessThanOrEqual(1);
+    }
+    // 南边界（含大门）与北边界都在画面里
+    expect(campFrameCorners().some((p) => p[1] < WORLD.minY)).toBe(true);
+  });
+
+  it('与 three 的真实相机投影一致（同一 fov / 宽高比 / lookAt），且在远裁剪面 400 m 以内', () => {
+    const c = new THREE.PerspectiveCamera(SNAPSHOT_FOV_DEG, aspect, 0.1, 400);
+    c.position.copy(toThree(...cam.pos));
+    c.lookAt(toThree(...cam.look));
+    c.updateMatrixWorld();
+    for (const p of campFrameCorners()) {
+      const v = toThree(...p).project(c);
+      const mine = projectNdc(cam.pos, cam.look, SNAPSHOT_FOV_DEG, aspect, p)!;
+      expect(v.x).toBeCloseTo(mine[0], 6);
+      expect(v.y).toBeCloseTo(mine[1], 6);
+      expect(Math.abs(v.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(v.y)).toBeLessThanOrEqual(1);
+      expect(v.z).toBeLessThan(1); // 在远裁剪面之内
+      expect(c.position.distanceTo(toThree(...p))).toBeLessThan(400);
+    }
+  });
+
+  it('取景是紧的：至少一个角点贴近画面边缘（不是退得过远把营地缩成一小块）', () => {
+    const edge = Math.max(...campFrameCorners().map((p) => {
+      const n = projectNdc(cam.pos, cam.look, SNAPSHOT_FOV_DEG, aspect, p)!;
+      return Math.max(Math.abs(n[0]), Math.abs(n[1]));
+    }));
+    expect(edge).toBeGreaterThan(0.99);
+  });
+
+  it('回归：旧机位（南侧上空 85 m 看 (0,-4)）会裁掉南边界', () => {
+    const n = projectNdc([0, -37, 85], [0, -4, 0], SNAPSHOT_FOV_DEG, aspect, [0, WORLD.minY, 0])!;
+    expect(Math.abs(n[1])).toBeGreaterThan(1);
+  });
+});
+
+describe('生成 → 预览 → 下载 / 复制', () => {
+  const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' });
+  function rig(opts: { blob?: Blob | null; throws?: boolean } = {}) {
+    const ui = { box: { hidden: true }, img: { src: '' } };
+    const log: string[] = [];
+    const toasts: string[] = [];
+    const anchors: Array<{ href: string; download: string; clicked: number; removed: boolean }> = [];
+    let n = 0;
+    let clip: ClipboardEnv = {};
+    const flow = createCardFlow({
+      ui,
+      make() {
+        if (opts.throws) throw new Error('webgl lost');
+        return {
+          name: 'camp-empire-2026-11-08.png',
+          canvas: {
+            toBlob(cb, type) {
+              log.push(`toBlob:${type}`);
+              cb(opts.blob === undefined ? png : opts.blob);
+            },
+          },
+        };
+      },
+      createObjectURL: () => `blob:${++n}`,
+      revokeObjectURL: (u) => void log.push(`revoke:${u}`),
+      createAnchor() {
+        const a = { href: '', download: '', clicked: 0, removed: false, click() { this.clicked++; }, remove() { this.removed = true; } };
+        anchors.push(a);
+        return a;
+      },
+      clipboard: () => clip,
+      toast: (m) => void toasts.push(m),
+    });
+    return { flow, ui, log, toasts, anchors, setClip: (c: ClipboardEnv) => (clip = c) };
+  }
+
+  it('成功：按 image/png 导出，显示预览；下载的是同一张 PNG、文件名带日期，链接用完即移除', async () => {
+    const r = rig();
+    expect(await r.flow.generate()).toBe(true);
+    expect(r.log).toEqual(['toBlob:image/png']);
+    expect(r.ui.box.hidden).toBe(false);
+    expect(r.ui.img.src).toBe('blob:1');
+    expect(r.flow.shown!.blob).toBe(png);
+    expect(r.flow.shown!.blob.type).toBe('image/png');
+    expect(r.flow.download()).toBe(true);
+    expect(r.anchors).toEqual([expect.objectContaining({ href: 'blob:1', download: 'camp-empire-2026-11-08.png', clicked: 1, removed: true })]);
+  });
+
+  it('再次生成：释放上一张的 URL，预览换成新的', async () => {
+    const r = rig();
+    await r.flow.generate();
+    await r.flow.generate();
+    expect(r.log).toContain('revoke:blob:1');
+    expect(r.ui.img.src).toBe('blob:2');
+  });
+
+  it('导出失败（toBlob 给 null）或生成抛异常：提示失败，不显示预览，也不能下载', async () => {
+    for (const r of [rig({ blob: null }), rig({ throws: true })]) {
+      expect(await r.flow.generate()).toBe(false);
+      expect(r.toasts).toEqual([CARD_FAIL_MSG]);
+      expect(r.ui.box.hidden).toBe(true);
+      expect(r.flow.download()).toBe(false);
+      expect(r.anchors).toEqual([]);
+    }
+  });
+
+  it('复制写入的是预览里那张 PNG；不支持时提示改用下载；关闭只隐藏预览', async () => {
+    const r = rig();
+    await r.flow.generate();
+    const written: unknown[][] = [];
+    class Item {
+      constructor(public items: Record<string, Blob>) {}
+    }
+    r.setClip({ ClipboardItem: Item, clipboard: { write: async (x) => void written.push(x) } });
+    await r.flow.copy();
+    expect((written[0][0] as Item).items['image/png']).toBe(png);
+    r.setClip({});
+    await r.flow.copy();
+    expect(r.toasts).toEqual([copyMessage('copied'), copyMessage('unsupported')]);
+    r.flow.close();
+    expect(r.ui.box.hidden).toBe(true);
+    expect(r.flow.shown).not.toBeNull();
+  });
+
+  it('没生成过就不下载、不复制', async () => {
+    const r = rig();
+    expect(r.flow.download()).toBe(false);
+    await r.flow.copy();
+    expect(r.toasts).toEqual([]);
+  });
+});
+
+describe('提示不被卡片遮挡', () => {
+  const z = (sel: string) => Number(new RegExp(`${sel} \\{[^}]*?z-index: (\\d+)`).exec(css)![1]);
+  it('#toast 的层级高于露营卡片与回访面板', () => {
+    expect(z('#toast')).toBeGreaterThan(z('#camp-card'));
+    expect(z('#toast')).toBeGreaterThan(z('#welcome'));
+  });
+});
+
 describe('不自动弹出、不强制分享、无分享奖励', () => {
-  it('预览框默认隐藏；只有 card 动作（玩家点“生成露营卡片”）会显示它', () => {
+  it('预览框默认隐藏；页面加载时不生成卡片，只有 card 动作（玩家点“生成露营卡片”）调用生成', () => {
     expect(html).toMatch(/<div id="camp-card"[^>]*\bhidden\b/);
     expect(html).toContain('data-act="card"');
-    expect(mainSrc.match(/#camp-card'\)\.hidden = false/g)?.length).toBe(1);
+    expect(mainSrc.match(/cardFlow\.generate\(\)/g)?.length).toBe(1);
     const cardAction = mainSrc.slice(mainSrc.indexOf('async card()'), mainSrc.indexOf('cardDownload()'));
-    expect(cardAction).toContain("$('#camp-card').hidden = false");
+    expect(cardAction).toContain('cardFlow.generate()');
   });
 
   it('卡片逻辑不入账、不改状态，也没有分享渠道或回流链接', () => {

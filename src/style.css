@@ -100,8 +100,9 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 #speed { font-family: var(--mono); font-weight: 700; min-width: 72px; }
 #bump { color: #ffb3a1; font-weight: 700; }
 
+/* 提示在所有弹层（回访面板 8、露营卡片 9）之上：复制失败时的“请用下载 PNG”引导不能被卡片挡住（GPT 审核 #39） */
 #toast {
-  position: fixed; left: 50%; top: 60px; transform: translateX(-50%); z-index: 6; max-width: 560px;
+  position: fixed; left: 50%; top: 60px; transform: translateX(-50%); z-index: 10; max-width: 560px;
   padding: 10px 16px; border-radius: 10px; background: rgba(15, 26, 21, 0.92); border: 1px solid var(--canvas);
 }
 .card p.warn { color: var(--coin); }

@@ -20,7 +20,7 @@ function rounded(ctx: CanvasRenderingContext2D, x: number, y: number, w: number,
   ctx.roundRect(x, y, w, h, r);
 }
 
-function shot(ctx: CanvasRenderingContext2D, img: HTMLCanvasElement, x: number, y: number, w: number, h: number) {
+function shot(ctx: CanvasRenderingContext2D, img: CanvasImageSource, x: number, y: number, w: number, h: number) {
   ctx.save();
   rounded(ctx, x, y, w, h, 18);
   ctx.clip();
@@ -32,8 +32,14 @@ function shot(ctx: CanvasRenderingContext2D, img: HTMLCanvasElement, x: number, 
   ctx.stroke();
 }
 
-export function drawCard(d: CardData, vehicleShot: HTMLCanvasElement, campShot: HTMLCanvasElement): HTMLCanvasElement {
-  const c = document.createElement('canvas');
+/** 卡片画布：默认新建 <canvas>；测试传入记录绘制调用的假画布 */
+export function drawCard<K extends HTMLCanvasElement>(
+  d: CardData,
+  vehicleShot: CanvasImageSource,
+  campShot: CanvasImageSource,
+  createCanvas: () => K = () => document.createElement('canvas') as K,
+): K {
+  const c = createCanvas();
   c.width = CARD_W;
   c.height = CARD_H;
   const ctx = c.getContext('2d')!;

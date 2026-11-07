@@ -35,8 +35,10 @@ import { homeFlow, type Mode, type ModeLock } from './homeflow';
 import { closeWelcomeAfterCollect, departToast, giftLine, offlineSummary, pendingLines, returnPanel } from './welcome';
 import { pendingView } from '../shared/economy';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, toThree, type VehicleView } from './scene';
-import { cardData, cardFileName, copyMessage, copyPng, fmtMinutes, todayStats, type ClipboardEnv } from '../shared/card';
+import { cardData, cardFileName, fmtMinutes, todayStats, type ClipboardEnv } from '../shared/card';
+import { campShotCamera } from '../shared/cardcam';
 import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
+import { createCardFlow } from './cardflow';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
 const LEGACY_SAVE_KEY = 'camp-empire.save.v2';
@@ -428,44 +430,41 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   // 露营卡片（#30）：只在玩家点按钮时生成，不自动弹出、不接分享渠道、无分享奖励
   async card() {
-    try {
-      const { canvas, data } = makeCard();
-      const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'));
-      if (!blob) return toast('生成卡片失败');
-      if (cardShown) URL.revokeObjectURL(cardShown.url);
-      cardShown = { blob, url: URL.createObjectURL(blob), name: cardFileName(data) };
-      ($('#camp-card-img') as HTMLImageElement).src = cardShown.url;
-      $('#camp-card').hidden = false;
-    } catch (e) {
-      console.error(e);
-      toast('生成卡片失败');
-    }
+    await cardFlow.generate();
   },
   cardDownload() {
-    if (!cardShown) return;
-    const a = document.createElement('a');
-    a.href = cardShown.url;
-    a.download = cardShown.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    cardFlow.download();
   },
   async cardCopy() {
-    if (!cardShown) return;
-    const env: ClipboardEnv = {
-      clipboard: navigator.clipboard as unknown as ClipboardEnv['clipboard'],
-      ClipboardItem: (window as unknown as { ClipboardItem?: ClipboardEnv['ClipboardItem'] }).ClipboardItem,
-    };
-    toast(copyMessage(await copyPng(cardShown.blob, env)));
+    await cardFlow.copy();
   },
   cardClose() {
-    $('#camp-card').hidden = true;
+    cardFlow.close();
   },
 };
 
 // ---------- 露营卡片 ----------
-/** 当前预览的卡片（下载 / 复制用） */
-let cardShown: { blob: Blob; url: string; name: string } | null = null;
+/** 生成 → 预览 → 下载 / 复制（流程与测试见 cardflow.ts） */
+const cardFlow = createCardFlow({
+  ui: { box: $('#camp-card'), img: $('#camp-card-img') as HTMLImageElement },
+  make() {
+    const { canvas, data } = makeCard();
+    return { canvas, name: cardFileName(data) };
+  },
+  createObjectURL: (b) => URL.createObjectURL(b),
+  revokeObjectURL: (u) => URL.revokeObjectURL(u),
+  createAnchor() {
+    const a = document.createElement('a');
+    document.body.appendChild(a);
+    return a;
+  },
+  clipboard: () => ({
+    clipboard: navigator.clipboard as unknown as ClipboardEnv['clipboard'],
+    ClipboardItem: (window as unknown as { ClipboardItem?: ClipboardEnv['ClipboardItem'] }).ClipboardItem,
+  }),
+  toast: (m) => toast(m),
+  log: (e) => console.error(e),
+});
 
 /** 取数（与界面同源）+ 车辆特写 + 营地俯视全景，排成一张竖版卡片 */
 function makeCard() {
@@ -476,8 +475,9 @@ function makeCard() {
   const a = drive.pose.yaw - Math.PI / 4;
   const d = v.lengthM * 0.9 + 4;
   const vehicleShot = view.snapshot(toThree(cx + Math.cos(a) * d, cy + Math.sin(a) * d, v.heightM + 2.2), toThree(cx, cy, v.heightM * 0.45), SHOT_W, VEHICLE_SHOT_H, { labels: false });
-  // 营地全景：从营地南侧上空 85 m 俯视营地中部（营地范围见 camp.ts WORLD），不加雾
-  const campShot = view.snapshot(toThree(0, -37, 85), toThree(0, -4, 0), SHOT_W, CAMP_SHOT_H, { fog: false });
+  // 营地全景：按营地边界与截图宽高比取景，整个营地（含围栏、大门）都在画面内（cardcam.ts，有测试），不加雾
+  const cam = campShotCamera(SHOT_W / CAMP_SHOT_H);
+  const campShot = view.snapshot(toThree(...cam.pos), toThree(...cam.look), SHOT_W, CAMP_SHOT_H, { fog: false });
   return { canvas: drawCard(data, vehicleShot, campShot), data };
 }
 

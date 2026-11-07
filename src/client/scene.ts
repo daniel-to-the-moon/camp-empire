@@ -10,6 +10,8 @@ import { GATE, ROAD, STALLS, TREES, WORLD, type Stall } from '../shared/camp';
 import { SIDE_AWNING } from '../shared/config';
 import { bodyCenter, type Pose, type VehicleSpec } from '../shared/kinematics';
 import { buildPlaceholderVehicle, buildSideAwning } from '../geometry/placeholder';
+import { SNAPSHOT_FOV_DEG } from '../shared/cardcam';
+import { takeSnapshot } from './snapshot';
 
 const flat = (color: number) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.9 });
 
@@ -270,8 +272,7 @@ export interface CampScene {
   /** 震屏：amount 0..1 */
   shake(amount: number): void;
   /**
-   * 截图（露营卡片 #30）：用临时相机按 w × h 像素渲染一帧，渲染后立即在同一任务里拷进 2D 画布
-   *（WebGL 画布未开 preserveDrawingBuffer，合成前缓冲区内容有效），再恢复原尺寸重绘主画面。
+   * 截图（露营卡片 #30）：临时相机（垂直视场 SNAPSHOT_FOV_DEG）渲染一帧并拷进 2D 画布，流程与状态恢复见 snapshot.ts。
    * pos / look 为 three 坐标；opts.fog = false 时这一帧不加雾（俯视全景距离远，雾会把营地罩白）；
    * opts.labels = false 时隐藏车位标牌（标牌不做深度测试，特写时会挡住车）。
    */
@@ -449,32 +450,17 @@ export function createCampScene(container: HTMLElement): CampScene {
       }
       renderer.render(scene, camera);
     },
-    snapshot(pos, look, w, h, { fog = true, labels: showLabels = true } = {}) {
-      const size = renderer.getSize(new THREE.Vector2());
-      const ratio = renderer.getPixelRatio();
-      const sceneFog = scene.fog;
-      const hidden = showLabels ? [] : [...labels.values()].filter((s) => s.visible);
-      const cam = new THREE.PerspectiveCamera(40, w / h, 0.1, 400);
+    snapshot(pos, look, w, h, opts) {
+      const cam = new THREE.PerspectiveCamera(SNAPSHOT_FOV_DEG, w / h, 0.1, 400);
       cam.position.copy(pos);
       cam.lookAt(look);
-      const out = document.createElement('canvas');
-      out.width = w;
-      out.height = h;
-      try {
-        if (!fog) scene.fog = null;
-        for (const s of hidden) s.visible = false;
-        renderer.setPixelRatio(1);
-        renderer.setSize(w, h, false);
-        renderer.render(scene, cam);
-        out.getContext('2d')!.drawImage(renderer.domElement, 0, 0, w, h);
-      } finally {
-        scene.fog = sceneFog;
-        for (const s of hidden) s.visible = true;
-        renderer.setPixelRatio(ratio);
-        renderer.setSize(size.x, size.y, false);
-        renderer.render(scene, camera);
-      }
-      return out;
+      return takeSnapshot<THREE.Scene, THREE.Camera, HTMLCanvasElement>(
+        { renderer, scene, mainCamera: camera, labels: labels.values(), createCanvas: () => document.createElement('canvas') },
+        cam,
+        w,
+        h,
+        opts,
+      );
     },
     dispose() {
       ro.disconnect();
