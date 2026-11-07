@@ -13,7 +13,7 @@ import { bodyCenter, footprint, specOf, stepDrive, type DriveState, type Pose } 
 import { feeCents, type CampEvent } from '../shared/npc';
 import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, planReverseOut, type PathPose } from '../shared/parking';
 import { hash32 } from '../shared/rng';
-import { devCommand, isDevEntry } from '../shared/devgate';
+import { devCommand, freshGameAt, isDevEntry, resetSave } from '../shared/devgate';
 import { IdbStore, requestWriter, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
 import {
   arriveHome,
@@ -22,7 +22,6 @@ import {
   claimDailyGift,
   currentVariant,
   leaveHome,
-  newGame,
   recordPose,
   selectVariant,
   setAwningWanted,
@@ -51,7 +50,19 @@ const locks = (navigator as unknown as { locks?: LocksLike }).locks;
 const store = typeof indexedDB === 'undefined' ? null : await IdbStore.open(indexedDB, DB_NAME).catch(() => null);
 const slot = store ? new SaveSlot(store, SAVE_KEY) : null;
 if (slot && (await slot.importIfEmpty(localStorage.getItem(LEGACY_SAVE_KEY)).catch(() => false))) localStorage.removeItem(LEGACY_SAVE_KEY);
-const freshGame = () => newGame(now(), hash32(`${Date.now()}:${Math.random()}`));
+const newSeed = () => hash32(`${Date.now()}:${Math.random()}`);
+function clearDevOffset() {
+  devOffset = 0;
+  localStorage.removeItem(DEV_KEY);
+}
+/**
+ * 没有存档时新开一局：按真实时间建局，并清掉残留的开发快进偏移（GPT 审核 #4 第 4 轮第 1 条）。
+ * 否则偏移会让新局在 now() 下一开局就跳到“未来”，或在偏移清除后被防回拨逻辑冻结。
+ */
+function freshGame(): GameState {
+  clearDevOffset();
+  return freshGameAt(Date.now(), newSeed());
+}
 let state: GameState = (slot && (await slot.read().catch(() => null))) ?? freshGame();
 /** 没有可靠的原子写入或单写者机制：整页只读，提示原因（GPT 审核 #4 第 2 轮第 1 条） */
 const unsupported = !slot ? '这个浏览器打不开 IndexedDB（可能是隐私模式），无法可靠保存，本页只读。' : !locks ? '这个浏览器不支持 Web Locks，无法保证只有一个标签页写存档，本页只读。' : null;
@@ -360,10 +371,24 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     if (cmd.kind === 'denied') return toast(cmd.reason);
     if (cmd.kind === 'reset') {
       await enqueue(async () => {
-        // 一个事务整份换成新局（新 sid），旧局的标签页之后的写入都会被拒绝
-        await slot?.reset(freshGame());
-        localStorage.removeItem(LEGACY_SAVE_KEY);
-        localStorage.removeItem(DEV_KEY);
+        if (!slot) return;
+        try {
+          // 一个事务整份换成按真实时间新建的局（新 sid），旧局的标签页之后的写入都会被拒绝；
+          // 存档替换成功后才清除快进偏移，重载后的时间基准与建局时一致（GPT 审核 #4 第 4 轮第 1 条）
+          await resetSave({
+            realNowMs: Date.now(),
+            seed: newSeed(),
+            replace: (fresh) => slot.reset(fresh),
+            clearDevState: () => {
+              localStorage.removeItem(LEGACY_SAVE_KEY);
+              clearDevOffset();
+            },
+          });
+        } catch (e) {
+          console.error(e);
+          toast('重开存档失败，存档和快进偏移都没有变');
+          return;
+        }
         location.reload();
       });
       return;
