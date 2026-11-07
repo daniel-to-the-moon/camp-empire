@@ -185,15 +185,17 @@ export function planNpcArrival(s: VehicleSpec, stall: Stall, obstacles: Shape[])
   const goal = parkedPose(s, stall);
   const pre = back(goal, s.lengthM);
   const tail = straight(pre, s.lengthM, 1);
+  if (pathCollides(s, tail, obstacles)) return { ok: false, path: [], length: 0, reason: 'NPC 目标车位被占用或有障碍' };
   for (const off of [6, 9, 12, 16]) {
     const sBranch = sMouth - off;
     const along = (((sBranch - sJoin) % L) + L) % L;
     const b = loopSamples(sJoin, along);
+    if (pathCollides(s, b, obstacles)) continue; // 环路段同样要查
     const c = connect(s, loopPose(sBranch), pre, obstacles, 40);
-    if (c && !pathCollides(s, tail, obstacles)) {
-      const path = [...a, ...b, ...c, ...tail];
-      return { ok: true, path, length: pathLength(path) };
-    }
+    if (!c) continue;
+    const path = [...a, ...b, ...c, ...tail];
+    // 成功前对完整拼接路径再查一遍：返回 ok ⇒ 全程无碰撞
+    if (!pathCollides(s, path, obstacles)) return { ok: true, path, length: pathLength(path) };
   }
   return { ok: false, path: [], length: 0, reason: 'NPC 无可行入位路线' };
 }
@@ -210,8 +212,10 @@ export function planNpcDeparture(s: VehicleSpec, stall: Stall, obstacles: Shape[
   const sExit = GATE.x - 10 + ROAD.halfStraight; // 下段 x = GATE.x − 10
   const along = (((sExit - sOut) % L) + L) % L;
   const b = loopSamples(sOut, along);
+  if (pathCollides(s, b, obstacles)) return { ok: false, path: [], length: 0, reason: 'NPC 离场环路上有障碍' };
   const c = connect(s, loopPose(sExit), GATE_OUT, obstacles);
   if (!c) return { ok: false, path: [], length: 0, reason: 'NPC 无法驶出大门' };
   const path = [...out.path, ...join, ...b, ...c];
+  if (pathCollides(s, path, obstacles)) return { ok: false, path: [], length: 0, reason: 'NPC 离场路线有障碍' };
   return { ok: true, path, length: pathLength(path) };
 }

@@ -50,7 +50,7 @@ export function realOuterFrontRadius(s: VehicleSpec): number {
   return s.wheelbaseM / Math.sin((DRIVING.realOuterSteerDeg * Math.PI) / 180);
 }
 
-/** 游戏内外前轮最小半径 = k × 真实值（风格化缩小，用户 2026-11-04 拍板“缩小一些让它好开”） */
+/** 游戏内外前轮最小半径 = k × 真实值（风格化缩小。方向“缩小一些让它好开”是 2026-11-04 本地会话转述的用户答复，待用户确认；k 取值为提案） */
 export function gameOuterFrontRadius(s: VehicleSpec, k: number = DRIVING.turnScaleK): number {
   return k * realOuterFrontRadius(s);
 }

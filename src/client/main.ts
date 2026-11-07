@@ -9,10 +9,11 @@ import { DAILY_GIFT, ECONOMY, NPC, SIDE_AWNING } from '../shared/config';
 import { pointInPoly, type Shape } from '../shared/geom2d';
 import { resolveDrive, type Impact } from '../shared/collision';
 import { displayGold } from '../shared/ledger';
-import { bodyCenter, footprint, specOf, stepDrive, type DriveState, type Pose } from '../shared/kinematics';
+import { bodyCenter, footprint, specOf, stepDrive, type DriveState } from '../shared/kinematics';
 import { feeCents, type CampEvent } from '../shared/npc';
 import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, planReverseOut, type PathPose } from '../shared/parking';
 import { hash32 } from '../shared/rng';
+import { requestWriter, SaveSlot, type LocksLike } from '../shared/save';
 import {
   arriveHome,
   awningOut,
@@ -20,18 +21,19 @@ import {
   claimDailyGift,
   currentVariant,
   leaveHome,
-  loadSave,
   newGame,
+  recordPose,
   selectVariant,
   setAwningWanted,
-  tick,
   type GameState,
 } from '../shared/state';
+import { stepTraffic, type Agent } from '../shared/traffic';
 import { PathRunner, playerObstacles } from './drive';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, type VehicleView } from './scene';
 
 const SAVE_KEY = 'camp-empire.save.v2';
 const DEV_KEY = 'camp-empire.devOffsetMs';
+const LOCK_NAME = 'camp-empire.writer';
 const DEV = new URLSearchParams(location.search).has('dev');
 
 let devOffset = DEV ? Number(localStorage.getItem(DEV_KEY) ?? 0) || 0 : 0;
@@ -39,8 +41,12 @@ const now = () => Date.now() + devOffset;
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
-let state: GameState = loadSave(localStorage.getItem(SAVE_KEY)) ?? newGame(now(), hash32(`${Date.now()}:${Math.random()}`));
-const save = () => localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+// ---------- 存档：单写者 + 修订号事务（见 src/shared/save.ts） ----------
+const slot = new SaveSlot(localStorage, SAVE_KEY);
+const locks = (navigator as unknown as { locks?: LocksLike }).locks;
+let state: GameState = slot.read() ?? newGame(now(), hash32(`${Date.now()}:${Math.random()}`));
+/** 本标签页是否持有写权；拿到锁之前一律只读 */
+let writer = false;
 
 // ---------- 提示 ----------
 let toastTimer = 0;
@@ -92,12 +98,10 @@ placeVehicle(player.root, spec, drive.pose);
 player.setAwning(awningOut(state));
 
 // ---------- NPC 车 ----------
-interface NpcCar {
+/** NPC 车是交通参与者：入场时先在大门外排队（pending），行驶中与其他车互相让行（src/shared/traffic.ts） */
+interface NpcCar extends Agent {
   parkingId: string;
   view: VehicleView;
-  spec: ReturnType<typeof specOf>;
-  runner: PathRunner | null;
-  pose: Pose;
 }
 const npcs = new Map<string, NpcCar>();
 const leaving: NpcCar[] = [];
@@ -107,7 +111,7 @@ function npcCar(parkingId: string, variantId: string): NpcCar {
   const v = findVariant(variantId)!;
   const vv = makeVehicle(v, TINTS[hash32(parkingId) % TINTS.length]);
   view.scene.add(vv.root);
-  return { parkingId, view: vv, spec: specOf(v), runner: null, pose: { x: 0, y: 0, yaw: 0 } };
+  return { id: parkingId, parkingId, view: vv, spec: specOf(v), runner: null, pose: { x: 0, y: 0, yaw: 0 }, pending: false, waited: 0 };
 }
 
 function removeCar(c: NpcCar) {
@@ -115,15 +119,28 @@ function removeCar(c: NpcCar) {
   disposeTree(c.view.root);
 }
 
+function clearNpcs() {
+  for (const c of [...npcs.values(), ...leaving]) removeCar(c);
+  npcs.clear();
+  leaving.length = 0;
+}
+
+/**
+ * NPC 车辆同步的唯一入口：先按事件播放离场 / 入场动画，再按权威状态 state.camp 逐车位补齐或移除。
+ * 所有状态动作的事件都经 act() 走到这里，不会因为动作“消费”了事件而漏掉车辆或留下幽灵车。
+ */
 function syncNpcs(events: CampEvent[], animate: boolean) {
   for (const e of events) {
     if (e.type !== 'depart') continue;
     const c = npcs.get(e.spotId);
     if (!c || c.parkingId !== e.stay.parkingId) continue;
     npcs.delete(e.spotId);
-    const plan = animate ? planNpcDeparture(c.spec, stallById(e.spotId), staticShapes()) : null;
+    // 还在入场途中就到点离开（只会发生在快进时）：直接移除，不从停好位姿“瞬移”起步
+    const plan = animate && !c.runner ? planNpcDeparture(c.spec, stallById(e.spotId), staticShapes()) : null;
     if (plan?.ok) {
       c.runner = new PathRunner(plan.path, 5);
+      c.skipTo = null;
+      c.waited = 0;
       leaving.push(c);
     } else removeCar(c);
   }
@@ -141,6 +158,9 @@ function syncNpcs(events: CampEvent[], animate: boolean) {
       if (plan?.ok) {
         c.runner = new PathRunner(plan.path, 5);
         c.pose = plan.path[0];
+        c.pending = true; // 在大门外排队，起点清空后才进场
+        c.skipTo = parkedPose(c.spec, stall);
+        c.view.root.visible = false;
       } else c.pose = parkedPose(c.spec, stall);
       placeVehicle(c.view.root, c.spec, c.pose);
       npcs.set(sp.id, c);
@@ -148,53 +168,109 @@ function syncNpcs(events: CampEvent[], animate: boolean) {
   }
 }
 
+/** 正在行驶（已进场）的 NPC 车身：玩家手动驾驶时的动态障碍 */
 function movingNpcShapes(): Shape[] {
   const out: Shape[] = [];
   for (const c of [...npcs.values(), ...leaving]) {
-    if (c.runner) out.push({ type: 'poly', pts: footprint(c.spec, c.pose), tag: 'npc' });
+    if (c.runner && !c.pending) out.push({ type: 'poly', pts: footprint(c.spec, c.pose), tag: 'npc' });
   }
   return out;
 }
 
-// ---------- 开局：离线回放 + 每日礼物 ----------
-{
-  const off = tick(state, now());
-  syncNpcs(off, false);
-  const msg = summarizeOffline(off);
-  const gift = claimDailyGift(state, now());
-  save();
-  const parts = [msg, gift ? `营地管理员巡视送来 ${gift.gold} 金（每日首次登录）` : null].filter(Boolean);
+function announce(events: CampEvent[]) {
+  for (const e of events) {
+    if (e.type === 'depart' && e.amount > 0) toast(`${stallById(e.spotId).label}的露营者停了 ${fmtDur(e.minutes)}，付你 ${displayGold(e.amount)} 金`);
+    if (e.type === 'arrive') toast(`一位露营者开进了${stallById(e.spotId).label}`);
+  }
+}
+
+/**
+ * 所有状态动作的唯一入口：在存档事务里执行（读最新存档 → 动作 → 写回），
+ * 再把动作回放出的 NPC 事件交给 syncNpcs。只读标签页拒绝执行。
+ */
+function act<R extends { events: CampEvent[] }>(fn: (s: GameState) => R, opts: { animate?: boolean; announce?: boolean } = {}): R | null {
+  if (!writer) {
+    toast('本页只读：这个存档正在另一个标签页里玩');
+    return null;
+  }
+  const tx = slot.transact(state, fn);
+  state = tx.state;
+  if (tx.resynced) resyncView(); // 其他标签页写过：画面按最新存档整体重建
+  else syncNpcs(tx.result.events, opts.animate ?? true);
+  if (opts.announce ?? true) announce(tx.result.events);
+  return tx.result;
+}
+
+/** 按权威状态整体重建画面（玩家车 + 全部 NPC），用于采纳其他标签页写入的存档 */
+function resyncView() {
+  autoRun = null;
+  autoDone = null;
+  mode = state.player.parkedHome ? 'parked' : 'driving';
+  const s = specOf(currentVariant(state));
+  drive = { pose: state.player.parkedHome || !state.player.pose ? parkedPose(s, home) : state.player.pose, speed: 0, curvature: 0 };
+  rebuildPlayer();
+  clearNpcs();
+  syncNpcs([], false);
+}
+
+function adoptLatest() {
+  const latest = slot.read();
+  if (latest && latest.rev !== state.rev) {
+    state = latest;
+    resyncView();
+  }
+}
+
+/** 拿到写权后：离线回放 + 每日礼物 */
+function startSession() {
+  const r = act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
+  if (!r) return;
+  const parts = [summarizeOffline(r.events), r.gift ? `营地管理员巡视送来 ${r.gift.gold} 金（每日首次登录）` : null].filter(Boolean);
   if (parts.length) toast(parts.join('；'), 6000);
 }
+
+function setWriter(w: boolean) {
+  const was = writer;
+  writer = w;
+  $('#readonly').hidden = w;
+  if (w !== was) adoptLatest(); // 交接写权时都以存档为准
+  if (w && !was) startSession();
+  renderHud();
+}
+
+// 其他标签页写了存档：只读页跟随刷新；写者页（抢锁瞬间的竞争）同样以存档为准
+window.addEventListener('storage', (e) => {
+  if (e.key !== SAVE_KEY) return;
+  adoptLatest();
+  renderHud();
+});
 
 // ---------- 操作 ----------
 const actions: Record<string, (arg: string) => void> = {
   variant(id) {
-    const r = selectVariant(state, now(), id);
+    const r = act((s) => selectVariant(s, now(), id));
+    if (!r) return;
     if (!r.ok) return toast(r.error!);
     rebuildPlayer();
-    save();
   },
   buy() {
-    const r = buyAwning(state, now());
+    const r = act((s) => buyAwning(s, now()));
+    if (!r) return;
     if (!r.ok) return toast(r.error!);
     player.setAwning(awningOut(state));
-    save();
     toast('买到侧边帐！停在家位时会自动展开，露营者来得更勤');
   },
   awning() {
-    setAwningWanted(state, now(), !state.awningWanted);
+    if (!act((s) => setAwningWanted(s, now(), !s.awningWanted))) return;
     player.setAwning(awningOut(state));
-    save();
   },
   out() {
     if (mode !== 'parked') return;
     const plan = planReverseOut(spec, home, staticShapes());
     if (!plan.ok) return toast(plan.reason!);
     const end = plan.path[plan.path.length - 1];
-    leaveHome(state, now(), { x: end.x, y: end.y, yaw: end.yaw });
+    if (!act((s) => leaveHome(s, now(), { x: end.x, y: end.y, yaw: end.yaw }))) return;
     player.setAwning(false);
-    save();
     startAuto(plan.path, () => {
       mode = 'driving';
       drive = { pose: { x: end.x, y: end.y, yaw: end.yaw }, speed: 0, curvature: 0 };
@@ -202,6 +278,7 @@ const actions: Record<string, (arg: string) => void> = {
   },
   park() {
     if (mode !== 'driving') return;
+    if (!writer) return toast('本页只读：这个存档正在另一个标签页里玩');
     const parked = [...npcs.values()].map((c) => ({ type: 'poly' as const, pts: footprint(c.spec, c.pose), tag: 'npc' }));
     const plan = planParkIn(spec, drive.pose, home, [...staticShapes(), ...parked]);
     if (!plan.ok) return toast(plan.reason!);
@@ -210,7 +287,11 @@ const actions: Record<string, (arg: string) => void> = {
   overview() {
     overview = !overview;
   },
+  takeover() {
+    requestWriter(locks, LOCK_NAME, true, setWriter);
+  },
   dev(arg) {
+    if (!writer) return toast('本页只读：这个存档正在另一个标签页里玩');
     if (arg === 'reset') {
       localStorage.removeItem(SAVE_KEY);
       localStorage.removeItem(DEV_KEY);
@@ -219,11 +300,9 @@ const actions: Record<string, (arg: string) => void> = {
     }
     devOffset += Number(arg);
     localStorage.setItem(DEV_KEY, String(devOffset));
-    const ev = tick(state, now());
-    syncNpcs(ev, false);
-    const gift = claimDailyGift(state, now());
-    save();
-    toast([summarizeOffline(ev) ?? '快进期间没有露营者离开', gift ? `管理员送来 ${gift.gold} 金` : null].filter(Boolean).join('；'));
+    const r = act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
+    if (!r) return;
+    toast([summarizeOffline(r.events) ?? '快进期间没有露营者离开', r.gift ? `管理员送来 ${r.gift.gold} 金` : null].filter(Boolean).join('；'));
     renderHud();
   },
 };
@@ -235,12 +314,11 @@ function startAuto(path: PathPose[], done: () => void) {
 }
 
 function settleHome() {
-  arriveHome(state, now());
+  if (!act((s) => arriveHome(s, now()))) return;
   mode = 'parked';
   drive = { pose: parkedPose(spec, home), speed: 0, curvature: 0 };
   placeVehicle(player.root, spec, drive.pose);
   player.setAwning(awningOut(state));
-  save();
   toast('已停回家位');
 }
 
@@ -292,11 +370,16 @@ let prev = performance.now();
 /** 时间倍率：只有 ?dev 调试入口会改（冻结画面截图用） */
 let timeScale = 1;
 
+/** 玩家车作为交通参与者：手动驾驶时静止（位姿由物理更新），自动驾驶时沿路径走并让行；从不跳过 */
+const playerAgent: Agent = { id: 'player', spec, pose: drive.pose, runner: null, pending: false, waited: 0 };
+
 function frame(t: number) {
+  // 先排下一帧：本帧逻辑即使抛异常，主循环也不会停
+  requestAnimationFrame(frame);
   const dt = Math.min(0.05, (t - prev) / 1000) * timeScale;
   prev = t;
 
-  if (mode === 'driving') {
+  if (mode === 'driving' && writer) {
     let throttle = k('KeyW', 'ArrowUp') - k('KeyS', 'ArrowDown');
     if (keys.has('Space')) throttle = drive.speed > 0 ? -1 : drive.speed < 0 ? 1 : 0;
     const steer = k('KeyA', 'ArrowLeft') - k('KeyD', 'ArrowRight');
@@ -309,14 +392,30 @@ function frame(t: number) {
       settleHome();
     }
     if (t - lastSave > 2000 && mode === 'driving') {
-      state.player.pose = drive.pose;
-      save();
       lastSave = t;
+      act((s) => recordPose(s, now(), drive.pose));
     }
-  } else if (mode === 'auto' && autoRun) {
-    const p = autoRun.step(dt);
-    drive = { pose: p, speed: 0, curvature: 0 };
-    if (autoRun.done) {
+  }
+
+  // 交通：玩家车（不在家位时）+ 行驶 / 排队中的 NPC，按顺序让行（玩家优先）
+  const traffic: Agent[] = [];
+  if (mode !== 'parked') {
+    playerAgent.spec = spec;
+    if (mode === 'auto' && autoRun) {
+      playerAgent.runner = autoRun;
+      playerAgent.pose = autoRun.current;
+    } else {
+      playerAgent.runner = null;
+      playerAgent.pose = drive.pose;
+    }
+    traffic.push(playerAgent);
+  }
+  for (const c of [...npcs.values(), ...leaving]) if (c.runner) traffic.push(c);
+  const step = stepTraffic(traffic, dt);
+
+  if (mode === 'auto' && autoRun) {
+    drive = { pose: playerAgent.pose, speed: 0, curvature: 0 };
+    if (step.finished.includes(playerAgent)) {
       autoRun = null;
       const d = autoDone;
       autoDone = null;
@@ -325,36 +424,25 @@ function frame(t: number) {
   }
   placeVehicle(player.root, spec, drive.pose);
 
-  for (const c of [...npcs.values(), ...leaving]) {
-    if (!c.runner) continue;
-    c.pose = c.runner.step(dt);
-    placeVehicle(c.view.root, c.spec, c.pose);
-    if (c.runner.done) {
-      c.runner = null;
-      const i = leaving.indexOf(c);
-      if (i >= 0) {
-        leaving.splice(i, 1);
-        removeCar(c);
-      }
+  for (const a of traffic) {
+    if (a === playerAgent) continue;
+    const c = a as NpcCar;
+    const i = leaving.indexOf(c);
+    if (i >= 0 && !c.runner) {
+      // 离场走完或超时跳过：移除
+      leaving.splice(i, 1);
+      removeCar(c);
+      continue;
     }
+    c.view.root.visible = !c.pending;
+    placeVehicle(c.view.root, c.spec, c.pose);
   }
 
   if (t - lastTick > 1000) {
     lastTick = t;
-    const ev = tick(state, now());
-    if (ev.length) {
-      syncNpcs(ev, true);
-      for (const e of ev) {
-        if (e.type === 'depart' && e.amount > 0) toast(`${stallById(e.spotId).label}的露营者停了 ${fmtDur(e.minutes)}，付你 ${displayGold(e.amount)} 金`);
-        if (e.type === 'arrive') toast(`一位露营者开进了${stallById(e.spotId).label}`);
-      }
-      save();
-    }
-    const gift = claimDailyGift(state, now());
-    if (gift) {
-      save();
-      toast(`新的一天！营地管理员巡视送来 ${gift.gold} 金`);
-    }
+    // 只读页不回放、不写存档，只跟随 storage 事件刷新
+    const r = writer ? act((s) => claimDailyGift(s, now())) : null;
+    if (r?.gift) toast(`新的一天！营地管理员巡视送来 ${r.gift.gold} 金`);
     renderHud();
   }
 
@@ -363,7 +451,6 @@ function frame(t: number) {
   $('#bump').hidden = t > bumpUntil;
   $('#speed').textContent = `${Math.abs(drive.speed * 3.6).toFixed(0)} km/h${drive.speed < -0.05 ? ' 倒车' : ''}`;
   view.render(dt);
-  requestAnimationFrame(frame);
 }
 
 // ---------- 界面 ----------
@@ -469,5 +556,7 @@ if (DEV) {
     },
   };
 }
+syncNpcs([], false); // 先按存档摆好车；拿到写权后再回放离线时间
 renderHud();
+requestWriter(locks, LOCK_NAME, false, setWriter);
 requestAnimationFrame(frame);

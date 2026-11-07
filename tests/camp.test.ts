@@ -9,7 +9,7 @@ import { SIDE_AWNING } from '../src/shared/config';
 import { firstHit, polysOverlap, type Shape } from '../src/shared/geom2d';
 import { footprint, poseFromCenter, specOf } from '../src/shared/kinematics';
 import { uniform } from '../src/shared/rng';
-import { againstLoop, parkedPose, planNpcArrival, planNpcDeparture, planParkIn, planReverseOut } from '../src/shared/parking';
+import { againstLoop, parkedPose, pathCollides, planNpcArrival, planNpcDeparture, planParkIn, planReverseOut } from '../src/shared/parking';
 
 const big = specOf(findVariant('SH5043XLJH9DB-C_3116')!);
 
@@ -37,7 +37,29 @@ describe.each(ALL_VARIANTS.map((v) => [v.id, specOf(v)] as const))('可达性 %s
     expect(firstHit(footprint(s, parkedPose(s, st)), obs)).toBeNull();
     for (const r of [planNpcArrival(s, st, obs), planNpcDeparture(s, st, obs), planParkIn(s, SPAWN, st, obs), planReverseOut(s, st, obs)]) {
       expect(r.reason ?? 'ok').toBe('ok');
+      // 不只看 reason：返回的路径逐点检查（含环路段）
+      expect(pathCollides(s, r.path, obs)).toBeNull();
     }
+  });
+});
+
+describe('NPC 路线：环路被车辆阻挡', () => {
+  // GPT 审核 #4 第 4 条的反例：玩家车停在环路上，后轴位姿 (24, 0, π/2)
+  const player = specOf(findVariant('SH5043XLJH9DB-C_3116')!);
+  const blocker: Shape = { type: 'poly', pts: footprint(player, { x: 24, y: 0, yaw: Math.PI / 2 }), tag: 'player' };
+  const obs = [...staticShapes(), blocker];
+
+  it.each(ALL_VARIANTS.filter((_, i) => i % 4 === 0).map((v) => [v.id, specOf(v)] as const))('%s：成功的路线全程不碰撞，被挡的路线返回失败', (_id, s) => {
+    let blocked = 0;
+    for (const st of STALLS.filter((x) => x.kind !== 'home')) {
+      for (const r of [planNpcArrival(s, st, obs), planNpcDeparture(s, st, obs)]) {
+        if (r.ok) expect(pathCollides(s, r.path, obs)).toBeNull();
+        else blocked++;
+      }
+      // 不加阻挡时同一车位能走通：失败确实是阻挡造成的
+      expect(planNpcArrival(s, st, staticShapes()).ok).toBe(true);
+    }
+    expect(blocked).toBeGreaterThan(0);
   });
 });
 
