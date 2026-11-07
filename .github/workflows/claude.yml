@@ -14,6 +14,12 @@ on:
     types: [labeled]
   issue_comment:
     types: [created]
+  # 手动重跑某个 PR 的修复（例如云端故障排除后）。只有有写权限的人能触发
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: '要修复的 PR 编号（按其最新一条 GPT 审核评论修复）'
+        required: true
 
 permissions: {}
 
@@ -29,11 +35,12 @@ jobs:
        startsWith(github.event.comment.body, '执行者：GPT') &&
        contains(github.event.comment.body, ' state=changes:') &&
        !contains(github.event.issue.labels.*.name, 'needs-user') &&
-       !contains(github.event.issue.labels.*.name, 'hold'))
+       !contains(github.event.issue.labels.*.name, 'hold')) ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     concurrency:
-      group: claude-${{ github.event.issue.number }}
+      group: claude-${{ github.event.issue.number || inputs.pr }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -45,24 +52,21 @@ jobs:
       branch: ${{ steps.ctx.outputs.branch }}
       start: ${{ steps.start.outputs.start }}
     steps:
+      # 判断逻辑在 scripts/devloop/ctx.sh（有测试）；取 main 上的版本（可信），不用 PR 里的
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: _devloop
+          sparse-checkout: scripts/devloop
+          persist-credentials: false
       - name: 确定模式与分支
         id: ctx
         env:
           GH_TOKEN: ${{ github.token }}
-          N: ${{ github.event.issue.number }}
+          N: ${{ github.event.issue.number || inputs.pr }}
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT" = "issues" ]; then
-            echo "mode=implement" >> "$GITHUB_OUTPUT"
-            echo "branch=claude/issue-$N" >> "$GITHUB_OUTPUT"
-          else
-            b=$(gh pr view "$N" -R "$REPO" --json headRefName,isCrossRepository -q 'select(.isCrossRepository|not) | .headRefName')
-            case "$b" in claude/*) ;; *) echo "::error::只修复 claude/* 分支上的 PR（实际：$b）"; exit 1;; esac
-            echo "mode=fix" >> "$GITHUB_OUTPUT"
-            echo "branch=$b" >> "$GITHUB_OUTPUT"
-          fi
+        run: bash _devloop/scripts/devloop/ctx.sh
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.ctx.outputs.mode == 'fix' && steps.ctx.outputs.branch || 'main' }}
@@ -85,6 +89,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           OUT: ${{ runner.temp }}/devloop
+          # 模型网关（仓库变量）：用户的 key 来自第三方网关而非 Anthropic 官方 API。为空时走官方地址
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
@@ -96,7 +102,7 @@ jobs:
               - $OUT/title.txt：PR 标题（implement 模式且 outcome 为 pr 时）
               - $OUT/body.md：PR 描述，或给 issue / PR 的评论正文；开头写“执行者：Claude（devloop）”
 
-            模式：${{ steps.ctx.outputs.mode }}；编号：#${{ github.event.issue.number }}；已检出分支：${{ steps.ctx.outputs.mode == 'fix' && steps.ctx.outputs.branch || 'main' }}
+            模式：${{ steps.ctx.outputs.mode }}；编号：#${{ github.event.issue.number || inputs.pr }}；已检出分支：${{ steps.ctx.outputs.mode == 'fix' && steps.ctx.outputs.branch || 'main' }}
 
             通用要求：
             - 先读 CHARTER.md、docs/DEVLOOP.md。遵守 CHARTER 第三节硬边界；新增数值注明“提案 / 待核实”或给出推演。
@@ -104,11 +110,11 @@ jobs:
               改了 scripts/devloop 时 `node --test scripts/devloop/*.test.mjs`；纯文档改动不需要 npm。不通过就继续修，不要提交失败的代码。
             - 不要合并、不要审核自己的改动。
 
-            implement 模式：用 `gh issue view ${{ github.event.issue.number }} --comments` 读 issue。
+            implement 模式：用 `gh issue view ${{ github.event.issue.number || inputs.pr }} --comments` 读 issue。
               命中 docs/DEVLOOP.md 第五节任一停止条件或信息不足 → outcome 写 needs-user，body.md 写原因，不改代码。
-              否则实现需求并为新增或改动的逻辑写测试，本地 commit；body.md 写明改了什么、怎么验证、哪些是提案值，末尾 `Closes #${{ github.event.issue.number }}`。
+              否则实现需求并为新增或改动的逻辑写测试，本地 commit；body.md 写明改了什么、怎么验证、哪些是提案值，末尾 `Closes #${{ github.event.issue.number || inputs.pr }}`。
 
-            fix 模式：用 `gh pr view ${{ github.event.issue.number }} --comments` 读 PR，以最新一条“执行者：GPT”评论为准。
+            fix 模式：用 `gh pr view ${{ github.event.issue.number || inputs.pr }} --comments` 读 PR，以最新一条“执行者：GPT”评论为准。
               逐条处理 blocker 与 major；minor 合理就改；不同意的给出依据，不要静默忽略。
               测试失败时用评论里 Actions 链接的运行号执行 `gh run view <运行号> --log-failed` 看日志；冲突时 `git merge origin/main` 解决。
               本地 commit；body.md 逐条列出每个意见的处理结果。
@@ -163,46 +169,27 @@ jobs:
         with:
           name: devloop-${{ github.run_id }}
           path: out
-      # 只用 git 搬运提交，不检出、不执行仓库里的任何代码
+      # 发布逻辑在 scripts/devloop/publish.sh（有测试），取 main 上的版本（可信）；不检出、不执行 PR 里的任何代码
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: _devloop
+          sparse-checkout: scripts/devloop
+          persist-credentials: false
       - name: 推送分支并开 PR 或评论
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          N: ${{ github.event.issue.number }}
+          N: ${{ github.event.issue.number || inputs.pr }}
           MODE: ${{ needs.work.outputs.mode }}
           BRANCH: ${{ needs.work.outputs.branch }}
           START: ${{ needs.work.outputs.start }}
+          EVENT: ${{ github.event_name }}
+          OUT: ${{ github.workspace }}/out
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          set -euo pipefail
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          mkdir -p out
-          if [ ! -f out/outcome ]; then
-            # 连产物都没有（work 任务整体失败 / 超时被取消）
-            echo needs-user > out/outcome
-            printf '执行者：Claude（devloop）\n\n云端执行任务失败或超时，没有产物，自动循环在此停下，请用户查看：%s\n' "$RUN_URL" > out/body.md
-          fi
-          if [ "$(cat out/outcome)" != "pr" ]; then
-            gh issue comment "$N" -R "$REPO" --body-file out/body.md
-            gh issue edit "$N" -R "$REPO" --add-label needs-user
-            exit 0
-          fi
-          case "$BRANCH" in claude/*) ;; *) echo "::error::拒绝推送到非 claude/* 分支：$BRANCH"; exit 1;; esac
-          git init -q repo
-          cd repo
-          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
-          git fetch -q origin "$START"
-          git bundle verify -q ../out/work.bundle
-          git fetch -q ../out/work.bundle HEAD
-          new=$(git rev-parse FETCH_HEAD)
-          git merge-base --is-ancestor "$START" "$new" || { echo "::error::新提交不是从起点延伸的"; exit 1; }
-          # 普通推送：分支在此期间被别人更新（非快进）则失败，不覆盖
-          git push -q origin "$new:refs/heads/$BRANCH"
-          if [ "$MODE" = "fix" ]; then
-            gh pr comment "$N" -R "$REPO" --body-file ../out/body.md
-          else
-            title=$(head -c 200 ../out/title.txt 2>/dev/null || true)
-            gh pr create -R "$REPO" --base main --head "$BRANCH" --title "${title:-devloop：issue #$N}" --body-file ../out/body.md
-          fi
+          export PUSH_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          bash _devloop/scripts/devloop/publish.sh
       # 上一步任何命令失败（推送被拒、开 PR 失败、评论失败……）：发失败说明并加 needs-user，循环不会无声停滞
       #（GPT 审核 #6 第八轮 major）。这里同样不执行仓库代码。
       - name: 发布失败时报告
@@ -210,7 +197,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          N: ${{ github.event.issue.number }}
+          N: ${{ github.event.issue.number || inputs.pr }}
           BRANCH: ${{ needs.work.outputs.branch }}
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
