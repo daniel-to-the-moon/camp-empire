@@ -67,8 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/gpt"; mkdir -p "$d"
-          gh api "repos/$REPO/issues/$N" > "$d/issue.json"
-          gh api --paginate "repos/$REPO/issues/$N/comments" --jq '.[] | {id, body, created_at, html_url, user: {login: .user.login}}' -c > "$d/comments.jsonl"
+          bash scripts/devloop/discuss-fetch.sh "$REPO" "$N" "$d"
           node scripts/devloop/discuss-build.mjs --issue "$d/issue.json" --comments "$d/comments.jsonl" \
             --mode "$MODE" --trigger "$TRIGGER" --header scripts/devloop/discuss-prompt.md --out "$d/prompt.md"
       - name: GPT 评审
@@ -113,4 +112,6 @@ jobs:
           [ -s "$f" ] || { echo "::error::GPT 没有产出回复"; exit 1; }
           # 统一第一行，便于识别与防止被当成别的执行者
           head -1 "$f" | grep -q '^执行者：GPT' || { printf '执行者：GPT（云端评审，openai/codex-action）\n\n' | cat - "$f" > r2 && mv r2 "$f"; }
+          # 去重标记：discuss-build.mjs 只认 github-actions[bot] 发出且带此标记的评论为“已评审”
+          printf '\n\n<!-- gpt-discuss:review run=%s -->\n' "${{ github.run_id }}" >> "$f"
           gh issue comment "$N" -R "$REPO" --body-file "$f"

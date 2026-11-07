@@ -2,7 +2,7 @@
 /**
  * gpt-discuss.yml 的去重与提示词构造。由 discuss-build.test.mjs 覆盖。
  *
- * - 去重（mode=first）：issue 里已有 GPT 云端评审评论就跳过——同一次建 issue 会产生多个 labeled 事件（带几个讨论标签就几个），
+ * - 去重（mode=first）：issue 里已有 GPT 云端评审评论（github-actions[bot] 发出且带标记）就跳过——同一次建 issue 会产生多个 labeled 事件（带几个讨论标签就几个），
  *   工作流按 issue 串行，后到的那次在这里被跳过，保证首次评审只发一次。
  * - 点名（mode=mention）：把触发本次运行的那条评论单独放进“本次点名”一节并要求优先回答它；讨论全文过长时截断全文，
  *   但不截断这条评论。这样两条 @gpt 先后排队时，各自回答各自的点名，不会都去回答最新那条。
@@ -13,12 +13,18 @@
  */
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 
-export const REVIEW_PREFIX = '执行者：GPT（云端评审';
 export const THREAD_LIMIT = 110_000;
 export const TRIGGER_LIMIT = 20_000;
 
+/** gpt-discuss.yml 发评论步骤确定性追加的标记 */
+export const REVIEW_MARKER = '<!-- gpt-discuss:review ';
+export const BOT_LOGIN = 'github-actions[bot]';
+
+/** 已有真实的 GPT 云端评审：必须由 github-actions[bot] 发出且带标记；普通用户照抄前缀或标记都不算 */
 export function alreadyReviewed(comments) {
-  return comments.some((c) => String(c.body ?? '').startsWith(REVIEW_PREFIX));
+  return comments.some(
+    (c) => c.user?.login === BOT_LOGIN && c.user?.type === 'Bot' && String(c.body ?? '').includes(REVIEW_MARKER),
+  );
 }
 
 const fmtComment = (c) => `\n## 评论 · ${c.user?.login ?? '?'} · ${c.created_at ?? ''} · ${c.html_url ?? ''}\n\n${c.body ?? ''}\n`;
