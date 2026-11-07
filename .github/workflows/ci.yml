@@ -2,7 +2,7 @@
 # - workflow_dispatch：devloop 审核方触发。把 PR 头部提交合并到指定 main 提交上再测，
 #   保证测试的就是“合并后的代码”；并核对 head / base 与审核方给的完全一致。
 # - pull_request：人工推送的 PR（GITHUB_TOKEN 开的 PR 不会触发，靠上面的 dispatch）。
-# - push main：测试 + 构建，并把 dist 上传为发布产物（Actions artifact）。
+# - push main：测试 + 构建，并把 dist 上传为发布产物（Actions artifact）；再由 pages 任务发布到 Cloudflare Pages（见下）。
 name: ci
 run-name: ${{ github.event_name == 'workflow_dispatch' && format('devloop {0} PR#{1}', inputs.nonce, inputs.pr) || format('ci {0}', github.event_name) }}
 
@@ -74,3 +74,47 @@ jobs:
           name: camp-empire-${{ github.sha }}
           path: dist
           retention-days: 90
+
+  # 发布到 Cloudflare Pages（内部验收环境，用户 2026-11-07 选定）。只在 main 更新后运行。
+  # 不检出、不执行仓库代码：只下载 test 任务构建好的 dist，用固定版本的 wrangler 上传。凭据只出现在本任务。
+  # 两道开关：
+  #   1. 每次都确保 Pages 项目存在并打印其 pages.dev 地址（不上传任何内容），供用户先在 Cloudflare Access 配好访问限制；
+  #   2. 仓库变量 PAGES_DEPLOY=true 后才真正上传。未配 Access 前上传 = 对公众开放，所以默认关闭。
+  pages:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PROJECT: ${{ vars.PAGES_PROJECT || 'camp-empire' }}
+      WRANGLER: wrangler@4.158.0
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 检查凭据
+        run: |
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "::error::缺少 secret CLOUDFLARE_API_TOKEN"; exit 1; }
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || { echo "::error::缺少 secret CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+      - name: 确保 Pages 项目存在并打印地址
+        run: |
+          npx -y "$WRANGLER" pages project create "$PROJECT" --production-branch main >/dev/null 2>&1 || true
+          npx -y "$WRANGLER" pages project list | tee projects.txt
+          grep -q -- "$PROJECT" projects.txt || { echo "::error::Pages 项目 $PROJECT 不存在且创建失败"; exit 1; }
+          echo "### Cloudflare Pages 项目：$PROJECT" >> "$GITHUB_STEP_SUMMARY"
+          grep -- "$PROJECT" projects.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@v4
+        if: vars.PAGES_DEPLOY == 'true'
+        with:
+          name: camp-empire-${{ github.sha }}
+          path: dist
+      - name: 上传到 Pages（PAGES_DEPLOY=true 时）
+        if: vars.PAGES_DEPLOY == 'true'
+        run: npx -y "$WRANGLER" pages deploy dist --project-name "$PROJECT" --branch main --commit-hash "${{ github.sha }}" --commit-dirty=true
+      - name: 未开启上传时说明
+        if: vars.PAGES_DEPLOY != 'true'
+        run: echo "PAGES_DEPLOY 未设为 true：只确保项目存在，没有上传。先在 Cloudflare Access 为上面的地址配好访问限制。" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -127,9 +127,12 @@ tail -f ../ce-devloop/watch.log                                 # 看日志
 
 ## 八、发布与托管
 
-- 现在：main 每次更新，CI 测试并构建，`dist` 上传为 GitHub Actions 发布产物 `camp-empire-<提交号>`（私有，保留 90 天）。**不部署到任何对外地址。**
-- 不用 Vercel：当前账号是 Hobby 套餐，条款只允许非商业用途；vercel.app 在中国大陆访问也不稳定。
-- 正式托管位置**待用户拍板**（会影响费用、备案与合规）。面向中国大陆公众上线需 ICP 备案；网络游戏商业运营涉及版号、实名与防沉迷（CHARTER 第五节第 5 条），具体要求**待核实**。
+- **内部验收环境：Cloudflare Pages + Cloudflare Access**（用户 2026-11-07 选定）。main 每次更新：`ci.yml` 的 `test` 任务构建 `dist` 并上传为 Actions 产物；`pages` 任务下载产物，用固定版本的 wrangler 上传。`pages` 任务不检出、不执行仓库代码，Cloudflare 凭据只在该任务中。
+  - 凭据：secret `CLOUDFLARE_API_TOKEN`（只含 Account → Cloudflare Pages → Edit 权限）、`CLOUDFLARE_ACCOUNT_ID`。
+  - 开关：仓库变量 `PAGES_DEPLOY=true` 才上传；未开启时只确保项目存在并在运行摘要里打印 `pages.dev` 地址。
+  - **顺序**：先在 Cloudflare Zero Trust → Access 为该地址（含 `*.<项目>.pages.dev` 预览地址）建应用、只允许指定邮箱，再设 `PAGES_DEPLOY=true`。未配 Access 就上传等于对公众开放。
+  - 不用 Vercel：Hobby 套餐条款限非商业用途。Cloudflare 免费套餐条款未见商用限制（禁止在免费服务上收集信用卡信息），官方条款原文**待核实**。
+- **对国内公众上线（待用户决定）**：Cloudflare 在中国大陆访问偏慢，`*.pages.dev` 常不可达。届时改用国内平台（如腾讯 EdgeOne Pages、阿里云 ESA Pages）+ ICP 备案域名；网络游戏商业运营还涉及版号、实名与防沉迷，具体要求**待核实**。构建产物是纯静态文件，更换平台只需改发布任务。
 
 ## 九、费用（待核实）
 
