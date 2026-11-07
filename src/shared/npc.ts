@@ -107,9 +107,17 @@ function stayMinutes(seed: number, sp: SpotSim): number {
   return NPC.minStayMinutes + Math.floor(u * (NPC.capMinutes - NPC.minStayMinutes + 1));
 }
 
-function pickVariant(seed: number, sp: SpotSim): string {
-  const u = uniform(seed, `car:${sp.id}:${sp.cycle}`);
+/**
+ * 第 cycle 位露营者的车型：25 个变体等概率（各 1/25），只由 (种子, 车位, 循环序号) 决定，与到达时刻、侧边帐无关。
+ * 车型图鉴（dex.ts）据此为旧存档回填已离开露营者的车型。
+ */
+export function variantForCycle(seed: number, spotId: string, cycle: number): string {
+  const u = uniform(seed, `car:${spotId}:${cycle}`);
   return ALL_VARIANTS[Math.floor(u * ALL_VARIANTS.length)].id;
+}
+
+function pickVariant(seed: number, sp: SpotSim): string {
+  return variantForCycle(seed, sp.id, sp.cycle);
 }
 
 /** 停靠费：floor(分钟 × 每小时费率 / 60)，单位分 */

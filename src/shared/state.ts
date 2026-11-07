@@ -7,6 +7,7 @@ import { RENTAL_SPOTS } from './camp';
 import { SIDE_AWNING } from './config';
 import { collect, credit, dayKey, emptyPending, newLedger, spend, validPending, type Ledger } from './ledger';
 import type { Pose } from './kinematics';
+import { cycleOf, emptyDex, recordDriven, recordVisit, reconcileDex, validDex, type Dex } from './dex';
 import { advanceCamp, emptyDaily, newCampSim, validDaily, type CampEvent, type CampSim } from './npc';
 import { cycleDay, giftGoldForStreak, nextStreak, streakView, validStreak, type GiftStreak, type StreakView } from './streak';
 
@@ -31,6 +32,11 @@ export interface GameState {
    * 不一致（本字段加入前的存档，或旧版本标签页按旧规则领过礼物）时 loadSave 按“lastGiftDay 那天是第 1 天”补齐。
    */
   giftStreak: GiftStreak | null;
+  /**
+   * 车型图鉴（#31）：NPC 入场即点亮并计次，玩家选用过的变体也点亮（dex.ts）。
+   * 本字段加入前的存档在 loadSave 中按营地状态回填（不升存档版本）。
+   */
+  dex: Dex;
   /** 存档修订号：每次写入 +1，用于发现其他标签页的写入（见 save.ts） */
   rev: number;
   /**
@@ -47,11 +53,14 @@ export function newSaveId(): string {
 }
 
 export function newGame(nowMs: number, seed: number, sid: string = newSaveId()): GameState {
+  const variantId = findVariant(DEFAULT_VARIANT) ? DEFAULT_VARIANT : ALL_VARIANTS[0].id;
+  const dex = emptyDex();
+  recordDriven(dex, variantId); // 开局默认车也算“自己开过”
   return {
     version: SAVE_VERSION,
     sid,
     seed,
-    variantId: findVariant(DEFAULT_VARIANT) ? DEFAULT_VARIANT : ALL_VARIANTS[0].id,
+    variantId,
     ledger: newLedger(nowMs),
     camp: newCampSim(seed, nowMs, RENTAL_SPOTS),
     awningOwned: false,
@@ -59,6 +68,7 @@ export function newGame(nowMs: number, seed: number, sid: string = newSaveId()):
     player: { parkedHome: true, pose: null },
     lastGiftDay: null,
     giftStreak: null,
+    dex,
     rev: 0,
   };
 }
@@ -87,7 +97,10 @@ export function effectiveNow(s: GameState, nowMs: number): number {
  * 客户端必须把每个动作返回的 events 交给同一个分发入口（同步车辆、提示），不能丢弃。
  */
 export function tick(s: GameState, nowMs: number): CampEvent[] {
-  return advanceCamp(s.camp, s.ledger, effectiveNow(s, nowMs), { awningOut: awningOut(s) });
+  const events = advanceCamp(s.camp, s.ledger, effectiveNow(s, nowMs), { awningOut: awningOut(s) });
+  // 车型图鉴（#31）：入场即点亮。离线回放出的到访同样经过这里
+  for (const e of events) if (e.type === 'arrive') recordVisit(s.dex, e.spotId, cycleOf(e.stay.parkingId), e.stay.variantId, e.atMs);
+  return events;
 }
 
 /** 动作结果：events 是本次动作回放出的 NPC 事件，必须分发 */
@@ -175,6 +188,7 @@ export function selectVariant(s: GameState, nowMs: number, id: string): ActionRe
   if (!findVariant(id)) return { ok: false, error: '未知车型', events };
   if (!s.player.parkedHome) return { ok: false, error: '先把车停回家位再换车', events };
   s.variantId = id;
+  recordDriven(s.dex, id);
   return { ok: true, events };
 }
 
@@ -224,6 +238,11 @@ export function loadSave(json: string | null): GameState | null {
     if (!validStreak(s.giftStreak) || s.giftStreak.day !== s.lastGiftDay) {
       s.giftStreak = s.lastGiftDay === null ? null : { day: s.lastGiftDay, n: 1 };
     }
+    // 车型图鉴（#31）加入前的存档（或结构损坏）：从空图鉴回填。每次加载都补算一次（幂等），
+    // 旧版本标签页写过的存档里漏计的到访也能补上；当前车型记为“开过”
+    if (!validDex(s.dex)) s.dex = emptyDex();
+    reconcileDex(s.dex, s.camp);
+    recordDriven(s.dex, s.variantId);
     return s;
   } catch {
     return null;

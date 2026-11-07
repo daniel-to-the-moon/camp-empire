@@ -39,6 +39,8 @@ import { cardData, cardFileName, fmtMinutes, todayStats, type ClipboardEnv } fro
 import { campShotCamera } from '../shared/cardcam';
 import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
+import { dexView } from '../shared/dex';
+import { dexHtml } from './dex';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
 const LEGACY_SAVE_KEY = 'camp-empire.save.v2';
@@ -441,6 +443,13 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   cardClose() {
     cardFlow.close();
   },
+  // 车型图鉴（#31）：只读面板，打开期间随 renderHud 刷新
+  dex() {
+    $('#dex').hidden = false;
+  },
+  dexClose() {
+    $('#dex').hidden = true;
+  },
 };
 
 // ---------- 露营卡片 ----------
@@ -686,6 +695,16 @@ function renderHud() {
 
   const parkedHome = mode === 'parked';
   const ts = todayStats(state, t);
+  const dv = dexView(state.dex);
+  $('#dex-entry').textContent = `车型图鉴 ${dv.lit} / ${dv.total}`;
+  if (!$('#dex').hidden) {
+    // 内容没变就不重写，避免每秒刷新打断滚动
+    const html = dexHtml(dv);
+    if ($('#dex').dataset.html !== html) {
+      $('#dex').innerHTML = html;
+      $('#dex').dataset.html = html;
+    }
+  }
   $('#garage').innerHTML = `
     <h2>车库</h2>
     <p class="hint">${parkedHome ? '选一辆你的车（尺寸为公告三围，占位外观）' : '停回家位后才能换车'}</p>
