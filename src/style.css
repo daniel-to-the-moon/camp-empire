@@ -13,6 +13,8 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+/* hidden 属性一律隐藏：#dev、#readonly 等元素自己的 display 不能覆盖它（GPT 审核 #4 第 2 轮第 2 条） */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--ink); color: var(--birch); font: 13px/1.5 var(--sans); }
 button { font: inherit; color: inherit; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.4; }
@@ -101,7 +103,6 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
   position: fixed; left: 50%; top: 12px; transform: translateX(-50%); z-index: 7; display: flex; gap: 10px; align-items: center;
   padding: 8px 14px; border-radius: 10px; background: rgba(90, 60, 10, 0.92); border: 1px solid var(--line);
 }
-#readonly[hidden] { display: none; }
 #readonly button { padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
 #dev {
   position: fixed; left: 12px; bottom: 16px; z-index: 6; display: flex; gap: 6px; align-items: center;

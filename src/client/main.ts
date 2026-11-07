@@ -1,6 +1,6 @@
 /**
  * 入口：把 src/shared 的纯逻辑接到场景与界面。
- * 时间：now() = 本机时间 + 开发快进偏移（?dev 面板）。M1 单机原型，存档在 localStorage。
+ * 时间：now() = 本机时间 + 开发快进偏移（?dev 面板）。M1 单机原型，存档在 IndexedDB（src/shared/save.ts）。
  */
 import '../style.css';
 import { CATALOG, findVariant } from '../data/models';
@@ -13,7 +13,8 @@ import { bodyCenter, footprint, specOf, stepDrive, type DriveState } from '../sh
 import { feeCents, type CampEvent } from '../shared/npc';
 import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, planReverseOut, type PathPose } from '../shared/parking';
 import { hash32 } from '../shared/rng';
-import { requestWriter, SaveSlot, type LocksLike } from '../shared/save';
+import { devCommand, isDevEntry } from '../shared/devgate';
+import { IdbStore, requestWriter, SaveSlot, serialQueue, type LocksLike } from '../shared/save';
 import {
   arriveHome,
   awningOut,
@@ -31,22 +32,32 @@ import { stepTraffic, type Agent } from '../shared/traffic';
 import { PathRunner, playerObstacles } from './drive';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, type VehicleView } from './scene';
 
-const SAVE_KEY = 'camp-empire.save.v2';
+/** IndexedDB 里的存档键 */
+const SAVE_KEY = 'save.v2';
+/** 上一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除 */
+const LEGACY_SAVE_KEY = 'camp-empire.save.v2';
+const DB_NAME = 'camp-empire';
 const DEV_KEY = 'camp-empire.devOffsetMs';
 const LOCK_NAME = 'camp-empire.writer';
-const DEV = new URLSearchParams(location.search).has('dev');
+const DEV = isDevEntry(location.search);
 
 let devOffset = DEV ? Number(localStorage.getItem(DEV_KEY) ?? 0) || 0 : 0;
 const now = () => Date.now() + devOffset;
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
-// ---------- 存档：单写者 + 修订号事务（见 src/shared/save.ts） ----------
-const slot = new SaveSlot(localStorage, SAVE_KEY);
+// ---------- 存档：IndexedDB 原子事务 + 单写者锁（见 src/shared/save.ts） ----------
 const locks = (navigator as unknown as { locks?: LocksLike }).locks;
-let state: GameState = slot.read() ?? newGame(now(), hash32(`${Date.now()}:${Math.random()}`));
+const store = typeof indexedDB === 'undefined' ? null : await IdbStore.open(indexedDB, DB_NAME).catch(() => null);
+const slot = store ? new SaveSlot(store, SAVE_KEY) : null;
+if (slot && (await slot.importIfEmpty(localStorage.getItem(LEGACY_SAVE_KEY)).catch(() => false))) localStorage.removeItem(LEGACY_SAVE_KEY);
+let state: GameState = (slot && (await slot.read().catch(() => null))) ?? newGame(now(), hash32(`${Date.now()}:${Math.random()}`));
+/** 没有可靠的原子写入或单写者机制：整页只读，提示原因（GPT 审核 #4 第 2 轮第 1 条） */
+const unsupported = !slot ? '这个浏览器打不开 IndexedDB（可能是隐私模式），无法可靠保存，本页只读。' : !locks ? '这个浏览器不支持 Web Locks，无法保证只有一个标签页写存档，本页只读。' : null;
 /** 本标签页是否持有写权；拿到锁之前一律只读 */
 let writer = false;
+/** 同一标签页内的存档读写按顺序执行 */
+const enqueue = serialQueue();
 
 // ---------- 提示 ----------
 let toastTimer = 0;
@@ -184,21 +195,33 @@ function announce(events: CampEvent[]) {
   }
 }
 
+const READONLY_MSG = '本页只读：这个存档正在另一个标签页里玩';
+
 /**
- * 所有状态动作的唯一入口：在存档事务里执行（读最新存档 → 动作 → 写回），
- * 再把动作回放出的 NPC 事件交给 syncNpcs。只读标签页拒绝执行。
+ * 所有状态动作的唯一入口：排进本页队列，在 IndexedDB 原子事务里执行（读最新存档 → 动作 → 写回），
+ * 提交成功后才采纳新状态，再把动作回放出的 NPC 事件交给 syncNpcs。只读标签页拒绝执行；写入失败时内存状态不变。
  */
-function act<R extends { events: CampEvent[] }>(fn: (s: GameState) => R, opts: { animate?: boolean; announce?: boolean } = {}): R | null {
-  if (!writer) {
-    toast('本页只读：这个存档正在另一个标签页里玩');
-    return null;
-  }
-  const tx = slot.transact(state, fn);
-  state = tx.state;
-  if (tx.resynced) resyncView(); // 其他标签页写过：画面按最新存档整体重建
-  else syncNpcs(tx.result.events, opts.animate ?? true);
-  if (opts.announce ?? true) announce(tx.result.events);
-  return tx.result;
+function act<R extends { events: CampEvent[] }>(fn: (s: GameState) => R, opts: { animate?: boolean; announce?: boolean } = {}): Promise<R | null> {
+  return enqueue(async () => {
+    if (!writer || !slot) {
+      toast(unsupported ?? READONLY_MSG);
+      return null;
+    }
+    let tx;
+    try {
+      tx = await slot.transact(state, fn);
+    } catch (e) {
+      console.error(e);
+      toast('存档写入失败，这次操作没有生效');
+      return null;
+    }
+    state = tx.state;
+    if (tx.resynced) resyncView(); // 其他标签页写过：画面按最新存档整体重建
+    else syncNpcs(tx.result.events, opts.animate ?? true);
+    if (opts.announce ?? true) announce(tx.result.events);
+    renderHud();
+    return tx.result;
+  });
 }
 
 /** 按权威状态整体重建画面（玩家车 + 全部 NPC），用于采纳其他标签页写入的存档 */
@@ -213,17 +236,22 @@ function resyncView() {
   syncNpcs([], false);
 }
 
-function adoptLatest() {
-  const latest = slot.read();
-  if (latest && latest.rev !== state.rev) {
-    state = latest;
-    resyncView();
-  }
+/** 以存档为准刷新（排在本页队列里，不与正在进行的事务交错） */
+function adoptLatest(): Promise<void> {
+  return enqueue(async () => {
+    if (!slot) return;
+    const latest = await slot.read().catch(() => null);
+    if (latest && latest.rev !== state.rev) {
+      state = latest;
+      resyncView();
+      renderHud();
+    }
+  });
 }
 
 /** 拿到写权后：离线回放 + 每日礼物 */
-function startSession() {
-  const r = act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
+async function startSession() {
+  const r = await act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
   if (!r) return;
   const parts = [summarizeOffline(r.events), r.gift ? `营地管理员巡视送来 ${r.gift.gold} 金（每日首次登录）` : null].filter(Boolean);
   if (parts.length) toast(parts.join('；'), 6000);
@@ -233,43 +261,46 @@ function setWriter(w: boolean) {
   const was = writer;
   writer = w;
   $('#readonly').hidden = w;
-  if (w !== was) adoptLatest(); // 交接写权时都以存档为准
-  if (w && !was) startSession();
+  if (w !== was) void adoptLatest(); // 交接写权时都以存档为准
+  if (w && !was) void startSession();
   renderHud();
 }
 
-// 其他标签页写了存档：只读页跟随刷新；写者页（抢锁瞬间的竞争）同样以存档为准
-window.addEventListener('storage', (e) => {
-  if (e.key !== SAVE_KEY) return;
-  adoptLatest();
-  renderHud();
-});
-
 // ---------- 操作 ----------
-const actions: Record<string, (arg: string) => void> = {
-  variant(id) {
-    const r = act((s) => selectVariant(s, now(), id));
+/** 改变玩家车模式的动作（出发 / 停回家位）正在等存档提交：期间不重复触发 */
+let modeBusy = false;
+
+const actions: Record<string, (arg: string) => void | Promise<void>> = {
+  async variant(id) {
+    const r = await act((s) => selectVariant(s, now(), id));
     if (!r) return;
     if (!r.ok) return toast(r.error!);
     rebuildPlayer();
   },
-  buy() {
-    const r = act((s) => buyAwning(s, now()));
+  async buy() {
+    const r = await act((s) => buyAwning(s, now()));
     if (!r) return;
     if (!r.ok) return toast(r.error!);
     player.setAwning(awningOut(state));
     toast('买到侧边帐！停在家位时会自动展开，露营者来得更勤');
   },
-  awning() {
-    if (!act((s) => setAwningWanted(s, now(), !s.awningWanted))) return;
+  async awning() {
+    if (!(await act((s) => setAwningWanted(s, now(), !s.awningWanted)))) return;
     player.setAwning(awningOut(state));
   },
-  out() {
-    if (mode !== 'parked') return;
+  async out() {
+    if (mode !== 'parked' || modeBusy) return;
     const plan = planReverseOut(spec, home, staticShapes());
     if (!plan.ok) return toast(plan.reason!);
     const end = plan.path[plan.path.length - 1];
-    if (!act((s) => leaveHome(s, now(), { x: end.x, y: end.y, yaw: end.yaw }))) return;
+    modeBusy = true;
+    try {
+      const r = await act((s) => leaveHome(s, now(), { x: end.x, y: end.y, yaw: end.yaw }));
+      // 等待提交期间画面可能已按其他标签页的存档重建：只在仍停在家位时起步
+      if (!r || mode !== 'parked' || state.player.parkedHome) return;
+    } finally {
+      modeBusy = false;
+    }
     player.setAwning(false);
     startAuto(plan.path, () => {
       mode = 'driving';
@@ -277,33 +308,41 @@ const actions: Record<string, (arg: string) => void> = {
     });
   },
   park() {
-    if (mode !== 'driving') return;
-    if (!writer) return toast('本页只读：这个存档正在另一个标签页里玩');
+    if (mode !== 'driving' || modeBusy) return;
+    if (!writer) return toast(unsupported ?? READONLY_MSG);
     const parked = [...npcs.values()].map((c) => ({ type: 'poly' as const, pts: footprint(c.spec, c.pose), tag: 'npc' }));
     const plan = planParkIn(spec, drive.pose, home, [...staticShapes(), ...parked]);
     if (!plan.ok) return toast(plan.reason!);
-    startAuto(plan.path, settleHome);
+    startAuto(plan.path, () => {
+      mode = 'driving'; // 提交失败时停在家位前，可继续手动驾驶
+      void settleHome();
+    });
   },
   overview() {
     overview = !overview;
   },
   takeover() {
+    if (unsupported) return toast(unsupported);
     requestWriter(locks, LOCK_NAME, true, setWriter);
   },
-  dev(arg) {
-    if (!writer) return toast('本页只读：这个存档正在另一个标签页里玩');
-    if (arg === 'reset') {
-      localStorage.removeItem(SAVE_KEY);
-      localStorage.removeItem(DEV_KEY);
-      location.reload();
+  async dev(arg) {
+    // 普通入口不能执行快进 / 重开存档（GPT 审核 #4 第 2 轮第 2 条）
+    const cmd = devCommand(DEV, writer, arg);
+    if (cmd.kind === 'denied') return toast(cmd.reason);
+    if (cmd.kind === 'reset') {
+      await enqueue(async () => {
+        await slot?.clear();
+        localStorage.removeItem(LEGACY_SAVE_KEY);
+        localStorage.removeItem(DEV_KEY);
+        location.reload();
+      });
       return;
     }
-    devOffset += Number(arg);
+    devOffset += cmd.ms;
     localStorage.setItem(DEV_KEY, String(devOffset));
-    const r = act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
+    const r = await act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
     if (!r) return;
     toast([summarizeOffline(r.events) ?? '快进期间没有露营者离开', r.gift ? `管理员送来 ${r.gift.gold} 金` : null].filter(Boolean).join('；'));
-    renderHud();
   },
 };
 
@@ -313,8 +352,17 @@ function startAuto(path: PathPose[], done: () => void) {
   autoDone = done;
 }
 
-function settleHome() {
-  if (!act((s) => arriveHome(s, now()))) return;
+async function settleHome() {
+  if (modeBusy) return;
+  modeBusy = true;
+  const from = mode;
+  try {
+    const r = await act((s) => arriveHome(s, now()));
+    // 提交失败，或等待期间画面已按其他标签页的存档重建：不改模式
+    if (!r || mode !== from || !state.player.parkedHome) return;
+  } finally {
+    modeBusy = false;
+  }
   mode = 'parked';
   drive = { pose: parkedPose(spec, home), speed: 0, curvature: 0 };
   placeVehicle(player.root, spec, drive.pose);
@@ -325,8 +373,8 @@ function settleHome() {
 document.addEventListener('click', (e) => {
   const el = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
   if (!el || (el as HTMLButtonElement).disabled) return;
-  actions[el.dataset.act!]?.(el.dataset.arg ?? '');
   renderHud();
+  void Promise.resolve(actions[el.dataset.act!]?.(el.dataset.arg ?? '')).finally(renderHud);
 });
 
 // ---------- 键盘 ----------
@@ -336,8 +384,8 @@ window.addEventListener('keydown', (e) => {
   if (DRIVE_KEYS.includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (e.code === 'KeyC') actions.overview('');
-  if (e.code === 'KeyP') actions.park('');
-  if (e.code === 'KeyO') actions.out('');
+  if (e.code === 'KeyP') void actions.park('');
+  if (e.code === 'KeyO') void Promise.resolve(actions.out('')).finally(renderHud);
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
@@ -347,6 +395,9 @@ const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
 const obstacles = playerObstacles();
 let lastTick = 0;
 let lastSave = 0;
+let lastSettleTry = 0;
+/** 上一次每秒结算 / 跟随刷新还没完成时不再排新的 */
+let ticking = false;
 let bumpUntil = 0;
 let lastDust = 0;
 const HIT_NAMES: Record<string, string> = { island: '篝火岛路缘', fence: '围栏', tree: '树', npc: '露营者的车', gate: '大门拦杆' };
@@ -379,7 +430,8 @@ function frame(t: number) {
   const dt = Math.min(0.05, (t - prev) / 1000) * timeScale;
   prev = t;
 
-  if (mode === 'driving' && writer) {
+  // 停回家位正在提交时冻结手动输入，避免提交后位姿跳变
+  if (mode === 'driving' && writer && !modeBusy) {
     let throttle = k('KeyW', 'ArrowUp') - k('KeyS', 'ArrowDown');
     if (keys.has('Space')) throttle = drive.speed > 0 ? -1 : drive.speed < 0 ? 1 : 0;
     const steer = k('KeyA', 'ArrowLeft') - k('KeyD', 'ArrowRight');
@@ -388,12 +440,14 @@ function frame(t: number) {
     drive = r.state;
     if (r.impact) onImpact(r.impact, t);
     // 手动停进家位：车停稳且四角都在家位里
-    if (Math.abs(drive.speed) < 0.05 && footprint(spec, drive.pose).every((p) => pointInPoly(p, stallRect(home)))) {
-      settleHome();
+    if (t - lastSettleTry > 1000 && Math.abs(drive.speed) < 0.05 && footprint(spec, drive.pose).every((p) => pointInPoly(p, stallRect(home)))) {
+      lastSettleTry = t; // 提交失败时限频重试
+      void settleHome();
     }
     if (t - lastSave > 2000 && mode === 'driving') {
       lastSave = t;
-      act((s) => recordPose(s, now(), drive.pose));
+      const pose = { ...drive.pose };
+      void act((s) => recordPose(s, now(), pose));
     }
   }
 
@@ -440,9 +494,16 @@ function frame(t: number) {
 
   if (t - lastTick > 1000) {
     lastTick = t;
-    // 只读页不回放、不写存档，只跟随 storage 事件刷新
-    const r = writer ? act((s) => claimDailyGift(s, now())) : null;
-    if (r?.gift) toast(`新的一天！营地管理员巡视送来 ${r.gift.gold} 金`);
+    if (!ticking) {
+      ticking = true;
+      // 写者回放 + 结算；只读页不回放、不写存档，每秒从存档跟随刷新
+      const job = writer
+        ? act((s) => claimDailyGift(s, now())).then((r) => {
+            if (r?.gift) toast(`新的一天！营地管理员巡视送来 ${r.gift.gold} 金`);
+          })
+        : adoptLatest();
+      void job.finally(() => (ticking = false));
+    }
     renderHud();
   }
 
@@ -558,5 +619,10 @@ if (DEV) {
 }
 syncNpcs([], false); // 先按存档摆好车；拿到写权后再回放离线时间
 renderHud();
-requestWriter(locks, LOCK_NAME, false, setWriter);
+if (unsupported) {
+  // 没有可靠的写入机制：整页只读，说明原因；没有“在这里玩”按钮
+  $('#readonly-msg').textContent = unsupported;
+  $('#readonly button').hidden = true;
+  setWriter(false);
+} else requestWriter(locks, LOCK_NAME, false, setWriter);
 requestAnimationFrame(frame);
