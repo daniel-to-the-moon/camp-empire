@@ -3,7 +3,7 @@
 ## 一、循环
 
 ```
-Muse 验收 / 用户 / 讨论结论 ──► issue，打 devloop 标签
+Muse 验收 / 讨论 ──► acceptance / proposal issue ──► 用户确认后打 devloop 标签
                                    │
   【GitHub 云端】Claude（claude-code-action，Anthropic API key）
      读 issue → 分支 claude/issue-N → 写代码 + 测试 → 本地跑通 test/build → 开 PR（Closes #N）
@@ -49,18 +49,30 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 | Claude（云端，`claude-opus-5-5`） | 认领 `devloop` issue、写代码与测试、开 PR、按审核意见修复 | 不审核、不合并自己的 PR |
 | GPT（Codex CLI，`gpt-6-astra`） | 每个新提交独立审核：只读检出、自己读代码、按必查项给 approve / request_changes | 不改代码 |
 | 流水线 | CI 测试合并后的代码；GPT 通过且测试通过、main 未变、无暂停标签才合并；合入的就是测试过的那个组合 | 不在本机执行 PR 代码 |
-| Muse | 验收，按第四节格式提 issue | — |
-| 用户 | 收费 / 广告 / 商家投放开关、对公众上线、托管位置、裁决 `needs-user` | — |
+| Muse | 验收，按第四节格式提 issue | 不打 `devloop` 标签 |
+| 用户 | 给 issue 打 `devloop`（拍板实现）；收费 / 广告 / 商家投放开关、对公众上线、托管位置、裁决 `needs-user` | — |
 
 ## 四、给 Muse 的 issue 格式
 
-- 标签：`devloop`（打上即触发云端 Claude）；类型标签 `bug` / `enhancement` / `acceptance`
+- 标签：评审方只打类型标签 `bug` / `enhancement` / `acceptance` / `proposal`；**不打 `devloop`**（打上即触发云端 Claude），由用户确认后添加（见下一节“拍板”）
 - 标题：一句话说清楚要什么
 - 正文：
   - **现象 / 需求**：在哪个版本（main 提交号）、做了什么、看到什么、期望什么
   - **验收标准**：可勾选的条目，Claude 会照着写测试
   - **证据四维**：涉及数值或现实常识的主张，按 CHARTER 第二节写；缺的标“待核实”
 - 一个 issue 一件事；大需求拆成多个。
+
+## 讨论、提案与沉淀
+
+| 阶段 | 放在哪里 | 标签 | 谁来做 |
+|---|---|---|---|
+| 验收材料 | issue（体验包：截图、操作路径、当时数值、现状缺口、评审请求） | `acceptance` | Claude 本地会话制作；截图放在仓库的 `acceptance/*` 分支，按提交号引用 |
+| 可玩性 / 设计建议 | 一条建议一个 issue（主张、四维论证、验收标准、优先级、成本、风险），评论区即讨论记录 | `proposal` | Muse 等评审方提出，多 agent 在评论区讨论 |
+| 拍板 | 在 `proposal`（或 `bug` / `enhancement`）issue 上加 `devloop` 标签即“同意实现”；不同意则关闭并写原因 | `devloop` | **只有用户** |
+| 实现 | 云端 Claude 自动开 PR（`Closes #N`），审核、合并、发布 | — | devloop |
+| 沉淀结论 | 拍板后的规则与数值写回仓库文档（GDD、`docs/ECONOMY_M1.md` 等），在文档里注明出处 issue 编号 | — | 实现该 issue 的 PR 一并修改 |
+
+评审方不要自己打 `devloop`：这个标签一打上就会触发自动开发。目前这只是约定：`claude.yml` 只检查标签本身，不检查是谁打的；有写权限的账号打上 `devloop` 都会触发。若要强制只认用户，需要在工作流里校验打标签者，**待用户决定**。
 
 ## 五、停止条件、标签与评论标记
 
