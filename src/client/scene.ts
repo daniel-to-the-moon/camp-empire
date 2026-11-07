@@ -10,6 +10,8 @@ import { GATE, ROAD, STALLS, TREES, WORLD, type Stall } from '../shared/camp';
 import { SIDE_AWNING } from '../shared/config';
 import { bodyCenter, type Pose, type VehicleSpec } from '../shared/kinematics';
 import { buildPlaceholderVehicle, buildSideAwning } from '../geometry/placeholder';
+import { SNAPSHOT_FOV_DEG } from '../shared/cardcam';
+import { takeSnapshot } from './snapshot';
 
 const flat = (color: number) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.9 });
 
@@ -269,6 +271,12 @@ export interface CampScene {
   dust(point: [number, number], n: [number, number], strength: number): void;
   /** 震屏：amount 0..1 */
   shake(amount: number): void;
+  /**
+   * 截图（露营卡片 #30）：临时相机（垂直视场 SNAPSHOT_FOV_DEG）渲染一帧并拷进 2D 画布，流程与状态恢复见 snapshot.ts。
+   * pos / look 为 three 坐标；opts.fog = false 时这一帧不加雾（俯视全景距离远，雾会把营地罩白）；
+   * opts.labels = false 时隐藏车位标牌（标牌不做深度测试，特写时会挡住车）。
+   */
+  snapshot(pos: THREE.Vector3, look: THREE.Vector3, w: number, h: number, opts?: { fog?: boolean; labels?: boolean }): HTMLCanvasElement;
   dispose(): void;
 }
 
@@ -441,6 +449,18 @@ export function createCampScene(container: HTMLElement): CampScene {
         flame.scale.set(1 + Math.sin(t * 9) * 0.06, 1 + Math.sin(t * 13) * 0.12, 1 + Math.cos(t * 7) * 0.06);
       }
       renderer.render(scene, camera);
+    },
+    snapshot(pos, look, w, h, opts) {
+      const cam = new THREE.PerspectiveCamera(SNAPSHOT_FOV_DEG, w / h, 0.1, 400);
+      cam.position.copy(pos);
+      cam.lookAt(look);
+      return takeSnapshot<THREE.Scene, THREE.Camera, HTMLCanvasElement>(
+        { renderer, scene, mainCamera: camera, labels: labels.values(), createCanvas: () => document.createElement('canvas') },
+        cam,
+        w,
+        h,
+        opts,
+      );
     },
     dispose() {
       ro.disconnect();

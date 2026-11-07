@@ -13,6 +13,7 @@
       <div class="wallet" title="金币"><span class="coin" id="coins">0</span></div>
     </header>
     <aside class="panel left">
+      <section class="card-entry"><button data-act="card">生成露营卡片</button></section>
       <section id="garage"></section>
       <section id="shop"></section>
     </aside>
@@ -33,6 +34,14 @@
     </div>
     <div id="toast" role="status" hidden></div>
     <div id="welcome" role="dialog" aria-label="回访" hidden></div>
+    <div id="camp-card" role="dialog" aria-label="露营卡片" hidden>
+      <img id="camp-card-img" alt="露营卡片预览" />
+      <div class="row">
+        <button class="primary" data-act="cardDownload">下载 PNG</button>
+        <button data-act="cardCopy">复制图片</button>
+        <button data-act="cardClose">关闭</button>
+      </div>
+    </div>
     <div id="dev" hidden>
       <span>开发快进</span>
       <button data-act="dev" data-arg="3600000">+1 小时</button>

@@ -7,7 +7,7 @@ import { RENTAL_SPOTS } from './camp';
 import { SIDE_AWNING } from './config';
 import { collect, credit, dayKey, emptyPending, newLedger, spend, validPending, type Ledger } from './ledger';
 import type { Pose } from './kinematics';
-import { advanceCamp, newCampSim, type CampEvent, type CampSim } from './npc';
+import { advanceCamp, emptyDaily, newCampSim, validDaily, type CampEvent, type CampSim } from './npc';
 import { cycleDay, giftGoldForStreak, nextStreak, streakView, validStreak, type GiftStreak, type StreakView } from './streak';
 
 /** 3：账本加入待收取池（#28）。v2 存档在 loadSave 中迁移，已入账余额与流水原样保留 */
@@ -216,6 +216,8 @@ export function loadSave(json: string | null): GameState | null {
     // 局标识加入前的存档：按种子确定性补一个，多个标签页读同一份旧存档时得到同一个标识
     if (typeof s.sid !== 'string' || !s.sid) s.sid = `legacy:${s.seed}`;
     if (s.lastGiftDay === undefined) s.lastGiftDay = null;
+    // 当日统计（#30）加入前的存档：从加载时起计，当天已发生的到访不补算
+    if (!validDaily(s.camp.daily)) s.camp.daily = emptyDaily(dayKey(s.camp.lastMs));
     if (s.lastGiftDay !== null && !Number.isSafeInteger(s.lastGiftDay)) return null;
     // 连续登录（#29）加入前的存档，或旧版本标签页按旧规则领过礼物（只推进了 lastGiftDay）：
     // 以 lastGiftDay 那天为第 1 天平滑接上，不改余额与流水；明天继续登录即第 2 天

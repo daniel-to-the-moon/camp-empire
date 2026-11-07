@@ -12,7 +12,7 @@
  */
 import { ALL_VARIANTS } from '../data/models';
 import { NPC } from './config';
-import { deposit, type Ledger } from './ledger';
+import { dayKey, deposit, type Ledger } from './ledger';
 import { uniform } from './rng';
 
 const MIN = 60_000;
@@ -42,6 +42,34 @@ export interface CampSim {
   /** 爱心车位累计公益停靠分钟 */
   loveMinutes: number;
   settlements: number;
+  /**
+   * 当日统计（issue #30 露营卡片）：上海日 day 内到访的露营者数（按到达时刻计）与爱心车位公益停靠分钟
+   * （按离开时刻所在日计整段停靠，与 loveMinutes 的累计口径一致）。跨日时清零重计。
+   * 本字段加入前的存档在 loadSave 中补为“从加载时起计”，加入前当天已发生的到访不补算。
+   */
+  daily: CampDaily;
+}
+
+export interface CampDaily {
+  day: number;
+  arrivals: number;
+  loveMinutes: number;
+}
+
+export function emptyDaily(day: number): CampDaily {
+  return { day, arrivals: 0, loveMinutes: 0 };
+}
+
+export function validDaily(x: unknown): x is CampDaily {
+  const d = x as CampDaily;
+  return !!d && typeof d === 'object' && [d.day, d.arrivals, d.loveMinutes].every((v) => Number.isSafeInteger(v)) && d.arrivals >= 0 && d.loveMinutes >= 0;
+}
+
+/** 取 atMs 所在上海日的统计桶；事件按时间顺序处理，新的一天清零 */
+function dailyAt(sim: CampSim, atMs: number): CampDaily {
+  const day = dayKey(atMs);
+  if (day > sim.daily.day) sim.daily = emptyDaily(day);
+  return sim.daily;
 }
 
 export type CampEvent =
@@ -61,6 +89,7 @@ export function newCampSim(seed: number, nowMs: number, spots: Array<{ id: strin
     spots: spots.map((s) => ({ id: s.id, kind: s.kind, cycle: 0, nextArrivalMs: null, stay: null })),
     loveMinutes: 0,
     settlements: 0,
+    daily: emptyDaily(dayKey(nowMs)),
   };
   for (const sp of sim.spots) sp.nextArrivalMs = nowMs + gapMs(sim.seed, sp, { awningOut: false });
   return sim;
@@ -124,6 +153,7 @@ export function advanceCamp(sim: CampSim, ledger: Ledger, nowMs: number, env: Ca
         ({ pooled, lost } = deposit(ledger, { key: stay.parkingId, gross }));
       } else {
         sim.loveMinutes += minutes;
+        dailyAt(sim, stay.departMs).loveMinutes += minutes;
       }
       sim.settlements += 1;
       events.push({ type: 'depart', atMs: stay.departMs, spotId: sp.id, stay, gross, pooled, lost, minutes });
@@ -140,6 +170,7 @@ export function advanceCamp(sim: CampSim, ledger: Ledger, nowMs: number, env: Ca
       };
       sp.stay = stay;
       sp.nextArrivalMs = null;
+      dailyAt(sim, arriveMs).arrivals += 1;
       events.push({ type: 'arrive', atMs: arriveMs, spotId: sp.id, stay });
     }
   }

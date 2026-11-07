@@ -100,8 +100,9 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 #speed { font-family: var(--mono); font-weight: 700; min-width: 72px; }
 #bump { color: #ffb3a1; font-weight: 700; }
 
+/* 提示在所有弹层（回访面板 8、露营卡片 9）之上：复制失败时的“请用下载 PNG”引导不能被卡片挡住（GPT 审核 #39） */
 #toast {
-  position: fixed; left: 50%; top: 60px; transform: translateX(-50%); z-index: 6; max-width: 560px;
+  position: fixed; left: 50%; top: 60px; transform: translateX(-50%); z-index: 10; max-width: 560px;
   padding: 10px 16px; border-radius: 10px; background: rgba(15, 26, 21, 0.92); border: 1px solid var(--canvas);
 }
 .card p.warn { color: var(--coin); }
@@ -114,6 +115,16 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 #welcome .row { gap: 8px; margin-top: 12px; }
 #welcome button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
 #welcome button.primary { background: var(--canvas); color: var(--ink); border: 0; font-weight: 700; }
+/* 露营卡片（#30）：玩家点按钮才出现的预览框 */
+.card-entry button { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--canvas); background: rgba(224, 137, 46, 0.18); font-weight: 700; }
+#camp-card {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 9; width: min(360px, 90vw);
+  padding: 12px; border-radius: 12px; background: var(--pine); border: 1px solid var(--canvas); backdrop-filter: blur(6px);
+}
+#camp-card img { display: block; width: 100%; max-height: 70vh; object-fit: contain; border-radius: 8px; }
+#camp-card .row { gap: 8px; margin-top: 10px; }
+#camp-card button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
+#camp-card button.primary { background: var(--canvas); color: var(--ink); border: 0; font-weight: 700; }
 #readonly {
   position: fixed; left: 50%; top: 12px; transform: translateX(-50%); z-index: 7; display: flex; gap: 10px; align-items: center;
   padding: 8px 14px; border-radius: 10px; background: rgba(90, 60, 10, 0.92); border: 1px solid var(--line);
