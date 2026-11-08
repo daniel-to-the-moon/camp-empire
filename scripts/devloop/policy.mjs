@@ -16,6 +16,18 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 export const MAX_ROUNDS = 5;
 /** 同一个 head 因基础设施问题（CI 未完成、GPT 审核失败）重试的上限，达到即停下等用户（GPT 审核 #6 第六、七轮 major） */
 export const MAX_CI_RETRIES = 3;
+/**
+ * 轮次用满后的处理方式（仓库变量 ROUND_LIMIT_MODE，用户自选，默认 needs-user）：
+ * - needs-user：停下、加 needs-user，等用户裁决（原行为）；
+ * - auto：免人工裁决——意见数逐轮减少时自动追加轮次（最多 EXTRA_ROUNDS 轮）；
+ *   不再减少或追加轮次用完时，若剩余意见没有 blocker、CI 通过、无冲突，则合并并把剩余意见逐条转成 devloop issue；
+ *   出现 blocker 或意见数比上一轮多 → 仍停下加 needs-user。
+ */
+export const LIMIT_MODES = ['needs-user', 'auto'];
+export const EXTRA_ROUNDS = 3;
+export function limitMode(v) {
+  return LIMIT_MODES.includes(v) ? v : 'needs-user';
+}
 export const SKIP_LABELS = ['needs-user', 'hold'];
 const TERMINAL = new Set(['changes', 'merged', 'stopped']);
 const REVIEW_PREFIX = '执行者：GPT';
@@ -75,6 +87,13 @@ export function roundsUsed(markers) {
   return new Set(markers.filter((m) => m.state === 'changes').map((m) => m.head)).size;
 }
 
+/** 最近一条 changes 标记记下的意见数（reason = f<n>；旧标记没有记录时返回 null） */
+export function lastFindings(markers) {
+  const m = [...markers].reverse().find((x) => x.state === 'changes');
+  const n = /^f(\d+)$/.exec(m?.reason ?? '');
+  return n ? Number(n[1]) : null;
+}
+
 export function isBlocking(findings) {
   return findings.some((f) => f.severity === 'blocker' || f.severity === 'major');
 }
@@ -84,7 +103,7 @@ export function isBlocking(findings) {
  * ci: { status: 'ok' | 'failed' | 'error', base }，base 为 CI 实际测试的基准提交
  * now: { labels, base, mergeable, state, isDraft, baseRefName }：决定前一刻重新读取的 PR 状态与 main
  */
-export function decide({ ci, review, now, roundsBefore, allowMerge, retriesForHead = 0 }) {
+export function decide({ ci, review, now, roundsBefore, allowMerge, retriesForHead = 0, mode = 'needs-user', prevFindings = null }) {
   // PR 在审核期间被关闭、改成草稿、改投其他分支：本轮作废，不合并、不写终态
   if (!eligible({ state: now.state ?? 'OPEN', isDraft: now.isDraft ?? false, baseRefName: now.baseRefName ?? 'main' })) {
     return { state: 'retry', merge: false, text: 'PR 已不是“打开、非草稿、目标 main”的状态，本轮结论不生效。' };
@@ -105,6 +124,26 @@ export function decide({ ci, review, now, roundsBefore, allowMerge, retriesForHe
   const needsChange = ci.status === 'failed' || !approved || now.mergeable === 'CONFLICTING';
   if (needsChange) {
     const round = roundsBefore + 1;
+    const n = review.findings.length;
+    const fReason = `f${n}`; // changes 标记记下本轮意见数，供 auto 模式判断是否在收敛
+    if (round >= MAX_ROUNDS && limitMode(mode) === 'auto') {
+      const stop = (why) => ({ state: 'stopped', reason: 'limit', merge: false, addLabel: 'needs-user', text: `已 ${round} 轮未通过（轮次上限 ${MAX_ROUNDS}，auto 模式）：${why}，停止自动循环，请用户裁决（已加 needs-user 标签）。` });
+      if (review.findings.some((f) => f.severity === 'blocker')) return stop('仍有 blocker');
+      if (prevFindings !== null && n > prevFindings) return stop(`意见数比上一轮多（${prevFindings} → ${n}）`);
+      const falling = prevFindings !== null && n < prevFindings;
+      const canMerge = ci.status === 'ok' && now.mergeable !== 'CONFLICTING';
+      if ((falling || !canMerge) && round < MAX_ROUNDS + EXTRA_ROUNDS) {
+        const why = !canMerge ? (ci.status === 'failed' ? '测试或构建失败' : '与基准分支冲突') : `意见在收敛（${prevFindings} → ${n}）`;
+        return { state: 'changes', reason: fReason, merge: false, text: `第 ${round} 轮未通过，auto 模式追加轮次（${why}；最多到第 ${MAX_ROUNDS + EXTRA_ROUNDS} 轮）。执行者修复后自动重新审核。` };
+      }
+      if (!canMerge) return stop(ci.status === 'failed' ? '追加轮次用完，测试或构建仍失败' : '追加轮次用完，仍与基准分支冲突');
+      if (!allowMerge) return { state: 'retry', merge: false, text: '轮次用满、auto 模式可合并（本次指定 --no-merge，未合并）。' };
+      if (ci.base !== now.base) return { state: 'retry', merge: false, text: '测试之后 main 有了新提交，下一轮用新 main 重新审核与测试。' };
+      return {
+        state: 'merged', reason: 'limit', merge: true, followUpFindings: review.findings,
+        text: `已 ${round} 轮，auto 模式：剩余 ${n} 条意见均非 blocker、CI 通过 → 合并，剩余意见逐条转成 devloop issue。`,
+      };
+    }
     if (round >= MAX_ROUNDS) {
       return { state: 'stopped', merge: false, addLabel: 'needs-user', text: `已连续 ${round} 轮未通过，达到上限 ${MAX_ROUNDS}，停止自动循环，请用户裁决（已加 needs-user 标签）。` };
     }
@@ -113,7 +152,7 @@ export function decide({ ci, review, now, roundsBefore, allowMerge, retriesForHe
       !approved ? 'GPT 要求修改' : null,
       now.mergeable === 'CONFLICTING' ? '与基准分支冲突（先 git merge origin/main）' : null,
     ].filter(Boolean);
-    return { state: 'changes', merge: false, text: `第 ${round} 轮未通过：${why.join('；')}。执行者修复后自动重新审核。` };
+    return { state: 'changes', reason: fReason, merge: false, text: `第 ${round} 轮未通过：${why.join('；')}。执行者修复后自动重新审核。` };
   }
   if (!allowMerge) return { state: 'retry', merge: false, text: '审核通过（本次指定 --no-merge，未合并）。' };
   if (ci.base !== now.base) return { state: 'retry', merge: false, text: '测试之后 main 有了新提交，测试结果不再代表合并后的代码，下一轮用新 main 重新审核与测试。' };

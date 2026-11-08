@@ -341,15 +341,16 @@ test('gpt-review.yml：prompt 收到 select 选定的 head', () => {
  * decide 入口级测试：替换 GitHub / CI / git 接口，记录调用顺序。
  * states：prState 依次返回的 PR 状态（最后一个重复使用）；push：'ok' | 'fail'（mergeAndPush 是否抛错，成功前会先调用 beforePush）
  */
-function decideRig({ reviewResult = 'success', review = { verdict: 'approve', summary: 'ok', findings: [] }, ci = 'ok', states = [{}], push = 'ok', mainBase = B } = {}) {
+function decideRig({ reviewResult = 'success', review = { verdict: 'approve', summary: 'ok', findings: [] }, ci = 'ok', states = [{}], push = 'ok', mainBase = B, limitMode } = {}) {
   const calls = [];
   const pr = { title: 't', headRefOid: H, headRefName: 'claude/x', isCrossRepository: false, baseRefName: 'main', state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', labels: [], markers: [], files: ['src/a.ts'] };
   let i = 0;
   const io = {
     key: KEY,
     model: 'm',
+    limitMode,
     sleep: async () => {},
-    ghR: (args) => { calls.push(args.slice(0, 3).join(' ')); return ''; },
+    ghR: (args) => { calls.push(args.slice(0, 3).join(' ')); return args[0] === 'issue' && args[1] === 'create' ? `https://github.com/o/r/issues/${90 + calls.filter((c) => c.startsWith('issue create')).length}\n` : ''; },
     prState: () => ({ ...pr, ...states[Math.min(i++, states.length - 1)] }),
     mainSha: () => mainBase,
     runCi: async (p) => { calls.push(`ci ${p.pr} ${p.head.slice(0, 4)} ${p.base.slice(0, 4)}`); return { status: ci, base: B, url: '' }; },
@@ -441,4 +442,55 @@ test('runDecide：判定后、推送前另一审核方写入 changes → 不推�
   const r = decideRig({ states: [{}, { markers: [{ state: 'changes', reason: 'none', head: H, base: B }] }] });
   assert.equal((await r.run()).state, 'retry');
   assert.ok(!merged(r.calls) && !deployed(r.calls));
+});
+
+test('runDecide auto：轮次用满、意见持平无 blocker → 合并、部署、评论，再逐条开 devloop issue 并按 issue 触发实现', async () => {
+  const changes = (h, n) => ({ state: 'changes', reason: `f${n}`, head: h, base: B });
+  const markers = ['1', '2', '3', '4', '5'].map((c, i) => changes(c.repeat(40), i === 4 ? 2 : 3));
+  const review = { verdict: 'request_changes', summary: 'x', findings: [fd2('major'), fd2('minor')] };
+  const r = decideRig({ review, limitMode: 'auto', states: [{ markers }] });
+  assert.equal((await r.run()).state, 'merged');
+  assert.deepEqual(r.calls, [
+    'ci 7 aaaa bbbb', 'fetch', 'merge bbbb+aaaa', 'pushed', 'workflow run ci.yml', 'pr comment 7',
+    'issue create --title', 'issue create --title', 'workflow run claude.yml', 'workflow run claude.yml', 'pr comment 7',
+  ]);
+  // 默认 needs-user：同样情形停下，不合并
+  const d = decideRig({ review, states: [{ markers }] });
+  assert.equal((await d.run()).state, 'stopped');
+  assert.ok(!merged(d.calls) && d.calls.includes('pr edit 7'));
+});
+
+function fd2(severity) {
+  return { severity, file: 'a.ts', line: 1, issue: '问题', suggestion: '建议' };
+}
+
+test('followUpIssues：每条意见一个 issue，含来源、位置、建议与验收标准；标题截断', async () => {
+  const { followUpIssues } = await import('./review-format.mjs');
+  const [a] = followUpIssues({ pr: 7, head: H, findings: [{ ...fd2('major'), issue: 'x'.repeat(300) }] });
+  assert.ok(a.title.startsWith('[#7 遗留·major] ') && a.title.length <= 120);
+  for (const k of ['PR #7', 'a.ts:1', '## 建议', '## 验收标准', '- [ ]']) assert.ok(a.body.includes(k), k);
+});
+
+test('gpt-review.yml：decide 读取仓库变量 ROUND_LIMIT_MODE', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
+  assert.match(yml, /ROUND_LIMIT_MODE: \$\{\{ vars\.ROUND_LIMIT_MODE \}\}/);
+});
+
+test('finalize：issue 创建成功但响应丢失 → 重新核对找回编号，仍触发该 issue 的实现，不重复创建', async () => {
+  const { followUpItems } = await import('./followups.mjs');
+  const its = followUpItems({ pr: 7, head: H, findings: [fd2('major')] });
+  const created = [];
+  const calls = [];
+  const ghR = (args) => {
+    calls.push(args.slice(0, 4).join(' '));
+    if (args[0] === 'issue' && args[1] === 'create') {
+      created.push({ number: 300 + created.length, body: its[0].body });
+      throw new Error('socket hang up'); // 服务端已创建，客户端没拿到响应
+    }
+    return '';
+  };
+  await finalize({ ghR, pr: 7, state: 'merged', body: 'b', writeBody: () => 'f.md', issues: its, listIssues: () => created, sleep: async () => {}, delayMs: 0 });
+  assert.equal(created.length, 1);
+  assert.ok(calls.includes('workflow run claude.yml -f'));
+  assert.equal(calls.filter((c) => c.startsWith('issue create')).length, 1);
 });

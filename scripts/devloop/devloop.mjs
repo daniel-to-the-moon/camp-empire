@@ -15,13 +15,14 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCi } from './ci.mjs';
 import { acquireLock, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
-import { decide, eligible, hasTerminal, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, eligible, hasTerminal, lastFindings, limitMode, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
+import { drainPending, followUpItems } from './followups.mjs';
 import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -153,6 +154,8 @@ async function reviewLocked(pr, { merge }) {
     roundsBefore: roundsUsed(now.markers),
     retriesForHead: now.markers.filter((m) => m.head === head && m.state === 'retry' && m.reason === 'infra').length,
     allowMerge: merge,
+    mode: roundLimitMode(),
+    prevFindings: lastFindings(now.markers),
   });
   if (d.addLabel) gh(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
   if (d.merge) {
@@ -180,10 +183,55 @@ async function reviewLocked(pr, { merge }) {
       d.text = `审核与测试都通过，但合并未完成（${e.message.split('\n')[0]}），下一轮扫描重试。`;
     }
   }
-  comment(pr, format({ pr, head, review: rv ?? { verdict: 'error', summary: `GPT 审核未能完成：${reviewError}`, findings: [] }, ci, d }));
+  // auto 模式轮次用满合并：先把遗留意见待办清单落盘，再发评论；评论失败不影响补开 issue（见 followups.mjs）
+  if (d.state === 'merged' && d.followUpFindings?.length) savePending(pr, followUpItems({ pr, head, findings: d.followUpFindings }));
+  try {
+    comment(pr, format({ pr, head, review: rv ?? { verdict: 'error', summary: `GPT 审核未能完成：${reviewError}`, findings: [] }, ci, d }));
+  } catch (e) {
+    if (d.state !== 'merged') throw e;
+    log(`#${pr} 已合并，但审核评论发送失败：${e.message.split('\n')[0]}`);
+  }
+  await processPending({ locked: true });
   const result = { pr, head, state: d.state, ci: ci.status, verdict: rv?.verdict ?? 'error', findings: rv?.findings.length ?? 0 };
   console.log(JSON.stringify(result));
   return result;
+}
+
+/** 遗留意见待办清单：<HOME>/followups/pr-<N>.json；全部开成功才删除，否则每轮 watch 继续补（幂等，不会重复开） */
+const PENDING_DIR = join(HOME, 'followups');
+function savePending(pr, items) {
+  mkdirSync(PENDING_DIR, { recursive: true });
+  writeFileSync(join(PENDING_DIR, `pr-${pr}.json`), JSON.stringify({ pr, items }));
+}
+
+/** locked：调用方（reviewLocked）已持有进程锁；否则（watch 每轮）在这里获取同一把锁，忙则跳过本轮 */
+async function processPending({ locked = false } = {}) {
+  return drainPending({
+    dir: PENDING_DIR,
+    acquire: locked ? async () => () => {} : acquireLock,
+    io: {
+      list: () => sh('gh', ['api', '--paginate', `repos/${REPO}/issues?labels=devloop&state=all&per_page=100`, '--jq', '.[] | {number, body}'])
+        .split('\n').filter(Boolean).map((l) => JSON.parse(l)),
+      create: (it) => {
+        const f = join(HOME, `issue-${Date.now()}.md`);
+        writeFileSync(f, it.body);
+        return gh(['issue', 'create', '--title', it.title, '--body-file', f, '--label', 'devloop']);
+      },
+      comment: (pr, text) => comment(pr, text),
+      flag: (pr) => gh(['pr', 'edit', String(pr), '--add-label', 'needs-user']),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      log,
+    },
+  });
+}
+
+/** 轮次用满后的处理方式：仓库变量 ROUND_LIMIT_MODE（needs-user | auto），查询失败按 needs-user */
+function roundLimitMode() {
+  try {
+    return limitMode(gh(['variable', 'get', 'ROUND_LIMIT_MODE']).trim());
+  } catch {
+    return 'needs-user';
+  }
 }
 
 function cloudReviewOn() {
@@ -198,6 +246,7 @@ async function watch(intervalSec) {
   log(`watch 启动：间隔 ${intervalSec}s，审核模型 ${REVIEW_MODEL}，代码 ${git(['rev-parse', '--short', 'HEAD'])}`);
   for (;;) {
     try {
+      await processPending(); // 已合并 PR 的遗留意见 issue 没开齐的，每轮继续补
       const prs = JSON.parse(gh(['pr', 'list', '--state', 'open', '--base', 'main', '--json', 'number', '--limit', '50']));
       for (const { number } of prs.sort((a, b) => a.number - b.number)) {
         const m = prState(number);
