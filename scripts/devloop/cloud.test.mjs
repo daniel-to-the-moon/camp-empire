@@ -697,10 +697,16 @@ test('dispatchState：有排队 / 运行中的实现任务时，超过 2 小时�
   assert.equal(dispatchState({ ...base, comments: [], activeRun: true }, now), 'cooldown');
 });
 
-test('cloudFollowIo.issueInfo：按运行名 “claude issue#N” 识别未完成的实现任务', () => {
+test('cloudFollowIo.issueInfo：按运行名 “claude issue#N” 识别未完成的实现任务（按状态服务端过滤，排在 80 个其他运行之后也能识别）', () => {
   const ghR = (args) => {
     if (args[0] === 'issue') return JSON.stringify({ state: 'OPEN', labels: [], comments: [] });
-    if (args[0] === 'run') return JSON.stringify([{ displayTitle: 'claude issue#9', status: 'queued' }, { displayTitle: 'claude issue#90', status: 'completed' }]);
+    if (args[0] === 'run') {
+      // 服务端按 --status 过滤：只有 queued 里有 #9；最近 1000 次以内即可（不受 50 次窗口限制）
+      assert.ok(Number(args[args.indexOf('--limit') + 1]) >= 1000);
+      const st = args[args.indexOf('--status') + 1];
+      const others = Array.from({ length: 80 }, (_, k) => ({ displayTitle: `claude issue#${1000 + k}` }));
+      return JSON.stringify(st === 'queued' ? [...others, { displayTitle: 'claude issue#9' }] : []);
+    }
     return '';
   };
   const gh = () => { throw Object.assign(new Error('x'), { stderr: 'HTTP 404' }); };

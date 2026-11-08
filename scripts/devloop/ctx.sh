@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # claude.yml work 任务第一步：确定模式（implement / fix）、目标分支与编号。由 claude.test.mjs 用假 gh 测试。
 # 输入（环境变量）：EVENT（issues / issue_comment / workflow_dispatch）、N（issue 或 PR 编号）、REPO、KIND（手动触发时：issue = 实现 issue，其余 = 修复 PR）
-# 输出：向 $GITHUB_OUTPUT 写 mode=、branch=、number=；不合规时以非零退出
+# 输出：向 $GITHUB_OUTPUT 写 mode=（implement / fix / skip）、branch=、number=；不合规时以非零退出
 set -euo pipefail
 case "${N:-}" in '' | *[!0-9]*) echo "::error::编号必须是数字：${N:-}" >&2; exit 1 ;; esac
 if [ "$EVENT" = "issues" ]; then
@@ -12,10 +12,17 @@ elif [ "$EVENT" = "workflow_dispatch" ] && [ "${KIND:-}" = "issue" ]; then
   # 只接受打开、带 devloop 标签、不带 needs-user 的 issue（不是 PR）
   ok=$(gh issue view "$N" -R "$REPO" --json state,labels,url -q 'select(.state == "OPEN" and (.url | test("/issues/[0-9]+$")) and ([.labels[].name] | index("devloop")) and (([.labels[].name] | index("needs-user")) | not)) | "ok"')
   [ "$ok" = "ok" ] || { echo "::error::issue #$N 不是打开、带 devloop、不带 needs-user 的 issue" >&2; exit 1; }
-  # 去重：同一 issue 的任务按 concurrency 串行，排到这里时若实现分支已存在，说明前一次触发已产出，本次是重复触发
-  if gh api "repos/$REPO/git/ref/heads/claude/issue-$N" >/dev/null 2>&1; then
-    echo "::error::issue #$N 已有实现分支 claude/issue-$N（重复触发），不再重复实现" >&2
-    exit 1
+  # 去重：同一 issue 的任务按 concurrency 串行，排到这里时再查实现分支。
+  #   已存在 → 前一次触发已产出，本次是重复触发：mode=skip（后续实现与发布全部跳过，不评论、不改标签）；
+  #   明确 404 → 继续实现；其他查询错误（超时、限流、5xx）→ 也 mode=skip，不冒险重复实现，留给云端恢复任务稍后再触发。
+  if err=$(gh api "repos/$REPO/git/ref/heads/claude/issue-$N" 2>&1 >/dev/null); then
+    echo "::notice::issue #$N 已有实现分支 claude/issue-$N（重复触发），跳过"
+    printf 'mode=skip\nbranch=claude/issue-%s\nnumber=%s\n' "$N" "$N" >> "$GITHUB_OUTPUT"
+    exit 0
+  elif ! printf '%s' "$err" | grep -qE 'HTTP 404|Not Found'; then
+    echo "::warning::查询 claude/issue-$N 失败（$err），本次不实现，稍后由恢复任务重新触发"
+    printf 'mode=skip\nbranch=claude/issue-%s\nnumber=%s\n' "$N" "$N" >> "$GITHUB_OUTPUT"
+    exit 0
   fi
   mode=implement
   branch="claude/issue-$N"

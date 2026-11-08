@@ -78,13 +78,16 @@ jobs:
           bash _devloop/scripts/devloop/ctx.sh
       # 下一步检出到工作区根目录时会清空根目录（包括 _devloop），所以先把要用的 main 上的可信脚本复制到 RUNNER_TEMP
       - name: 保存 main 上的安装脚本
+        if: steps.ctx.outputs.mode != 'skip'
         run: cp _devloop/scripts/devloop/install-bun.sh "$RUNNER_TEMP/install-bun.sh"
       - uses: actions/checkout@v4
+        if: steps.ctx.outputs.mode != 'skip'
         with:
           ref: ${{ steps.ctx.outputs.mode == 'fix' && steps.ctx.outputs.branch || 'main' }}
           fetch-depth: 0
           persist-credentials: false
       - name: 记录起点
+        if: steps.ctx.outputs.mode != 'skip'
         id: start
         run: |
           echo "start=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -92,16 +95,19 @@ jobs:
           git config user.email "claude-devloop@users.noreply.github.com"
           mkdir -p "$RUNNER_TEMP/devloop"
       - uses: actions/setup-node@v4
+        if: steps.ctx.outputs.mode != 'skip'
         with:
           node-version: 24
       # 自己装 Bun（带重试），再把路径交给 claude-code-action，跳过它内置的 setup-bun：
       # 2026-11-08 内置 setup-bun 从 GitHub 下载 Bun 连续返回 HTTP 504，整个任务失败、issue 被加 needs-user。
       # 这里改从 npm 安装同一版本（与 action 内置版本一致：1.4.4），失败按 15/30 秒退避重试 3 次。
       - name: 安装 Bun（带重试）
+        if: steps.ctx.outputs.mode != 'skip'
         id: bun
         # 脚本是检出前从 main（_devloop）复制出来的版本，不用 PR 分支里的；逻辑与测试见 scripts/devloop/install-bun.sh / claude.test.mjs
         run: bash "$RUNNER_TEMP/install-bun.sh"
       - uses: anthropics/claude-code-action@v1
+        if: steps.ctx.outputs.mode != 'skip'
         id: claude
         # 比任务超时短：Claude 超时只让这一步失败，后面的打包与发布照常运行（GPT 审核 #6 第七轮 major）
         timeout-minutes: 75
@@ -147,7 +153,7 @@ jobs:
             --max-turns 120
             --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(ls:*),Bash(cat:*),Bash(mkdir:*),Bash(echo:*)"
       - name: 打包新提交（前面任一步失败也运行，失败时产出 needs-user 说明）
-        if: always()
+        if: always() && steps.ctx.outputs.mode != 'skip'
         env:
           OUT: ${{ runner.temp }}/devloop
           START: ${{ steps.start.outputs.start }}
@@ -171,7 +177,7 @@ jobs:
             echo needs-user > "$OUT/outcome"
           fi
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.ctx.outputs.mode != 'skip'
         with:
           name: devloop-${{ github.run_id }}
           path: ${{ runner.temp }}/devloop
@@ -183,7 +189,8 @@ jobs:
     # work 被取消（同一编号的新任务排进 concurrency 队列时，旧的排队任务会被取消）则不发：否则会留下误导性的
     # “失败”说明并错误地加上 needs-user（2026-11-07 #4 实际发生）。Claude 步骤有比任务更短的超时，
     # 正常超时表现为 failure 而不是 cancelled。
-    if: always() && needs.work.result != 'skipped' && needs.work.result != 'cancelled'
+    # ctx 判定为重复触发（mode=skip）时整个发布跳过：不评论、不改标签
+    if: always() && needs.work.result != 'skipped' && needs.work.result != 'cancelled' && needs.work.outputs.mode != 'skip'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

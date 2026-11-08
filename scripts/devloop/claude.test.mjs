@@ -18,7 +18,7 @@ function fakeGh(dir) {
   mkdirSync(bin, { recursive: true });
   writeFileSync(
     join(bin, 'gh'),
-    `#!/usr/bin/env bash\necho "$*" >> "${join(dir, 'gh.log')}"\nif [ "$1 $2" = "pr view" ]; then printf '%s' "$FAKE_HEAD_REF"; fi\nif [ "$1 $2" = "issue view" ]; then q=""; prev=""; for a in "$@"; do [ "$prev" = "-q" ] && q="$a"; prev="$a"; done; printf '%s' "$FAKE_ISSUE_JSON" | jq -r "$q"; fi\nif [ "$1" = "api" ] && [[ "$2" == */git/ref/heads/* ]]; then [ -n "$FAKE_BRANCH_EXISTS" ] && exit 0; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi\nexit "\${FAKE_GH_EXIT:-0}"\n`,
+    `#!/usr/bin/env bash\necho "$*" >> "${join(dir, 'gh.log')}"\nif [ "$1 $2" = "pr view" ]; then printf '%s' "$FAKE_HEAD_REF"; fi\nif [ "$1 $2" = "issue view" ]; then q=""; prev=""; for a in "$@"; do [ "$prev" = "-q" ] && q="$a"; prev="$a"; done; printf '%s' "$FAKE_ISSUE_JSON" | jq -r "$q"; fi\nif [ "$1" = "api" ] && [[ "$2" == */git/ref/heads/* ]]; then case "\${FAKE_BRANCH:-404}" in exists) echo '{}'; exit 0 ;; 404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;; 403) echo "gh: API rate limit exceeded (HTTP 403)" >&2; exit 1 ;; 502) echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;; *) echo "dial tcp: i/o timeout" >&2; exit 1 ;; esac; fi\nexit "\${FAKE_GH_EXIT:-0}"\n`,
   );
   chmodSync(join(bin, 'gh'), 0o755);
   return { path: `${bin}:${process.env.PATH}`, log: () => { try { return readFileSync(join(dir, 'gh.log'), 'utf8'); } catch { return ''; } } };
@@ -156,7 +156,7 @@ test('publish：outcome 为 needs-user 或产物缺失 → 评论 + 加 needs-us
  * 只支持当前用到的子集（`&&` 连接的 always()/success()/failure()/cancelled() 与 `needs.work.result ==/!= '值'`）；
  * 遇到不认识的写法直接抛错，让测试失败，而不是默默算错。
  */
-function publishRuns(workResult) {
+function publishRuns(workResult, mode = 'implement') {
   const yml = readFileSync(join(HERE, '../../.github/workflows/claude.yml'), 'utf8');
   const job = yml.match(/^  publish:\n((?:(?: {4,}.*)?\n)*)/m);
   assert.ok(job, 'claude.yml 里找不到 publish 任务');
@@ -169,6 +169,8 @@ function publishRuns(workResult) {
   let hasStatusFn = false;
   const ok = expr.split('&&').map((s) => s.trim()).every((term) => {
     if (term in status) { hasStatusFn = true; return status[term]; }
+    const mo = term.match(/^needs\.work\.outputs\.mode *(==|!=) *'([a-z]+)'$/);
+    if (mo) return mo[1] === '==' ? mode === mo[2] : mode !== mo[2];
     const c = term.match(/^needs\.work\.result *(==|!=) *'([a-z]+)'$/);
     if (!c) throw new Error(`不支持的条件项：${term}`);
     return c[1] === '==' ? workResult === c[2] : workResult !== c[2];
@@ -182,6 +184,18 @@ test('claude.yml：work 成功或失败才运行 publish；被取消或跳过不
   assert.equal(publishRuns('failure'), true);
   assert.equal(publishRuns('cancelled'), false);
   assert.equal(publishRuns('skipped'), false);
+  // ctx 判定重复触发（mode=skip）：work 成功结束，但 publish 不运行（不评论、不改标签）
+  assert.equal(publishRuns('success', 'skip'), false);
+  assert.equal(publishRuns('success', 'fix'), true);
+});
+
+test('claude.yml：ctx 之后的 work 步骤都在 mode=skip 时跳过（含 always() 的打包与上传）', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/claude.yml'), 'utf8');
+  const work = yml.slice(yml.indexOf('\n  work:'), yml.indexOf('\n  publish:'));
+  const after = work.slice(work.indexOf('name: 确定模式与分支'));
+  const steps = after.split(/\n {6}- /).slice(1);
+  assert.ok(steps.length >= 8);
+  for (const st of steps) assert.match(st, /\n {8}if: (?:always\(\) && )?steps\.ctx\.outputs\.mode != 'skip'\n/, st.split('\n')[0]);
 });
 
 test('publish：拒绝推送到非 claude/* 分支；分支已被别人更新（非快进）时失败、不覆盖', () => {
@@ -217,10 +231,17 @@ test('ctx：按 issue 手动触发（KIND=issue）→ implement；执行 ctx.sh 
     是PR: issue({ url: 'https://github.com/o/r/pull/12' }),
   };
   for (const [k, json] of Object.entries(bad)) assert.notEqual(run(json).code, 0, k);
-  // 排到执行时实现分支已存在（重复触发）→ 拒绝
-  const dup = runCtx({ EVENT: 'workflow_dispatch', KIND: 'issue', N: '12', FAKE_ISSUE_JSON: issue(), FAKE_BRANCH_EXISTS: '1' });
-  assert.notEqual(dup.code, 0);
-  assert.match(dup.stderr, /已有实现分支 claude\/issue-12/);
+  // 排到执行时实现分支已存在（重复触发）→ mode=skip、正常退出（后续实现与发布都跳过，不加 needs-user）
+  const dup = runCtx({ EVENT: 'workflow_dispatch', KIND: 'issue', N: '12', FAKE_ISSUE_JSON: issue(), FAKE_BRANCH: 'exists' });
+  assert.equal(dup.code, 0, dup.stderr);
+  assert.equal(dup.kv.mode, 'skip');
+  // 分支查询超时 / 403 / 5xx → 也 skip，不冒险重复实现；只有明确 404 才实现
+  for (const fail of ['timeout', '403', '502']) {
+    const r = runCtx({ EVENT: 'workflow_dispatch', KIND: 'issue', N: '12', FAKE_ISSUE_JSON: issue(), FAKE_BRANCH: fail });
+    assert.equal(r.code, 0, fail);
+    assert.equal(r.kv.mode, 'skip', fail);
+  }
+  assert.equal(runCtx({ EVENT: 'workflow_dispatch', KIND: 'issue', N: '12', FAKE_ISSUE_JSON: issue(), FAKE_BRANCH: '404' }).kv.mode, 'implement');
   assert.notEqual(run(issue(), '12; id').code, 0);
   // 不带 KIND 的手动触发仍是修复 PR
   assert.equal(runCtx({ EVENT: 'workflow_dispatch', N: '4', FAKE_HEAD_REF: 'claude/x' }).kv.mode, 'fix');

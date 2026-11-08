@@ -219,6 +219,16 @@ export function branchExists(gh, repo, branch) {
   }
 }
 
+/** 未完成的运行状态（服务端按状态过滤，不受“最近 N 次运行”窗口影响） */
+export const ACTIVE_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested', 'pending'];
+
+/** 某 issue 是否有排队 / 运行中的实现任务（运行名 “claude issue#N”） */
+export function hasActiveRun(ghR, n) {
+  return ACTIVE_RUN_STATUSES.some((st) =>
+    JSON.parse(ghR(['run', 'list', '--workflow', 'claude.yml', '--status', st, '--limit', '1000', '--json', 'displayTitle']))
+      .some((r) => r.displayTitle === `claude issue#${n}`));
+}
+
 /**
  * 已合并、带待恢复标签的 PR：先只查编号与 head（gh 自动分页），再逐个用分页 REST 接口读全部评论
  *（gh pr list 的 comments 字段只取前 100 条，登记在第 100 条之后会漏）。
@@ -241,8 +251,7 @@ export function cloudFollowIo({ gh, ghR, repo, writeBody, pr, head }) {
     issueInfo: (n) => {
       const m = JSON.parse(ghR(['issue', 'view', String(n), '--json', 'state,labels,comments']));
       const branch = branchExists(gh, repo, `claude/issue-${n}`);
-      const activeRun = JSON.parse(ghR(['run', 'list', '--workflow', 'claude.yml', '--limit', '50', '--json', 'displayTitle,status']))
-        .some((r) => r.displayTitle === `claude issue#${n}` && r.status !== 'completed');
+      const activeRun = hasActiveRun(ghR, n);
       return { state: m.state, labels: m.labels.map((l) => l.name), branch, activeRun, comments: m.comments.filter((c) => ['github-actions', 'github-actions[bot]'].includes(c.author?.login)).map((c) => ({ body: c.body, createdAt: c.createdAt })) };
     },
     markDispatch: (n) => ghR(['issue', 'comment', String(n), '--body-file', writeBody(`执行者：devloop（云端审核）\n\n来自 PR #${pr} 的遗留意见，已触发云端 Claude 实现。\n\n${DISPATCH_MARK}pr=${pr} head=${head} -->`)]),
