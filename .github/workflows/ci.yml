@@ -3,8 +3,10 @@
 #   保证测试的就是“合并后的代码”；并核对 head / base 与审核方给的完全一致。
 # - pull_request：人工推送的 PR（GITHUB_TOKEN 开的 PR 不会触发，靠上面的 dispatch）。
 # - push main：测试 + 构建，并把 dist 上传为发布产物（Actions artifact）；再由 pages 任务发布到 Cloudflare Pages（见下）。
+# - workflow_dispatch + deploy_main=true（在 main 上触发）：等同 push main。云端审核用 GITHUB_TOKEN 合并后推送 main
+#   不会触发 push 工作流，所以由它显式触发这条发布路径。
 name: ci
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('devloop {0} PR#{1}', inputs.nonce, inputs.pr) || format('ci {0}', github.event_name) }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && (inputs.deploy_main == 'true' && 'deploy main' || format('devloop {0} PR#{1}', inputs.nonce, inputs.pr)) || format('ci {0}', github.event_name) }}
 
 on:
   pull_request:
@@ -12,10 +14,11 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      pr: { description: 'PR 编号', required: true }
-      head: { description: '要测试的 PR 头部提交（完整 SHA）', required: true }
-      base: { description: '要合并到的 main 提交（完整 SHA）', required: true }
-      nonce: { description: '审核方用来找回本次运行的随机串', required: true }
+      pr: { description: 'PR 编号（devloop 合并测试）', required: false }
+      head: { description: '要测试的 PR 头部提交（完整 SHA）', required: false }
+      base: { description: '要合并到的 main 提交（完整 SHA）', required: false }
+      nonce: { description: '审核方用来找回本次运行的随机串', required: false }
+      deploy_main: { description: "'true'：测试并发布当前 main（云端审核合并后触发）", required: false }
 
 permissions:
   contents: read
@@ -27,13 +30,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.base || '' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_main != 'true' && inputs.base || '' }}
           fetch-depth: 0
           persist-credentials: false
       # 私有仓库拉 PR 头部需要认证：用第二个 checkout（同样不保留凭据）取到子目录，再从本地目录 fetch，
       # 这样后续执行 PR 代码的步骤里不存在任何令牌（GPT 审核 #6 第二轮 major）
       - name: 取 PR 头部（仅 devloop 触发）
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.deploy_main != 'true'
         uses: actions/checkout@v4
         with:
           ref: refs/pull/${{ inputs.pr }}/head
@@ -41,7 +44,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: 合并 PR 头部到指定 main（仅 devloop 触发）
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.deploy_main != 'true'
         env:
           HEAD_SHA: ${{ inputs.head }}
           BASE_SHA: ${{ inputs.base }}
@@ -68,7 +71,7 @@ jobs:
       - if: steps.app.outputs.yes == '1'
         run: npm run build
       - name: 上传发布产物（main）
-        if: github.event_name == 'push' && steps.app.outputs.yes == '1'
+        if: (github.event_name == 'push' || inputs.deploy_main == 'true') && steps.app.outputs.yes == '1'
         uses: actions/upload-artifact@v4
         with:
           name: camp-empire-${{ github.sha }}
@@ -82,7 +85,7 @@ jobs:
   # 上传前还会确认正式与预览地址都被 Cloudflare Access 拦截，否则拒绝上传。
   pages:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy_main == 'true'))
     # queue: max 保留所有排队中的发布（默认只留一个、会挤掉排队中的最新发布）；先后顺序不保证，由 pages.sh 的 SHA 检查兜底
     concurrency:
       group: pages-deploy

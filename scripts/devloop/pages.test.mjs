@@ -189,12 +189,12 @@ test('项目名非法（防注入）：失败', async () => {
   for (const PROJECT of ['', 'Camp', 'a b', 'x;rm -rf /', '../x']) assert.notEqual((await t.run({ PROJECT })).code, 0, PROJECT);
 });
 
-test('ci.yml：pages 任务只在 push 到 main 时运行、串行且保留全部排队（queue: max），并调用 pages.sh', () => {
+test('ci.yml：pages 任务只在 main 上（push 或 deploy_main 触发）运行、串行且保留全部排队（queue: max），并调用 pages.sh', () => {
   const yml = readFileSync(join(HERE, '../../.github/workflows/ci.yml'), 'utf8');
   const job = yml.match(/^  pages:\n((?:(?: {4,}.*)?\n)*)/m);
   assert.ok(job, 'ci.yml 里找不到 pages 任务');
   const body = job[1];
-  assert.match(body, /^ {4}if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'$/m);
+  assert.match(body, /^ {4}if: github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && inputs\.deploy_main == 'true'\)\)$/m);
   assert.match(body, /^ {4}concurrency:\n {6}group: pages-deploy\n {6}cancel-in-progress: false\n {6}queue: max$/m);
   assert.match(body, /bash _devloop\/scripts\/devloop\/pages\.sh/);
   assert.match(body, /DEPLOY: \$\{\{ vars\.PAGES_DEPLOY \}\}/);

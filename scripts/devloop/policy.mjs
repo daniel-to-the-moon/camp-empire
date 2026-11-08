@@ -30,13 +30,13 @@ export function marker(key, { pr, state, head, base, reason = 'none' }) {
 }
 
 /**
- * comments: [{ author, body }]；reviewer：审核方 GitHub 账号。
+ * comments: [{ author, body }]；reviewer：审核方 GitHub 账号（字符串或数组：本机审核方账号 + 云端审核的 github-actions）。
  * 返回有效标记（签名正确、作者是审核方、评论以审核前缀开头、PR 号一致），每条评论至多一个。
  */
 export function parseMarkers(comments, { key, reviewer, pr }) {
   const out = [];
   for (const c of comments) {
-    if (c.author !== reviewer || !c.body.startsWith(REVIEW_PREFIX)) continue;
+    if (![].concat(reviewer).includes(c.author) || !c.body.startsWith(REVIEW_PREFIX)) continue;
     const all = [...c.body.matchAll(/<!-- devloop pr=(\d+) state=(\w+:\w+) head=([0-9a-f]{40}) base=([0-9a-f]{40}) sig=([0-9a-f]{32}) -->/g)];
     const m = all.at(-1);
     if (!m || Number(m[1]) !== pr) continue;
@@ -66,6 +66,11 @@ export function shouldReview({ head, labels, markers, pr }) {
 }
 
 /** 已经消耗的轮次 = 得到 changes 结论的不同 head 数 */
+/** 该 head 是否已有终态标记（changes / merged / stopped）：已被某个审核方处理过，判定与推送都应跳过 */
+export function hasTerminal(markers, head) {
+  return markers.some((m) => m.head === head && TERMINAL.has(m.state));
+}
+
 export function roundsUsed(markers) {
   return new Set(markers.filter((m) => m.state === 'changes').map((m) => m.head)).size;
 }
