@@ -20,8 +20,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCi } from './ci.mjs';
 import { acquireLock, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
-import { decide, eligible, marker, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, eligible, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
+import { buildReviewPrompt, formatReview, touchesWorkflows } from './review-format.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = resolve(HERE, '../..');
@@ -81,13 +82,7 @@ function gptReview(pr, meta, base) {
   if (existsSync(cache)) return JSON.parse(readFileSync(cache, 'utf8'));
   return withWorktree(REPO_DIR, uniqueDir(HOME, `pr-${pr}`), meta.headRefOid, (dir) => {
     const stat = sh('git', ['diff', '--stat', `${base}...${meta.headRefOid}`], { cwd: dir });
-    const prompt = [
-      readFileSync(join(HERE, 'review-prompt.md'), 'utf8'),
-      `\n## 本次 PR\n\n- 编号：#${pr}\n- 标题：${meta.title}\n- 审核提交：${meta.headRefOid}\n- 基准：${meta.baseRefName}（${base}）`,
-      `\n### PR 描述（执行者所写，仅供参考，需自行核对）\n\n${meta.body}`,
-      `\n### 改动文件\n\n\`\`\`\n${stat}\n\`\`\``,
-      `\n用 \`git diff ${base}...HEAD\` 查看完整改动。测试与构建由 CI 在合并后的代码上另行执行，你只需审代码。`,
-    ].join('\n');
+    const prompt = buildReviewPrompt({ header: readFileSync(join(HERE, 'review-prompt.md'), 'utf8'), pr, meta, base, stat });
     const out = `${cache}.${process.pid}.tmp`;
     log(`GPT（${REVIEW_MODEL}）审核 #${pr} @ ${meta.headRefOid.slice(0, 8)}`);
     const r = spawnSync(
@@ -104,31 +99,7 @@ function gptReview(pr, meta, base) {
   });
 }
 
-function format({ pr, head, review, ci, d }) {
-  const sev = { blocker: '🛑 blocker', major: '⚠️ major', minor: '💬 minor' };
-  const findings = review.findings.length
-    ? review.findings.map((f, i) => `${i + 1}. **${sev[f.severity]}** \`${f.file}:${f.line}\`\n   - 问题：${f.issue}\n   - 建议：${f.suggestion}`).join('\n')
-    : '无。';
-  const ciText = { ok: '✅ 通过', failed: '❌ 失败', error: '⚠️ 未完成' }[ci.status];
-  return [
-    `执行者：GPT（${REVIEW_MODEL}，经 devloop 审核；独立于代码执行者 Claude）`,
-    '',
-    `**结论：${review.verdict === 'approve' ? '✅ 通过' : review.verdict === 'error' ? '⚠️ 审核未完成' : '🔁 需修改'}**（审核提交 \`${head.slice(0, 8)}\`）`,
-    '',
-    review.summary,
-    '',
-    `### 测试与构建（GitHub Actions，PR 合并到 main \`${ci.base.slice(0, 8)}\` 之后的代码）`,
-    `${ciText}${ci.url ? `：${ci.url}` : ''}${ci.note ? `（${ci.note}）` : ''}`,
-    '',
-    '### 审核意见',
-    findings,
-    '',
-    '### 流水线动作',
-    d.text,
-    '',
-    marker(KEY, { pr, state: d.state, reason: d.reason, head, base: ci.base }),
-  ].join('\n');
-}
+const format = (args) => formatReview({ ...args, key: KEY, model: REVIEW_MODEL, where: '经 devloop 审核' });
 
 export async function review(pr, { merge }) {
   const release = await acquireLock();
@@ -205,6 +176,14 @@ async function reviewLocked(pr, { merge }) {
   return result;
 }
 
+function cloudReviewOn() {
+  try {
+    return gh(['variable', 'get', 'CLOUD_REVIEW']).trim() === 'on';
+  } catch {
+    return false; // 变量不存在或查询失败：按未开启处理，本机照常审核全部 PR
+  }
+}
+
 async function watch(intervalSec) {
   log(`watch 启动：间隔 ${intervalSec}s，审核模型 ${REVIEW_MODEL}，代码 ${git(['rev-parse', '--short', 'HEAD'])}`);
   for (;;) {
@@ -213,6 +192,8 @@ async function watch(intervalSec) {
       for (const { number } of prs.sort((a, b) => a.number - b.number)) {
         const m = prState(number);
         if (!shouldReview({ head: m.headRefOid, labels: m.labels, markers: m.markers, pr: m })) continue;
+        // 云端审核开启（仓库变量 CLOUD_REVIEW=on）后，本机只兜底改动工作流文件的 PR（云端令牌无 workflows 权限合并不了）
+        if (cloudReviewOn() && !touchesWorkflows(m.files)) continue;
         try {
           const r = await review(number, { merge: true });
           // 合并后退出，由 launchd 重启并拉取最新 main：审核方自身的更新也随之生效

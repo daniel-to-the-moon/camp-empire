@@ -1,0 +1,152 @@
+# 云端 PR 审核：取代用户 Mac 上的常驻审核方（用户 2026-11-08 决定：搬到云端，Mac 先留着兜底）。见 docs/DEVLOOP.md。
+# 逻辑在 scripts/devloop/cloud.mjs，与本机 devloop.mjs 共用判定、合并、CI、签名标记模块（同一把签名密钥，审核记录互认）。
+#
+# 开关：仓库变量 CLOUD_REVIEW=on 才自动运行（定时与 pull_request）；手动触发（workflow_dispatch）不受开关限制，用于验证。
+# 分工：云端只审不改 .github/workflows/ 的 PR（GITHUB_TOKEN 无 workflows 权限）；这类 PR 由本机审核方处理。
+# 安全结构：
+#   select ：只读，选出一个要审的 PR；
+#   review ：只读，codex-action 以 :read-only 在 PR 代码检出上审核，产出结构化结论（不持有写权限与签名密钥）；
+#   decide ：有写权限，不运行模型、不执行 PR 代码：触发 CI（PR 合并到 main 后测试）、判定、合并或退回、评论，
+#            需修改时直接触发云端 Claude 修复，合并后触发部署（GITHUB_TOKEN 推送 main 不会触发 push 工作流）。
+# 整个工作流全局串行：网关限并发，且同一时刻只合并一个 PR。
+name: gpt-review
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('gpt-review PR#{0}', inputs.pr) || format('gpt-review {0}', github.event_name) }}
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: '只审这个 PR（留空则扫描全部 open PR）'
+        required: false
+
+permissions: {}
+
+concurrency:
+  group: gpt-review
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  select:
+    if: vars.CLOUD_REVIEW == 'on' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      pr: ${{ steps.pick.outputs.pr }}
+      head: ${{ steps.pick.outputs.head }}
+      base: ${{ steps.pick.outputs.base }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          sparse-checkout: scripts/devloop
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 选出要审的 PR
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEVLOOP_MARKER_KEY: ${{ secrets.DEVLOOP_MARKER_KEY }}
+          ONLY: ${{ inputs.pr || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          case "$ONLY" in '') ;; 0* | *[!0-9]*) echo "::error::PR 编号无效：$ONLY"; exit 1 ;; esac
+          if [ -n "$ONLY" ]; then node scripts/devloop/cloud.mjs select --pr "$ONLY"; else node scripts/devloop/cloud.mjs select; fi
+
+  review:
+    needs: select
+    if: needs.select.outputs.pr != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: _main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ needs.select.outputs.pr }}/head
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 核对 PR 头部并取 main 历史（用于 diff）
+        env:
+          HEAD_SHA: ${{ needs.select.outputs.head }}
+        run: |
+          set -euo pipefail
+          test "$(git -C pr rev-parse HEAD)" = "$HEAD_SHA" || { echo "::error::PR 头部已变化"; exit 1; }
+          git -C pr fetch -q ../_main HEAD:refs/remotes/devloop/main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 生成审核提示词
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEVLOOP_MARKER_KEY: ${{ secrets.DEVLOOP_MARKER_KEY }}
+        run: node _main/scripts/devloop/cloud.mjs prompt --pr "${{ needs.select.outputs.pr }}" --base "${{ needs.select.outputs.base }}" --dir pr --out "$RUNNER_TEMP/prompt.md"
+      - name: GPT 审核
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1.13（标签指向的提交）
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          responses-api-endpoint: ${{ vars.GPT_RESPONSES_ENDPOINT }}
+          model: ${{ vars.GPT_MODEL }}
+          effort: high
+          permission-profile: ':read-only'
+          working-directory: pr
+          prompt-file: ${{ runner.temp }}/prompt.md
+          output-schema-file: _main/scripts/devloop/review-schema.json
+          output-file: ${{ runner.temp }}/review.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt-review-${{ github.run_id }}
+          path: ${{ runner.temp }}/review.json
+          retention-days: 7
+
+  decide:
+    needs: [select, review]
+    # GPT 审核失败也要判定（记为基础设施问题，受重试上限约束），不能无声跳过
+    if: always() && needs.select.result == 'success' && needs.select.outputs.pr != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: gpt-review-${{ github.run_id }}
+          path: review
+      - name: 测试、判定、合并或退回
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEVLOOP_MARKER_KEY: ${{ secrets.DEVLOOP_MARKER_KEY }}
+          GPT_MODEL: ${{ vars.GPT_MODEL }}
+        run: node scripts/devloop/cloud.mjs decide --pr "${{ needs.select.outputs.pr }}" --head "${{ needs.select.outputs.head }}" --base "${{ needs.select.outputs.base }}" --review review/review.json

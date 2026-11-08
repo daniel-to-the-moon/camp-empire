@@ -80,6 +80,17 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 - 触发判定在 `scripts/devloop/discuss-gate.mjs`、去重与提示词在 `discuss-build.mjs`（均有测试）；`@gpt` 点名时只回答触发的那条评论，这条评论完整保留、优先占用提示词预算，讨论全文用剩余预算截断（至少保留 40,000 字，提案值，待核实）；评审任务只读、`:read-only` 权限配置，发评论任务不运行模型。
 - GPT 只评审与提问，不拍板。目前这只是约定：`claude.yml` 只检查标签本身，不检查是谁打的；有写权限的账号打上 `devloop` 都会触发。若要强制只认用户，需要在工作流里校验打标签者，**待用户决定**。
 
+## 云端审核（取代本机常驻，用户 2026-11-08 决定）
+
+`.github/workflows/gpt-review.yml` + `scripts/devloop/cloud.mjs`，与本机 `devloop.mjs` 共用判定、合并、CI、签名标记模块。
+
+- **开关**：仓库变量 `CLOUD_REVIEW=on` 才自动运行（每 10 分钟扫描 + 人工 PR 的 pull_request 事件）；手动 `gh workflow run gpt-review.yml -R daniel-to-the-moon/camp-empire -f pr=<编号>` 不受开关限制，用于验证。
+- **分工**：云端只审**不改** `.github/workflows/` 的 PR；改工作流的 PR 由本机审核方处理（`GITHUB_TOKEN` 无 workflows 权限，合并不了）。开关打开后，本机常驻自动只兜底这类 PR。
+- **结构**：`select`（只读，选 PR）→ `review`（只读，codex-action 以 `:read-only` 在 PR 检出上审核，输出结构化结论）→ `decide`（有写权限、不运行模型：触发 CI、判定、合并或退回、评论）。整个工作流全局串行。
+- **后续动作**：`GITHUB_TOKEN` 发的评论不会触发 `claude.yml`，所以需修改时 `decide` 直接触发 `claude.yml -f pr=<编号>`；`GITHUB_TOKEN` 推送 main 不会触发 push 工作流，所以合并后直接触发 `ci.yml -f deploy_main=true` 完成发布。
+- **凭据**：`OPENAI_API_KEY`、`GPT_RESPONSES_ENDPOINT`、`GPT_MODEL`（与讨论评审共用）；签名密钥 `DEVLOOP_MARKER_KEY` 与本机 `../ce-devloop/marker.key` 相同，两边的审核记录互认、轮次连续计数。
+- **费用**：每次审核消耗 AI 网关的共享额度（金额待核实）；网关限速见上文“GPT 云端参与讨论”。
+
 ## 五、停止条件、标签与评论标记
 
 审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；同一提交因基础设施问题——CI 未完成或 GPT 审核本身失败——累计 3 次即转为 `stopped`）。CI 任务超时（`timed_out`）按测试失败处理，交执行者修。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
