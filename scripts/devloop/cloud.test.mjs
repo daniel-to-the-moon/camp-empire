@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { followUps, pickPr } from './cloud.mjs';
+import { finalize, followUps, pickPr, trustedReviewer } from './cloud.mjs';
+import { roundsUsed } from './policy.mjs';
 import { marker } from './policy.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -67,7 +68,7 @@ function select(prs, extraArgs = []) {
   const out = join(root, `out-${Math.random()}`);
   writeFileSync(out, '');
   const r = spawnSync(process.execPath, [join(HERE, 'cloud.mjs'), 'select', ...extraArgs], {
-    env: { ...process.env, PATH: g.path, REPO: 'o/r', DEVLOOP_MARKER_KEY: KEY, GITHUB_OUTPUT: out },
+    env: { ...process.env, PATH: g.path, REPO: 'o/r', DEVLOOP_MARKER_KEY: KEY, GITHUB_OUTPUT: out, GITHUB_REPOSITORY_OWNER: 'owner' },
     encoding: 'utf8',
   });
   return { code: r.status, err: r.stderr, out: readFileSync(out, 'utf8'), log: g.log() };
@@ -108,4 +109,83 @@ test('gpt-review.yml：review 只读且以 :read-only 运行 codex、不持有�
   assert.match(decide, /^ {6}actions: write$/m);
   assert.match(yml, /^concurrency:\n {2}group: gpt-review\n {2}cancel-in-progress: false\n {2}queue: max$/m);
   assert.match(select, /^ {4}if: vars\.CLOUD_REVIEW == 'on' \|\| github\.event_name == 'workflow_dispatch'$/m);
+});
+
+const ownerReview = (pr, state, head) => ({ author: { login: 'owner' }, body: `执行者：GPT（经 devloop 审核）\n${marker(KEY, { pr, state, head, base: B })}` });
+
+test('select：认本机审核方（仓库所有者）发的签名标记——本机审过的 head 云端不再重审', () => {
+  const head = 'f'.repeat(40);
+  const r = select([{ number: 6, view: view(head, { comments: [ownerReview(6, 'changes', head)] }) }]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^pr=\n/);
+  // 伪造：别的账号发的同样内容不算
+  const forged = { author: { login: 'mallory' }, body: ownerReview(6, 'changes', head).body };
+  assert.match(select([{ number: 6, view: view(head, { comments: [forged] }) }]).out, /^pr=6\n/);
+});
+
+test('trustedReviewer：取 LOCAL_REVIEWER 或 GITHUB_REPOSITORY_OWNER；都没有就报错', () => {
+  assert.equal(trustedReviewer({ GITHUB_REPOSITORY_OWNER: 'o' }), 'o');
+  assert.equal(trustedReviewer({ LOCAL_REVIEWER: 'l', GITHUB_REPOSITORY_OWNER: 'o' }), 'l');
+  assert.throws(() => trustedReviewer({}));
+});
+
+test('轮次连续：本机与云端的 changes 标记混合计数', () => {
+  const ms = [{ state: 'changes', head: '1' }, { state: 'changes', head: '2' }, { state: 'retry', reason: 'infra', head: '3' }];
+  assert.equal(roundsUsed(ms), 2);
+});
+
+/** 假 ghR：按命令前缀决定失败次数，记录调用顺序 */
+function fakeGhR(failures = {}) {
+  const calls = [];
+  const left = { ...failures };
+  const ghR = (args) => {
+    const k = args.slice(0, 3).join(' ');
+    calls.push(k);
+    for (const [prefix, n] of Object.entries(left)) {
+      if (k.startsWith(prefix) && n > 0) {
+        left[prefix] = n - 1;
+        throw new Error(`boom ${prefix}`);
+      }
+    }
+    return '';
+  };
+  return { ghR, calls };
+}
+const fin = (o) => finalize({ pr: 7, body: 'B', writeBody: (t) => `/tmp/${t.length}`, sleep: async () => {}, delayMs: 0, ...o });
+
+test('finalize 合并：先触发部署再发评论；全部成功不加标签', async () => {
+  const f = fakeGhR();
+  await fin({ ghR: f.ghR, state: 'merged' });
+  assert.deepEqual(f.calls, ['workflow run ci.yml', 'pr comment 7']);
+});
+
+test('finalize 合并：评论一直失败也照样部署；最终加 needs-user、发说明、抛错', async () => {
+  const f = fakeGhR({ 'pr comment': 99 });
+  await assert.rejects(fin({ ghR: f.ghR, state: 'merged' }), /发审核评论/);
+  assert.equal(f.calls[0], 'workflow run ci.yml');
+  assert.ok(f.calls.includes('pr edit 7'));
+});
+
+test('finalize 需修改：发评论后触发修复；触发偶发失败会重试成功', async () => {
+  const f = fakeGhR({ 'workflow run claude.yml': 2 });
+  await fin({ ghR: f.ghR, state: 'changes' });
+  assert.deepEqual(f.calls, ['pr comment 7', 'workflow run claude.yml', 'workflow run claude.yml', 'workflow run claude.yml']);
+});
+
+test('finalize 需修改：触发一直失败 → 重试 3 次后 needs-user + 说明 + 抛错；评论失败则不触发修复', async () => {
+  const a = fakeGhR({ 'workflow run claude.yml': 99 });
+  await assert.rejects(fin({ ghR: a.ghR, state: 'changes' }), /触发云端 Claude 修复/);
+  assert.equal(a.calls.filter((c) => c === 'workflow run claude.yml').length, 3);
+  assert.ok(a.calls.includes('pr edit 7'));
+  const b = fakeGhR({ 'pr comment': 99 });
+  await assert.rejects(fin({ ghR: b.ghR, state: 'changes' }));
+  assert.ok(!b.calls.includes('workflow run claude.yml'));
+});
+
+test('finalize retry / stopped：只发评论，无后续动作', async () => {
+  for (const state of ['retry', 'stopped']) {
+    const f = fakeGhR();
+    await fin({ ghR: f.ghR, state });
+    assert.deepEqual(f.calls, ['pr comment 7']);
+  }
 });

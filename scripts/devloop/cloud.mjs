@@ -23,7 +23,6 @@ import { buildReviewPrompt, formatReview, touchesWorkflows } from './review-form
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts }).trim();
-const log = (...a) => console.error('[cloud-review]', ...a);
 const out = (kv) => {
   const text = Object.entries(kv).map(([k, v]) => `${k}=${v ?? ''}`).join('\n') + '\n';
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, text);
@@ -47,6 +46,62 @@ export function followUps(state, pr) {
   return [];
 }
 
+/** 本机审核方账号 = 仓库所有者（各 agent 共用用户的 GitHub 账号）；云端据此与 github-actions 一起认签名标记 */
+export function trustedReviewer(env) {
+  const owner = env.LOCAL_REVIEWER || env.GITHUB_REPOSITORY_OWNER || '';
+  if (!owner) throw new Error('缺少 LOCAL_REVIEWER / GITHUB_REPOSITORY_OWNER，无法识别本机审核记录');
+  return owner;
+}
+
+async function withRetry(fn, { attempts, sleep, delayMs }) {
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return fn();
+    } catch (e) {
+      last = e;
+      if (i < attempts - 1) await sleep(delayMs * (i + 1));
+    }
+  }
+  throw last;
+}
+
+/**
+ * 发评论与后续动作，失败可见、可恢复：
+ * - 合并时先触发部署、再发评论（评论失败不影响部署）；需修改时先发评论（Claude 修复要读它）、再触发修复；
+ * - 每个动作有界重试；最终仍失败 → 给 PR 加 needs-user，并（尽力）发一条说明，写明要手动执行的命令，然后抛错让本次运行失败。
+ *   不会重复合并（合并已完成），也不新增审核标记（不累计轮次）。
+ */
+export async function finalize({ ghR, pr, state, body, writeBody, attempts = 3, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), delayMs = 5000 }) {
+  const failed = [];
+  const tryDo = async (label, args) => {
+    try {
+      await withRetry(() => ghR(args), { attempts, sleep, delayMs });
+    } catch (e) {
+      failed.push({ label, cmd: `gh ${args.join(' ')}`, err: String(e.message).split('\n')[0] });
+    }
+  };
+  const comment = () => tryDo('发审核评论', ['pr', 'comment', String(pr), '--body-file', writeBody(body)]);
+  const follow = async () => {
+    for (const a of followUps(state, pr)) await tryDo(state === 'merged' ? '触发部署' : '触发云端 Claude 修复', a);
+  };
+  if (state === 'merged') {
+    await follow();
+    await comment();
+  } else {
+    await comment();
+    if (!failed.length) await follow(); // 评论没发出去就不触发修复（Claude 读不到意见）
+    else failed.push(...followUps(state, pr).map((a) => ({ label: '未触发（评论失败）', cmd: `gh ${a.join(' ')}`, err: '' })));
+  }
+  if (!failed.length) return;
+  const note = ['执行者：devloop（云端审核）', '', `以下动作重试 ${attempts} 次后仍失败，自动循环在此停下（已加 needs-user）。排除原因后手动执行：`, '',
+    ...failed.map((f) => `- ${f.label}：\`${f.cmd}\`${f.err ? `（${f.err}）` : ''}`),
+    ...(failed.some((f) => f.label === '发审核评论') ? ['', '审核评论未能发出；可手动重跑本次云端审核：`gh workflow run gpt-review.yml -f pr=' + pr + '`'] : [])].join('\n');
+  try { ghR(['pr', 'edit', String(pr), '--add-label', 'needs-user']); } catch { /* 尽力 */ }
+  try { ghR(['pr', 'comment', String(pr), '--body-file', writeBody(note)]); } catch { /* 尽力 */ }
+  throw new Error(`后续动作失败：${failed.map((f) => f.label).join('、')}`);
+}
+
 function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : undefined;
@@ -58,7 +113,8 @@ async function main() {
   if (!REPO || !KEY) throw new Error('缺少 REPO 或 DEVLOOP_MARKER_KEY');
   const gh = (args) => sh('gh', args);
   const ghR = (args) => sh('gh', [...args, '-R', REPO]);
-  const prState = createPrState({ gh, repo: REPO, key: KEY, whoami: () => 'github-actions' });
+  // 可信审核方 = 本机审核方账号（仓库所有者）+ github-actions（prstate 自动加入）；签名仍逐条校验
+  const prState = createPrState({ gh, repo: REPO, key: KEY, whoami: () => trustedReviewer(process.env) });
   const mainSha = () => gh(['api', `repos/${REPO}/commits/main`, '-q', '.sha']);
   const cmd = process.argv[2];
 
@@ -147,16 +203,12 @@ async function main() {
       ci,
       d,
     });
-    const f = join(mkdtempSync(join(tmpdir(), 'cloud-comment-')), 'c.md');
-    writeFileSync(f, body);
-    ghR(['pr', 'comment', String(pr), '--body-file', f]);
-    for (const a of followUps(d.state, pr)) {
-      try {
-        ghR(a);
-      } catch (e) {
-        log(`后续动作失败（${a.join(' ')}）：${String(e.message).split('\n')[0]}`);
-      }
-    }
+    const writeBody = (text) => {
+      const f = join(mkdtempSync(join(tmpdir(), 'cloud-comment-')), 'c.md');
+      writeFileSync(f, text);
+      return f;
+    };
+    await finalize({ ghR, pr, state: d.state, body, writeBody });
     return out({ state: d.state, ci: ci.status, verdict: review?.verdict ?? 'error' });
   }
   throw new Error('用法：cloud.mjs select|prompt|decide …');
