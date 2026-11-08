@@ -292,3 +292,47 @@ test('gpt-review.yml：无 pull_request 入口；每个任务都校验 github.re
   assert.equal(ifs.length, 3);
   for (const c of ifs) assert.match(c, /github\.ref == 'refs\/heads\/main'/);
 });
+
+/** 真 git 仓库：base ← h0 ← h1；返回各提交 SHA 与目录 */
+function gitRepo() {
+  const dir = mkdtempSync(join(root, 'repo-'));
+  const g = (...a) => spawnSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).stdout.trim();
+  g('init', '-q');
+  const commit = (f) => { writeFileSync(join(dir, f), f); g('add', f); g('commit', '-qm', f); return g('rev-parse', 'HEAD'); };
+  return { dir, g, base: commit('base.txt'), h0: commit('a.txt'), h1: commit('b.txt') };
+}
+
+function prompt({ liveHead, checkout, head }) {
+  const r0 = gitRepo();
+  r0.g('checkout', '-q', { h0: r0.h0, h1: r0.h1 }[checkout]);
+  const g = fakeGh([{ number: 7, view: view({ h0: r0.h0, h1: r0.h1 }[liveHead]) }]);
+  const outFile = join(root, `prompt-${Math.random()}.md`);
+  const r = spawnSync(process.execPath, [join(HERE, 'cloud.mjs'), 'prompt', '--pr', '7', '--head', { h0: r0.h0, h1: r0.h1 }[head], '--base', r0.base, '--dir', r0.dir, '--out', outFile], {
+    env: { ...process.env, PATH: g.path, REPO: 'o/r', DEVLOOP_MARKER_KEY: KEY, GITHUB_REPOSITORY_OWNER: 'owner' },
+    encoding: 'utf8',
+  });
+  let text = null;
+  try { text = readFileSync(outFile, 'utf8'); } catch { /* 未生成 */ }
+  return { code: r.status, err: r.stderr, text, r0 };
+}
+
+test('prompt：选定 head、PR 当前 head、检出 HEAD 一致时，提示词与 diff 用该固定 SHA', () => {
+  const p = prompt({ liveHead: 'h1', checkout: 'h1', head: 'h1' });
+  assert.equal(p.code, 0, p.err);
+  assert.match(p.text, new RegExp(`审核提交：${p.r0.h1}`));
+  assert.match(p.text, /b\.txt/); // diff 覆盖到 h1 的改动
+});
+
+test('prompt：PR 被暂时重置到本地已有的祖先（或检出与选定不符）→ 终止，不生成可供合并的提示词', () => {
+  for (const c of [{ liveHead: 'h0', checkout: 'h1', head: 'h1' }, { liveHead: 'h1', checkout: 'h0', head: 'h1' }, { liveHead: 'h0', checkout: 'h0', head: 'h1' }]) {
+    const p = prompt(c);
+    assert.notEqual(p.code, 0, JSON.stringify(c));
+    assert.equal(p.text, null, JSON.stringify(c));
+    assert.match(p.err, /审核对象不一致/);
+  }
+});
+
+test('gpt-review.yml：prompt 收到 select 选定的 head', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
+  assert.match(yml, /cloud\.mjs prompt --pr "\$\{\{ needs\.select\.outputs\.pr \}\}" --head "\$\{\{ needs\.select\.outputs\.head \}\}"/);
+});

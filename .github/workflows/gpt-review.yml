@@ -104,7 +104,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           DEVLOOP_MARKER_KEY: ${{ secrets.DEVLOOP_MARKER_KEY }}
-        run: node _main/scripts/devloop/cloud.mjs prompt --pr "${{ needs.select.outputs.pr }}" --base "${{ needs.select.outputs.base }}" --dir pr --out "$RUNNER_TEMP/prompt.md"
+        run: node _main/scripts/devloop/cloud.mjs prompt --pr "${{ needs.select.outputs.pr }}" --head "${{ needs.select.outputs.head }}" --base "${{ needs.select.outputs.base }}" --dir pr --out "$RUNNER_TEMP/prompt.md"
       - name: GPT 审核
         uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1.13（标签指向的提交）
         with:

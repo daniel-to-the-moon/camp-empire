@@ -4,7 +4,7 @@
  * 同一把签名密钥（secret DEVLOOP_MARKER_KEY），所以两边的审核记录互认。
  *
  *   node cloud.mjs select [--pr N]                      选出一个要审的 PR → $GITHUB_OUTPUT：pr、head、base
- *   node cloud.mjs prompt --pr N --base B --dir D --out F   在 PR 检出目录 D 里生成审核提示词
+ *   node cloud.mjs prompt --pr N --head H --base B --dir D --out F   在 PR 检出目录 D 里生成审核提示词（核对 H = PR 当前 head = 检出 HEAD）
  *   node cloud.mjs decide --pr N --head H --base B --review-result R [--review review.json --meta meta.json]   跑 CI、判定、合并或退回、评论、触发后续
  *
  * 分工：云端只审“不改 .github/workflows/”的 PR（GITHUB_TOKEN 无 workflows 权限，合并不了这类 PR），这类交给本机审核方。
@@ -158,9 +158,16 @@ async function main() {
   if (cmd === 'prompt') {
     const pr = Number(arg('pr'));
     const base = arg('base');
+    const head = arg('head');
+    if (!/^[0-9a-f]{40}$/.test(head ?? '')) throw new Error('prompt 需要 --head <select 选定的 40 位 SHA>');
+    // select 选定的 head、PR 当前 head、工作区检出的 HEAD 三者必须一致；提示词与 diff 一律用这个固定 SHA（GPT 审核 #41 第 4 轮）
     const meta = prState(pr);
-    const stat = sh('git', ['diff', '--stat', `${base}...${meta.headRefOid}`], { cwd: arg('dir') });
-    writeFileSync(arg('out'), buildReviewPrompt({ header: readFileSync(join(HERE, 'review-prompt.md'), 'utf8'), pr, meta, base, stat }));
+    const checkout = sh('git', ['rev-parse', 'HEAD'], { cwd: arg('dir') });
+    if (meta.headRefOid !== head || checkout !== head) {
+      throw new Error(`审核对象不一致（选定 ${head.slice(0, 8)}，PR 当前 ${meta.headRefOid.slice(0, 8)}，检出 ${checkout.slice(0, 8)}），本轮终止`);
+    }
+    const stat = sh('git', ['diff', '--stat', `${base}...${head}`], { cwd: arg('dir') });
+    writeFileSync(arg('out'), buildReviewPrompt({ header: readFileSync(join(HERE, 'review-prompt.md'), 'utf8'), pr, meta: { ...meta, headRefOid: head }, base, stat }));
     return out({ prompt: arg('out') });
   }
 
