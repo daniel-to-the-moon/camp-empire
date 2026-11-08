@@ -84,11 +84,14 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 `.github/workflows/gpt-review.yml` + `scripts/devloop/cloud.mjs`，与本机 `devloop.mjs` 共用判定、合并、CI、签名标记模块。
 
-- **开关**：仓库变量 `CLOUD_REVIEW=on` 才自动运行（每 10 分钟扫描 + 人工 PR 的 pull_request 事件）；手动 `gh workflow run gpt-review.yml -R daniel-to-the-moon/camp-empire -f pr=<编号>` 不受开关限制，用于验证。
+- **开关**：仓库变量 `CLOUD_REVIEW=on` 才自动运行（每 10 分钟扫描；GitHub 定时任务可能延后）；手动 `gh workflow run gpt-review.yml -R daniel-to-the-moon/camp-empire -f pr=<编号>` 不受开关限制，用于验证。
 - **分工**：云端只审**不改** `.github/workflows/` 的 PR；改工作流的 PR 由本机审核方处理（`GITHUB_TOKEN` 无 workflows 权限，合并不了）。开关打开后，本机常驻自动只兜底这类 PR。
 - **结构**：`select`（只读，选 PR）→ `review`（只读，codex-action 以 `:read-only` 在 PR 检出上审核，输出结构化结论）→ `decide`（有写权限、不运行模型：触发 CI、判定、合并或退回、评论）。整个工作流全局串行。
 - **后续动作**：`GITHUB_TOKEN` 发的评论不会触发 `claude.yml`，所以需修改时 `decide` 直接触发 `claude.yml -f pr=<编号>`；`GITHUB_TOKEN` 推送 main 不会触发 push 工作流，所以合并后直接触发 `ci.yml -f deploy_main=true` 完成发布。
 - **凭据**：`OPENAI_API_KEY`、`GPT_RESPONSES_ENDPOINT`、`GPT_MODEL`（与讨论评审共用）；签名密钥 `DEVLOOP_MARKER_KEY` 与本机 `../ce-devloop/marker.key` 相同，两边的审核记录互认、轮次连续计数。
+- **信任边界**：不设 `pull_request` 入口——那会用 PR 分支上的工作流定义运行，PR 能改 YAML 在过滤前读到签名密钥、或改写有写权限的 `decide`。定时任务只用 main 上的定义；手动触发时各任务校验 `github.ref == refs/heads/main`。
+  残余风险：有仓库写权限、且能推送 `.github/workflows/` 改动的账号，可以推一个改过 YAML 的分支再对它手动触发，从而读到仓库级 secret。云端 Claude 用的 `GITHUB_TOKEN` 无 workflows 权限，推不了这类分支；真正隔离需把 `DEVLOOP_MARKER_KEY` 移进只允许 main 部署的 environment（私有仓库可能需要付费套餐），**待用户决定**。
+- **结论校验**：GPT 结论按 `review-schema.json` 校验（`validateReview`，云端与本机共用）；不合法（如 `findings` 不是数组、`verdict` 非法）按 GPT 审核失败处理，计入同一提交 3 次的停止上限。
 - **费用**：每次审核消耗 AI 网关的共享额度（金额待核实）；网关限速见上文“GPT 云端参与讨论”。
 
 ## 五、停止条件、标签与评论标记

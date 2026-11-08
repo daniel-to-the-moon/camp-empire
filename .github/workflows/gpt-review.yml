@@ -1,7 +1,9 @@
 # 云端 PR 审核：取代用户 Mac 上的常驻审核方（用户 2026-11-08 决定：搬到云端，Mac 先留着兜底）。见 docs/DEVLOOP.md。
 # 逻辑在 scripts/devloop/cloud.mjs，与本机 devloop.mjs 共用判定、合并、CI、签名标记模块（同一把签名密钥，审核记录互认）。
 #
-# 开关：仓库变量 CLOUD_REVIEW=on 才自动运行（定时与 pull_request）；手动触发（workflow_dispatch）不受开关限制，用于验证。
+# 开关：仓库变量 CLOUD_REVIEW=on 才自动运行（定时扫描）；手动触发（workflow_dispatch）不受开关限制，用于验证。
+# 信任边界（GPT 审核 #41 第 3 轮）：不设 pull_request 入口——那会用 PR 分支上的工作流定义运行，PR 可改 YAML 提前读签名密钥或改写有写权限的步骤。
+#   定时任务只用默认分支（main）上的定义；手动触发只接受 ref=main（各任务 if 校验 github.ref）。
 # 分工：云端只审不改 .github/workflows/ 的 PR（GITHUB_TOKEN 无 workflows 权限）；这类 PR 由本机审核方处理。
 # 安全结构：
 #   select ：只读，选出一个要审的 PR；
@@ -15,8 +17,6 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && format('gpt-review PR#
 on:
   schedule:
     - cron: '*/10 * * * *'
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       pr:
@@ -32,7 +32,8 @@ concurrency:
 
 jobs:
   select:
-    if: vars.CLOUD_REVIEW == 'on' || github.event_name == 'workflow_dispatch'
+    # 只在 main 上的工作流定义里运行（手动触发时 --ref 必须是 main）
+    if: github.ref == 'refs/heads/main' && (vars.CLOUD_REVIEW == 'on' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -58,7 +59,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           DEVLOOP_MARKER_KEY: ${{ secrets.DEVLOOP_MARKER_KEY }}
-          ONLY: ${{ inputs.pr || github.event.pull_request.number }}
+          ONLY: ${{ inputs.pr }}
         run: |
           set -euo pipefail
           case "$ONLY" in '') ;; 0* | *[!0-9]*) echo "::error::PR 编号无效：$ONLY"; exit 1 ;; esac
@@ -66,7 +67,7 @@ jobs:
 
   review:
     needs: select
-    if: needs.select.outputs.pr != ''
+    if: github.ref == 'refs/heads/main' && needs.select.outputs.pr != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -138,7 +139,7 @@ jobs:
   decide:
     needs: [select, review]
     # GPT 审核失败也要判定（记为基础设施问题，受重试上限约束），不能无声跳过
-    if: always() && needs.select.result == 'success' && needs.select.outputs.pr != ''
+    if: always() && github.ref == 'refs/heads/main' && needs.select.result == 'success' && needs.select.outputs.pr != ''
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

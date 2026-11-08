@@ -7,8 +7,8 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { finalize, followUps, loadReview, pickPr, trustedReviewer } from './cloud.mjs';
-import { touchesWorkflows } from './review-format.mjs';
-import { roundsUsed } from './policy.mjs';
+import { touchesWorkflows, validateReview } from './review-format.mjs';
+import { decide, MAX_CI_RETRIES, roundsUsed } from './policy.mjs';
 import { marker } from './policy.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -114,7 +114,7 @@ test('gpt-review.yml：review 只读且以 :read-only 运行 codex、不持有�
   assert.match(decide, /^ {6}contents: write$/m);
   assert.match(decide, /^ {6}actions: write$/m);
   assert.match(yml, /^concurrency:\n {2}group: gpt-review\n {2}cancel-in-progress: false\n {2}queue: max$/m);
-  assert.match(select, /^ {4}if: vars\.CLOUD_REVIEW == 'on' \|\| github\.event_name == 'workflow_dispatch'$/m);
+  assert.match(select, /^ {4}if: github\.ref == 'refs\/heads\/main' && \(vars\.CLOUD_REVIEW == 'on' \|\| github\.event_name == 'workflow_dispatch'\)$/m);
 });
 
 const ownerReview = (pr, state, head) => ({ author: { login: 'owner' }, body: `执行者：GPT（经 devloop 审核）\n${marker(KEY, { pr, state, head, base: B })}` });
@@ -247,4 +247,48 @@ test('gpt-review.yml：产物名带 run_attempt、由 review 输出传给 decide
   assert.match(yml, /if: needs\.review\.result == 'success' && needs\.review\.outputs\.artifact != ''\n.*\n.*\n {10}name: \$\{\{ needs\.review\.outputs\.artifact \}\}/);
   assert.match(yml, /--review-result "\$REVIEW_RESULT" --review review\/review\.json --meta review\/meta\.json/);
   assert.doesNotMatch(yml, /name: gpt-review-\$\{\{ github\.run_id \}\}\n/);
+});
+
+const okReview = { verdict: 'approve', summary: 'ok', findings: [{ severity: 'minor', file: 'a.ts', line: 3, issue: 'i', suggestion: 's' }] };
+
+test('validateReview：符合 review-schema.json 才通过；结构错误逐类拒绝', () => {
+  assert.equal(validateReview(okReview), '');
+  assert.equal(validateReview({ verdict: 'request_changes', summary: '', findings: [] }), '');
+  const bad = [
+    null, [], 'x',
+    { verdict: 'approve', summary: 'ok', findings: {} }, // findings 不是数组
+    { verdict: 'approve', summary: 'ok' }, // 缺 findings
+    { verdict: 'approve', findings: [] }, // 缺 summary
+    { verdict: 'lgtm', summary: 'ok', findings: [] }, // 非法 verdict
+    { verdict: 'approve', summary: 'ok', findings: [], extra: 1 }, // 多余字段
+    { ...okReview, findings: [{ ...okReview.findings[0], severity: 'critical' }] }, // 非法 severity
+    { ...okReview, findings: [{ ...okReview.findings[0], line: '3' }] }, // line 不是整数
+    { ...okReview, findings: [{ ...okReview.findings[0], file: undefined }] }, // 缺 file
+    { ...okReview, findings: [null] },
+  ];
+  for (const r of bad) assert.notEqual(validateReview(r), '', JSON.stringify(r));
+});
+
+test('loadReview：合法 JSON 但结构不符 → 不采用，按基础设施问题处理且累计到停止上限', () => {
+  const r = loadReview({ ...want, reviewResult: 'success', ...artifact({ pr: '7', head: H, base: B }, { verdict: 'approve', summary: 'ok', findings: {} }) });
+  assert.equal(r.review, null);
+  assert.match(r.reviewError, /review-schema/);
+  const now = { labels: [], base: B, mergeable: 'MERGEABLE', state: 'OPEN', isDraft: false, baseRefName: 'main' };
+  const states = [];
+  for (let i = 0; i < MAX_CI_RETRIES; i++) {
+    const d = decide({ ci: { status: 'ok', base: B }, review: r.review, now, roundsBefore: 0, retriesForHead: i, allowMerge: true });
+    states.push(`${d.state}:${d.reason ?? ''}`);
+  }
+  assert.deepEqual(states.slice(0, -1), Array(MAX_CI_RETRIES - 1).fill('retry:infra'));
+  assert.match(states.at(-1), /^stopped/);
+});
+
+test('gpt-review.yml：无 pull_request 入口；每个任务都校验 github.ref 为 main', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
+  const on = yml.match(/^on:\n((?: .*\n)*)/m)[1];
+  assert.doesNotMatch(on, /pull_request/);
+  assert.doesNotMatch(yml, /github\.event\.pull_request/);
+  const ifs = [...yml.matchAll(/^ {4}if: (.*)$/gm)].map((m) => m[1]);
+  assert.equal(ifs.length, 3);
+  for (const c of ifs) assert.match(c, /github\.ref == 'refs\/heads\/main'/);
 });

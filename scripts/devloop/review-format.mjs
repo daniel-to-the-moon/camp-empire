@@ -6,6 +6,30 @@ import { marker } from './policy.mjs';
 /** 云端审核以 GITHUB_TOKEN 发评论；gh pr view 显示为 github-actions，REST 显示为 github-actions[bot] */
 export const CLOUD_REVIEWER_LOGINS = ['github-actions', 'github-actions[bot]'];
 
+/**
+ * 按 review-schema.json 校验 GPT 结论（必填字段、类型、枚举、无多余字段）。返回错误说明，合法时返回 ''。
+ * 不合法的结论一律按“GPT 审核失败”（基础设施问题）处理，计入同一提交 3 次的停止上限；
+ * 否则像 findings 不是数组这类结论会在 decide 里抛错、写不出 retry 标记，定时扫描会无限重审（GPT 审核 #41 第 3 轮）。
+ */
+export function validateReview(r) {
+  const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+  const extra = (o, keys) => Object.keys(o).find((k) => !keys.includes(k));
+  if (!isObj(r)) return '结论不是对象';
+  if (extra(r, ['verdict', 'summary', 'findings'])) return `结论含多余字段 ${extra(r, ['verdict', 'summary', 'findings'])}`;
+  if (!['approve', 'request_changes'].includes(r.verdict)) return `verdict 非法：${JSON.stringify(r.verdict)}`;
+  if (typeof r.summary !== 'string') return 'summary 不是字符串';
+  if (!Array.isArray(r.findings)) return 'findings 不是数组';
+  const F = ['severity', 'file', 'line', 'issue', 'suggestion'];
+  for (const [i, f] of r.findings.entries()) {
+    if (!isObj(f)) return `findings[${i}] 不是对象`;
+    if (extra(f, F)) return `findings[${i}] 含多余字段 ${extra(f, F)}`;
+    if (!['blocker', 'major', 'minor'].includes(f.severity)) return `findings[${i}].severity 非法：${JSON.stringify(f.severity)}`;
+    if (!Number.isInteger(f.line)) return `findings[${i}].line 不是整数`;
+    for (const k of ['file', 'issue', 'suggestion']) if (typeof f[k] !== 'string') return `findings[${i}].${k} 不是字符串`;
+  }
+  return '';
+}
+
 export function buildReviewPrompt({ header, pr, meta, base, stat }) {
   return [
     header,

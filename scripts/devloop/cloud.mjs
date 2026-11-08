@@ -19,7 +19,7 @@ import { runCi } from './ci.mjs';
 import { mergeAndPush } from './gitops.mjs';
 import { decide, eligible, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
-import { buildReviewPrompt, formatReview, touchesWorkflows } from './review-format.mjs';
+import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts }).trim();
@@ -106,7 +106,8 @@ export async function finalize({ ghR, pr, state, body, writeBody, attempts = 3, 
  * 读取本次 review 任务的结论，并逐项核对它属于本次判定（GPT 审核 #41 第 2 轮）：
  * - review 任务本次没成功（reviewResult ≠ success）→ 一律不读结论，按基础设施问题处理；
  *   GitHub 重跑保留 run_id，若按固定名字下载，可能拿到上一次尝试、针对旧提交的 approve；
- * - 产物元数据（review 任务里由工作流步骤、而非模型写入）的 pr / head / base 必须与本次判定一致。
+ * - 产物元数据（review 任务里由工作流步骤、而非模型写入）的 pr / head / base 必须与本次判定一致；
+ * - 结论须符合 review-schema.json（validateReview），否则同样按基础设施问题处理、计入重试上限。
  * 返回 { review, reviewError }；review 为 null 时 reviewError 说明原因。
  */
 export function loadReview({ reviewResult, reviewPath, metaPath, pr, head, base, read = (f) => readFileSync(f, 'utf8'), exists = existsSync }) {
@@ -124,6 +125,8 @@ export function loadReview({ reviewResult, reviewPath, metaPath, pr, head, base,
   for (const k of Object.keys(want)) {
     if (String(meta[k] ?? '') !== want[k]) return { review: null, reviewError: `GPT 结论与本次判定不符（${k}：${String(meta[k] ?? '').slice(0, 12)} ≠ ${want[k].slice(0, 12)}）` };
   }
+  const bad = validateReview(review);
+  if (bad) return { review: null, reviewError: `GPT 结论不符合 review-schema.json：${bad}` };
   return { review, reviewError: '' };
 }
 

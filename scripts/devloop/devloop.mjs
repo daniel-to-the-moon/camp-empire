@@ -22,7 +22,7 @@ import { runCi } from './ci.mjs';
 import { acquireLock, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
 import { decide, eligible, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
-import { buildReviewPrompt, formatReview, touchesWorkflows } from './review-format.mjs';
+import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = resolve(HERE, '../..');
@@ -79,7 +79,11 @@ function gptReview(pr, meta, base) {
   mkdirSync(HOME, { recursive: true });
   // 缓存键 = head + base：只有代码和基准都没变时才复用结论（main 变了就重新审核）
   const cache = join(HOME, reviewCacheKey(pr, meta.headRefOid, base));
-  if (existsSync(cache)) return JSON.parse(readFileSync(cache, 'utf8'));
+  if (existsSync(cache)) {
+    const cached = JSON.parse(readFileSync(cache, 'utf8'));
+    if (!validateReview(cached)) return cached;
+    rmSync(cache, { force: true }); // 旧版本缓存的不合法结论：丢弃重审
+  }
   return withWorktree(REPO_DIR, uniqueDir(HOME, `pr-${pr}`), meta.headRefOid, (dir) => {
     const stat = sh('git', ['diff', '--stat', `${base}...${meta.headRefOid}`], { cwd: dir });
     const prompt = buildReviewPrompt({ header: readFileSync(join(HERE, 'review-prompt.md'), 'utf8'), pr, meta, base, stat });
@@ -93,6 +97,8 @@ function gptReview(pr, meta, base) {
     );
     if (r.status !== 0 || !existsSync(out)) throw new Error(`codex 审核失败：${tail(`${r.stdout}${r.stderr}`)}`);
     const review = JSON.parse(readFileSync(out, 'utf8'));
+    const bad = validateReview(review);
+    if (bad) throw new Error(`codex 结论不符合 review-schema.json：${bad}`);
     writeFileSync(cache, JSON.stringify(review));
     rmSync(out, { force: true });
     return review;
