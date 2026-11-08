@@ -12,6 +12,11 @@ elif [ "$EVENT" = "workflow_dispatch" ] && [ "${KIND:-}" = "issue" ]; then
   # 只接受打开、带 devloop 标签、不带 needs-user 的 issue（不是 PR）
   ok=$(gh issue view "$N" -R "$REPO" --json state,labels,url -q 'select(.state == "OPEN" and (.url | test("/issues/[0-9]+$")) and ([.labels[].name] | index("devloop")) and (([.labels[].name] | index("needs-user")) | not)) | "ok"')
   [ "$ok" = "ok" ] || { echo "::error::issue #$N 不是打开、带 devloop、不带 needs-user 的 issue" >&2; exit 1; }
+  # 去重：同一 issue 的任务按 concurrency 串行，排到这里时若实现分支已存在，说明前一次触发已产出，本次是重复触发
+  if gh api "repos/$REPO/git/ref/heads/claude/issue-$N" >/dev/null 2>&1; then
+    echo "::error::issue #$N 已有实现分支 claude/issue-$N（重复触发），不再重复实现" >&2
+    exit 1
+  fi
   mode=implement
   branch="claude/issue-$N"
 else

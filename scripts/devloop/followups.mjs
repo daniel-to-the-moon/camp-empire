@@ -6,7 +6,7 @@
  * - issue create 不是幂等的：失败（可能服务端已创建、只是响应丢了）后先重新核对远端，再决定是否重试；
  * - 本机把待办清单落盘，合并后的评论或某条 issue 失败都不丢：下一轮 watch 继续补齐（已合并的 PR 不会再被扫描）。
  */
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { followUpIssues } from './review-format.mjs';
 
@@ -84,10 +84,24 @@ export async function drainPending({ dir, io, opts, acquire = async () => () => 
   }
 }
 
+/** 原子写：写临时文件再 rename；失败时原文件保持不变 */
+export function writeJsonAtomic(file, data, { write = writeFileSync, rename = renameSync } = {}) {
+  const tmp = `${file}.tmp`;
+  write(tmp, JSON.stringify(data));
+  rename(tmp, file);
+}
+
 async function drainLocked({ dir, io, opts }) {
   for (const name of readdirSync(dir).filter((n) => /^pr-\d+\.json$/.test(n))) {
     const file = join(dir, name);
-    const { pr, head, items, flagged } = JSON.parse(readFileSync(file, 'utf8'));
+    let rec;
+    try {
+      rec = JSON.parse(readFileSync(file, 'utf8'));
+    } catch (e) {
+      io.log(`${name} 无法解析，跳过（不影响其他待办）：${String(e.message).split('\n')[0]}`);
+      continue;
+    }
+    const { pr, head, items, flagged } = rec;
     // 待办在合并前落盘：先核对 PR 是否真的以该 head 合并。还开着 → 留到下次；关闭未合并或以别的提交合并 → 撤回
     if (io.prStatus) {
       let st;
@@ -105,8 +119,8 @@ async function drainLocked({ dir, io, opts }) {
       if (!flagged) {
         try {
           io.flag(pr);
-          writeFileSync(file, JSON.stringify({ pr, head, items, flagged: true }));
-        } catch { /* 尽力 */ }
+          (io.writeJson ?? writeJsonAtomic)(file, { pr, head, items, flagged: true });
+        } catch { /* 尽力：失败时原文件不变，下一轮照常补 */ }
       }
       continue;
     }
@@ -154,11 +168,13 @@ export function parseRecord(comments, { pr, head }) {
 /**
  * 某遗留 issue 的触发状态：
  * - settled：已关闭、带 needs-user（执行者已停下等用户）、或已有 claude/issue-N 分支（实现已产出）→ 无需触发；
- * - cooldown：2 小时内有触发标记但还没有分支 → 可能正在实现，也可能上次触发没生效；暂不重复触发，但也不算完成；
+ * - cooldown：有排队 / 运行中的实现任务，或 2 小时内有触发标记但还没有分支 → 暂不重复触发，但也不算完成；
  * - due：从未触发，或上次触发超过 2 小时仍无分支 → 应触发。
  */
 export function dispatchState(info, now) {
   if (info.state !== 'OPEN' || info.labels.includes('needs-user') || info.branch) return 'settled';
+  // 已有排队 / 运行中的实现任务（运行名 “claude issue#N”）：不论过了多久都不补触发（上次触发可能只是响应丢失或排队很久）
+  if (info.activeRun) return 'cooldown';
   const last = info.comments.filter((c) => String(c.body ?? '').includes(DISPATCH_MARK)).map((c) => Date.parse(c.createdAt)).filter(Number.isFinite);
   return !last.length || now - Math.max(...last) >= REDISPATCH_AFTER_MS ? 'due' : 'cooldown';
 }

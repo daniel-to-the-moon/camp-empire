@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { drainPending, ensureFollowUps, findByKey, FOLLOWUP_MARK, followUpItems } from './followups.mjs';
+import { drainPending, ensureFollowUps, findByKey, FOLLOWUP_MARK, followUpItems, writeJsonAtomic } from './followups.mjs';
 
 const H = 'a'.repeat(40);
 const root = mkdtempSync(join(tmpdir(), 'followups-'));
@@ -165,4 +165,19 @@ test('drainPending：待办在合并前落盘——补开前核对合并状态�
   writeFileSync(join(dir, 'pr-7.json'), JSON.stringify({ pr: 7, head: H, items }));
   await drainPending({ dir, io: { ...fakeGh(), ...quiet, prStatus: async () => { throw new Error('502'); } } });
   assert.ok(existsSync(join(dir, 'pr-7.json')));
+});
+
+test('待办更新原子化：flagged 写入中断时原文件不变，下一轮仍能恢复；单个文件损坏不阻断其他待办', async () => {
+  const dir = mkdtempSync(join(root, 'atomic-'));
+  writeFileSync(join(dir, 'pr-7.json'), JSON.stringify({ pr: 7, head: H, items }));
+  writeFileSync(join(dir, 'pr-8.json'), '{"pr": 8, "items": [');
+  const g = fakeGh({ plan: ['fail', 'fail', 'fail'] });
+  const logs = [];
+  // 写临时文件时“磁盘写满”：只写了一半就抛错
+  const writeJson = (file, data) => writeJsonAtomic(file, data, { write: (f, t) => { writeFileSync(f, t.slice(0, 5)); throw new Error('ENOSPC'); } });
+  await drainPending({ dir, io: { ...g, flag: () => {}, comment: () => {}, log: (m) => logs.push(m), writeJson } });
+  assert.deepEqual(JSON.parse(readFileSync(join(dir, 'pr-7.json'), 'utf8')).pr, 7, '原文件保持完整');
+  assert.ok(logs.some((m) => m.includes('pr-8.json')), '损坏的文件单独跳过');
+  await drainPending({ dir, io: { ...fakeGh(), flag: () => {}, comment: () => {}, log: () => {} } });
+  assert.ok(!existsSync(join(dir, 'pr-7.json')), '下一轮恢复成功');
 });

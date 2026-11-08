@@ -8,6 +8,8 @@
 # 依赖或测试脚本即使被污染，也拿不到能写仓库的令牌。（work 任务里仍有 Anthropic API key，残余风险见 DEVLOOP.md。）
 # 审核与合并不在这里，由用户 Mac 上的审核方完成。
 name: claude
+# 手动按 issue 触发时运行名为 “claude issue#N”：云端遗留意见收尾据此判断该 issue 是否已有排队 / 运行中的实现，避免重复触发
+run-name: ${{ inputs.issue && format('claude issue#{0}', inputs.issue) || inputs.pr && format('claude pr#{0}', inputs.pr) || github.event.issue.title || 'claude' }}
 
 on:
   issues:

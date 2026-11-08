@@ -219,10 +219,18 @@ export function branchExists(gh, repo, branch) {
   }
 }
 
-/** 已合并、带待恢复标签的 PR（gh 自动分页） */
-export function listRecoverable(ghR) {
-  return JSON.parse(ghR(['pr', 'list', '--state', 'merged', '--base', 'main', '--label', FOLLOWUP_LABEL, '--limit', '1000', '--json', 'number,headRefOid,comments']))
-    .map((p) => ({ ...p, comments: p.comments.map((c) => ({ author: c.author?.login ?? '', body: c.body })) }));
+/**
+ * 已合并、带待恢复标签的 PR：先只查编号与 head（gh 自动分页），再逐个用分页 REST 接口读全部评论
+ *（gh pr list 的 comments 字段只取前 100 条，登记在第 100 条之后会漏）。
+ */
+export function listRecoverable(ghR, gh, repo) {
+  return JSON.parse(ghR(['pr', 'list', '--state', 'merged', '--base', 'main', '--label', FOLLOWUP_LABEL, '--limit', '1000', '--json', 'number,headRefOid']))
+    .map((p) => ({ ...p, comments: allComments(gh, repo, p.number) }));
+}
+
+export function allComments(gh, repo, n) {
+  return gh(['api', '--paginate', `repos/${repo}/issues/${n}/comments?per_page=100`, '--jq', '.[] | {author: .user.login, body}'])
+    .split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
 /** completeFollowUps 的真实 io（云端，GITHUB_TOKEN） */
@@ -233,7 +241,9 @@ export function cloudFollowIo({ gh, ghR, repo, writeBody, pr, head }) {
     issueInfo: (n) => {
       const m = JSON.parse(ghR(['issue', 'view', String(n), '--json', 'state,labels,comments']));
       const branch = branchExists(gh, repo, `claude/issue-${n}`);
-      return { state: m.state, labels: m.labels.map((l) => l.name), branch, comments: m.comments.filter((c) => ['github-actions', 'github-actions[bot]'].includes(c.author?.login)).map((c) => ({ body: c.body, createdAt: c.createdAt })) };
+      const activeRun = JSON.parse(ghR(['run', 'list', '--workflow', 'claude.yml', '--limit', '50', '--json', 'displayTitle,status']))
+        .some((r) => r.displayTitle === `claude issue#${n}` && r.status !== 'completed');
+      return { state: m.state, labels: m.labels.map((l) => l.name), branch, activeRun, comments: m.comments.filter((c) => ['github-actions', 'github-actions[bot]'].includes(c.author?.login)).map((c) => ({ body: c.body, createdAt: c.createdAt })) };
     },
     markDispatch: (n) => ghR(['issue', 'comment', String(n), '--body-file', writeBody(`执行者：devloop（云端审核）\n\n来自 PR #${pr} 的遗留意见，已触发云端 Claude 实现。\n\n${DISPATCH_MARK}pr=${pr} head=${head} -->`)]),
     dispatch: (n) => ghR(['workflow', 'run', 'claude.yml', '-f', `issue=${n}`]),
@@ -315,7 +325,7 @@ async function main() {
   };
 
   if (cmd === 'recover') {
-    const prs = listRecoverable(ghR);
+    const prs = listRecoverable(ghR, gh, REPO);
     const r = await recoverFollowUps(prs, (pr, head) => cloudFollowIo({ gh, ghR, repo: REPO, writeBody, pr, head }));
     for (const x of r) console.log(JSON.stringify(x)); // pending 非空：冷却期内未确认触发，下一轮继续
     if (r.some((x) => x.failed.length)) throw new Error('遗留意见收尾仍有失败项，下一轮恢复继续');

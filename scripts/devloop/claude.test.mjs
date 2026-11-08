@@ -18,7 +18,7 @@ function fakeGh(dir) {
   mkdirSync(bin, { recursive: true });
   writeFileSync(
     join(bin, 'gh'),
-    `#!/usr/bin/env bash\necho "$*" >> "${join(dir, 'gh.log')}"\nif [ "$1 $2" = "pr view" ]; then printf '%s' "$FAKE_HEAD_REF"; fi\nif [ "$1 $2" = "issue view" ]; then q=""; prev=""; for a in "$@"; do [ "$prev" = "-q" ] && q="$a"; prev="$a"; done; printf '%s' "$FAKE_ISSUE_JSON" | jq -r "$q"; fi\nexit "\${FAKE_GH_EXIT:-0}"\n`,
+    `#!/usr/bin/env bash\necho "$*" >> "${join(dir, 'gh.log')}"\nif [ "$1 $2" = "pr view" ]; then printf '%s' "$FAKE_HEAD_REF"; fi\nif [ "$1 $2" = "issue view" ]; then q=""; prev=""; for a in "$@"; do [ "$prev" = "-q" ] && q="$a"; prev="$a"; done; printf '%s' "$FAKE_ISSUE_JSON" | jq -r "$q"; fi\nif [ "$1" = "api" ] && [[ "$2" == */git/ref/heads/* ]]; then [ -n "$FAKE_BRANCH_EXISTS" ] && exit 0; echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi\nexit "\${FAKE_GH_EXIT:-0}"\n`,
   );
   chmodSync(join(bin, 'gh'), 0o755);
   return { path: `${bin}:${process.env.PATH}`, log: () => { try { return readFileSync(join(dir, 'gh.log'), 'utf8'); } catch { return ''; } } };
@@ -217,6 +217,10 @@ test('ctx：按 issue 手动触发（KIND=issue）→ implement；执行 ctx.sh 
     是PR: issue({ url: 'https://github.com/o/r/pull/12' }),
   };
   for (const [k, json] of Object.entries(bad)) assert.notEqual(run(json).code, 0, k);
+  // 排到执行时实现分支已存在（重复触发）→ 拒绝
+  const dup = runCtx({ EVENT: 'workflow_dispatch', KIND: 'issue', N: '12', FAKE_ISSUE_JSON: issue(), FAKE_BRANCH_EXISTS: '1' });
+  assert.notEqual(dup.code, 0);
+  assert.match(dup.stderr, /已有实现分支 claude\/issue-12/);
   assert.notEqual(run(issue(), '12; id').code, 0);
   // 不带 KIND 的手动触发仍是修复 PR
   assert.equal(runCtx({ EVENT: 'workflow_dispatch', N: '4', FAKE_HEAD_REF: 'claude/x' }).kv.mode, 'fix');

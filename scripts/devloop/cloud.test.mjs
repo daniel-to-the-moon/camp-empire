@@ -654,24 +654,62 @@ test('cloudFollowIo + completeFollowUps：分支查询 5xx → 不触发实现�
   assert.ok(!calls.some((c) => c === 'pr comment 7'), '查询失败不能发完成标记');
 });
 
-test('listRecoverable：按待恢复标签查已合并 PR（不受最近 N 个窗口限制）；完成时移除标签', async () => {
+test('listRecoverable：按待恢复标签查已合并 PR；评论用分页 REST 读全部（登记在第 100 条之后也能找到）；完成时移除标签', async () => {
+  const { recordComment, followUpItems } = await import('./followups.mjs');
+  const items = followUpItems({ pr: 3, head: H, findings: [fd2('major')] });
   const seen = [];
-  const prs = Array.from({ length: 45 }, (_, i) => ({ number: i + 1, headRefOid: H, comments: [] }));
-  const ghR = (args) => { seen.push(args); return JSON.stringify(prs.filter((p) => p.number === 3)); }; // 早期的 #3 仍带标签
-  const r = listRecoverable(ghR);
-  assert.deepEqual(r.map((p) => p.number), [3]);
+  const ghR = (args) => { seen.push(args); return JSON.stringify([{ number: 3, headRefOid: H }]); };
+  const comments = Array.from({ length: 150 }, (_, k) => ({ author: 'someone', body: `c${k}` }));
+  comments[120] = { author: 'github-actions', body: recordComment({ pr: 3, head: H, items }) };
+  const gh = (args) => {
+    assert.equal(args[1], '--paginate');
+    assert.match(args[2], /^repos\/o\/r\/issues\/3\/comments/);
+    return comments.map((c) => JSON.stringify(c)).join('\n') + '\n';
+  };
+  const prs = listRecoverable(ghR, gh, 'o/r');
+  assert.equal(prs[0].comments.length, 150);
   const a = seen[0];
   assert.equal(a[a.indexOf('--label') + 1], FOLLOWUP_LABEL);
   assert.ok(Number(a[a.indexOf('--limit') + 1]) >= 1000);
-  assert.equal(a[a.indexOf('--state') + 1], 'merged');
+  assert.ok(!a[a.indexOf('--json') + 1].includes('comments'), '不能用 pr list 的 comments 字段（只有前 100 条）');
+  const w = followWorld();
+  const r = await recoverFollowUps(prs, () => w.io, { attempts: 1, delayMs: 0 });
+  assert.equal(r.length, 1);
+  assert.equal(w.issues.length, 1);
   const calls = [];
   const io = cloudFollowIo({ gh: () => '', ghR: (x) => { calls.push(x.slice(0, 4).join(' ')); return ''; }, repo: 'o/r', writeBody: () => 'f.md', pr: 7, head: H });
   await io.done([90]);
   assert.deepEqual(calls, ['pr comment 7 --body-file', `pr edit 7 --remove-label`]);
 });
-
 test('runDecide auto：合并前先打待恢复标签再登记；任一失败都不合并', async () => {
   const r = decideRig({ review: limitReview, limitMode: 'auto', states: [{ markers: limitMarkers() }] });
   await r.run();
   assert.ok(r.calls.indexOf('pr edit 7') < r.calls.indexOf('merge bbbb+aaaa'));
+});
+
+test('dispatchState：有排队 / 运行中的实现任务时，超过 2 小时也不补触发（上次触发响应丢失但任务仍在跑）', async () => {
+  const { dispatchState, REDISPATCH_AFTER_MS } = await import('./followups.mjs');
+  const now = 1e12;
+  const old = { body: '<!-- devloop-dispatch pr=7 -->', createdAt: new Date(now - REDISPATCH_AFTER_MS * 3).toISOString() };
+  const base = { state: 'OPEN', labels: ['devloop'], branch: false, comments: [old] };
+  assert.equal(dispatchState({ ...base, activeRun: true }, now), 'cooldown');
+  assert.equal(dispatchState({ ...base, activeRun: false }, now), 'due');
+  assert.equal(dispatchState({ ...base, comments: [], activeRun: true }, now), 'cooldown');
+});
+
+test('cloudFollowIo.issueInfo：按运行名 “claude issue#N” 识别未完成的实现任务', () => {
+  const ghR = (args) => {
+    if (args[0] === 'issue') return JSON.stringify({ state: 'OPEN', labels: [], comments: [] });
+    if (args[0] === 'run') return JSON.stringify([{ displayTitle: 'claude issue#9', status: 'queued' }, { displayTitle: 'claude issue#90', status: 'completed' }]);
+    return '';
+  };
+  const gh = () => { throw Object.assign(new Error('x'), { stderr: 'HTTP 404' }); };
+  const io = cloudFollowIo({ gh, ghR, repo: 'o/r', writeBody: () => 'f', pr: 7, head: H });
+  assert.equal(io.issueInfo(9).activeRun, true);
+  assert.equal(io.issueInfo(90).activeRun, false);
+});
+
+test('claude.yml：手动按 issue 触发的运行名为 “claude issue#N”', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/claude.yml'), 'utf8');
+  assert.match(yml, /^run-name: \$\{\{ inputs\.issue && format\('claude issue#\{0\}', inputs\.issue\)/m);
 });
