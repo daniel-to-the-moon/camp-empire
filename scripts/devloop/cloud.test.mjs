@@ -452,7 +452,7 @@ test('runDecide auto：轮次用满、意见持平无 blocker → 合并、部�
   assert.equal((await r.run()).state, 'merged');
   assert.deepEqual(r.calls, [
     'ci 7 aaaa bbbb', 'fetch', 'merge bbbb+aaaa', 'pushed', 'workflow run ci.yml', 'pr comment 7',
-    'issue create --title', 'workflow run claude.yml', 'issue create --title', 'workflow run claude.yml', 'pr comment 7',
+    'issue create --title', 'issue create --title', 'workflow run claude.yml', 'workflow run claude.yml', 'pr comment 7',
   ]);
   // 默认 needs-user：同样情形停下，不合并
   const d = decideRig({ review, states: [{ markers }] });

@@ -19,7 +19,8 @@ import { runCi } from './ci.mjs';
 import { mergeAndPush } from './gitops.mjs';
 import { decide, eligible, hasTerminal, lastFindings, limitMode, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
-import { buildReviewPrompt, followUpIssues, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
+import { ensureFollowUps, followUpItems } from './followups.mjs';
+import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const sh = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...opts }).trim();
@@ -72,7 +73,7 @@ async function withRetry(fn, { attempts, sleep, delayMs }) {
  * - 每个动作有界重试；最终仍失败 → 给 PR 加 needs-user，并（尽力）发一条说明，写明要手动执行的命令，然后抛错让本次运行失败。
  *   不会重复合并（合并已完成），也不新增审核标记（不累计轮次）。
  */
-export async function finalize({ ghR, pr, state, body, writeBody, issues = [], attempts = 3, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), delayMs = 5000 }) {
+export async function finalize({ ghR, pr, state, body, writeBody, issues = [], listIssues = () => [], attempts = 3, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), delayMs = 5000 }) {
   const failed = [];
   const tryDo = async (label, args) => {
     try {
@@ -88,25 +89,19 @@ export async function finalize({ ghR, pr, state, body, writeBody, issues = [], a
   if (state === 'merged') {
     await follow();
     await comment();
-    // auto 模式轮次用满合并：遗留意见逐条开 devloop issue；GITHUB_TOKEN 打的标签不会触发 claude.yml，所以直接按 issue 触发实现
-    const opened = [];
-    for (const it of issues) {
-      let url = '';
-      try {
-        url = await withRetry(() => ghR(['issue', 'create', '--title', it.title, '--body-file', writeBody(it.body), '--label', 'devloop']), { attempts, sleep, delayMs });
-      } catch (e) {
-        failed.push({ label: '开遗留意见 issue', cmd: `gh issue create --title ${JSON.stringify(it.title)} --label devloop`, err: String(e.message).split('\n')[0] });
-        continue;
-      }
-      const n = /\/issues\/(\d+)\s*$/.exec(String(url).trim())?.[1];
-      if (!n) {
-        failed.push({ label: '开遗留意见 issue（无法识别编号）', cmd: `gh issue list --label devloop`, err: String(url).slice(0, 80) });
-        continue;
-      }
-      opened.push(n);
-      await tryDo(`触发 issue #${n} 的实现`, ['workflow', 'run', 'claude.yml', '-f', `issue=${n}`]);
+    // auto 模式轮次用满合并：遗留意见逐条开 devloop issue（幂等，见 followups.mjs）；
+    // GITHUB_TOKEN 打的标签不会触发 claude.yml，所以对新开的 issue 直接按 issue 触发实现
+    if (issues.length) {
+      const r = await ensureFollowUps(issues, {
+        list: () => listIssues(),
+        create: (it) => ghR(['issue', 'create', '--title', it.title, '--body-file', writeBody(it.body), '--label', 'devloop']),
+        sleep,
+      }, { attempts, delayMs });
+      for (const f of r.failed) failed.push({ label: '开遗留意见 issue', cmd: `手动补开 devloop issue，正文末尾附 <!-- devloop-followup key=${f.key} -->（已有同标识的 issue 则不必再开）`, err: f.err });
+      for (const n of r.created) await tryDo(`触发 issue #${n} 的实现`, ['workflow', 'run', 'claude.yml', '-f', `issue=${n}`]);
+      const all = Object.values(r.numbers);
+      if (all.length) await tryDo('发遗留意见清单', ['pr', 'comment', String(pr), '--body-file', writeBody(`执行者：devloop（云端审核）\n\n遗留意见已转为 devloop issue：${all.map((n) => `#${n}`).join('、')}`)]);
     }
-    if (opened.length) await tryDo('发遗留意见清单', ['pr', 'comment', String(pr), '--body-file', writeBody(`执行者：devloop（云端审核）\n\n遗留意见已转为 devloop issue：${opened.map((n) => `#${n}`).join('、')}`)]);
   } else {
     await comment();
     if (!failed.length) await follow(); // 评论没发出去就不触发修复（Claude 读不到意见）
@@ -204,9 +199,15 @@ export async function runDecide({ pr, head, base, reviewResult, reviewPath, meta
     ci,
     d,
   });
-  const issues = d.state === 'merged' && d.followUpFindings?.length ? followUpIssues({ pr, head, findings: d.followUpFindings }) : [];
-  await finalize({ ghR: io.ghR, pr, state: d.state, body, writeBody: io.writeBody, issues, ...(io.sleep ? { sleep: io.sleep } : {}) });
+  const issues = d.state === 'merged' && d.followUpFindings?.length ? followUpItems({ pr, head, findings: d.followUpFindings }) : [];
+  await finalize({ ghR: io.ghR, pr, state: d.state, body, writeBody: io.writeBody, issues, listIssues: io.listIssues, ...(io.sleep ? { sleep: io.sleep } : {}) });
   return { state: d.state, ci: ci.status, verdict: review?.verdict ?? 'error' };
+}
+
+/** 打开与关闭的 devloop issue（REST 列表，强一致）：[{ number, body }] */
+export function listDevloopIssues(gh, repo) {
+  return gh(['api', '--paginate', `repos/${repo}/issues?labels=devloop&state=all&per_page=100`, '--jq', '.[] | {number, body}'])
+    .split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
 function arg(name) {
@@ -264,6 +265,7 @@ async function main() {
         key: KEY,
         model: process.env.GPT_MODEL || 'GPT',
         limitMode: process.env.ROUND_LIMIT_MODE,
+        listIssues: () => listDevloopIssues(gh, REPO),
         ghR,
         prState,
         mainSha,
