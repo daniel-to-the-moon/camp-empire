@@ -74,6 +74,9 @@ jobs:
         run: |
           [ -z "$BOTH" ] || { echo "::error::pr 与 issue 只能填一个" >&2; exit 1; }
           bash _devloop/scripts/devloop/ctx.sh
+      # 下一步检出到工作区根目录时会清空根目录（包括 _devloop），所以先把要用的 main 上的可信脚本复制到 RUNNER_TEMP
+      - name: 保存 main 上的安装脚本
+        run: cp _devloop/scripts/devloop/install-bun.sh "$RUNNER_TEMP/install-bun.sh"
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.ctx.outputs.mode == 'fix' && steps.ctx.outputs.branch || 'main' }}
@@ -94,8 +97,8 @@ jobs:
       # 这里改从 npm 安装同一版本（与 action 内置版本一致：1.4.4），失败按 15/30 秒退避重试 3 次。
       - name: 安装 Bun（带重试）
         id: bun
-        # 脚本取 main 上的版本（_devloop），逻辑与测试见 scripts/devloop/install-bun.sh / claude.test.mjs
-        run: bash _devloop/scripts/devloop/install-bun.sh
+        # 脚本是检出前从 main（_devloop）复制出来的版本，不用 PR 分支里的；逻辑与测试见 scripts/devloop/install-bun.sh / claude.test.mjs
+        run: bash "$RUNNER_TEMP/install-bun.sh"
       - uses: anthropics/claude-code-action@v1
         id: claude
         # 比任务超时短：Claude 超时只让这一步失败，后面的打包与发布照常运行（GPT 审核 #6 第七轮 major）

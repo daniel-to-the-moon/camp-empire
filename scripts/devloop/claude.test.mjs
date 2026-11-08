@@ -296,6 +296,13 @@ test('claude.yml：action 之前运行 install-bun.sh，并把它输出的路径
   const yml = readFileSync(join(HERE, '../../.github/workflows/claude.yml'), 'utf8');
   const bunAt = yml.indexOf('id: bun');
   assert.ok(bunAt > 0 && bunAt < yml.indexOf('uses: anthropics/claude-code-action'));
-  assert.match(yml, /id: bun\n(?: {8}#.*\n)* {8}run: bash _devloop\/scripts\/devloop\/install-bun\.sh/);
+  assert.match(yml, /id: bun\n(?: {8}#.*\n)* {8}run: bash "\$RUNNER_TEMP\/install-bun\.sh"/);
+  // 工作区根目录的检出会清空根目录（含 _devloop）：脚本必须在 _devloop 检出之后、根目录检出之前复制到 RUNNER_TEMP
+  const steps = yml.slice(yml.indexOf('  work:'), yml.indexOf('uses: anthropics/claude-code-action'));
+  const devloopCheckout = steps.indexOf('path: _devloop');
+  const copy = steps.indexOf('cp _devloop/scripts/devloop/install-bun.sh "$RUNNER_TEMP/install-bun.sh"');
+  const rootCheckout = steps.indexOf("ref: ${{ steps.ctx.outputs.mode == 'fix'");
+  assert.ok(devloopCheckout > 0 && devloopCheckout < copy && copy < rootCheckout && rootCheckout < steps.indexOf('id: bun'), '顺序须为：检出 _devloop → 复制脚本 → 检出根目录 → 运行脚本');
+  assert.doesNotMatch(steps.slice(rootCheckout), /_devloop\//, '根目录检出之后不能再引用 _devloop');
   assert.match(yml, /path_to_bun_executable: \$\{\{ steps\.bun\.outputs\.path \}\}/);
 });
