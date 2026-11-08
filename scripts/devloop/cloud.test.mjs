@@ -469,9 +469,10 @@ function fd2(severity) {
 }
 
 /** 内存里的 GitHub：issues、触发记录、分支；calls 记录动作顺序 */
-function followWorld(calls = [], { now = 1e12, createPlan = [] } = {}) {
+function followWorld(calls = [], { now = 1e12, createPlan = [], dispatchPlan = [] } = {}) {
   const w = { issues: [], dispatched: [], marks: [], done: [], branches: new Set(), now };
   let c = 0;
+  let dc = 0;
   w.io = {
     list: () => w.issues.map((x) => ({ number: x.number, body: x.body })),
     create: (it) => {
@@ -487,7 +488,11 @@ function followWorld(calls = [], { now = 1e12, createPlan = [] } = {}) {
       return { state: 'OPEN', labels: ['devloop'], branch: w.branches.has(n), comments: x.comments };
     },
     markDispatch: (n) => { calls.push(`mark #${n}`); w.issues.find((i) => i.number === n).comments.push({ body: '<!-- devloop-dispatch pr=7 -->', createdAt: new Date(w.now).toISOString() }); },
-    dispatch: (n) => { calls.push(`dispatch #${n}`); w.dispatched.push(n); },
+    dispatch: (n) => {
+      calls.push(`dispatch #${n}`);
+      if ((dispatchPlan[dc++] ?? 'ok') === 'fail') throw new Error('dispatch 502');
+      w.dispatched.push(n);
+    },
     done: (numbers) => { calls.push('done'); w.done.push(numbers); },
     now: () => w.now,
     sleep: async () => {},
@@ -528,10 +533,17 @@ test('recoverFollowUps：已合并、有登记、无完成标记 → 补齐；�
   assert.equal(first[0].failed.length, 1);
   assert.equal(w.done.length, 0);
   assert.deepEqual(w.dispatched, [90]); // 已开的那条照常触发
-  // 恢复：只补第二条；第一条 2 小时内有触发标记，不重复触发
+  // 恢复：只补第二条；第一条 2 小时内有触发标记，不重复触发，但还没有分支 → 待恢复，不发完成
   const second = await recoverFollowUps([{ number: 7, headRefOid: H, comments: [rec] }], () => w.io, { attempts: 1, delayMs: 0 });
   assert.deepEqual(second[0].failed, []);
+  assert.deepEqual(second[0].pending, [90]);
   assert.equal(w.issues.length, 2);
+  assert.deepEqual(w.dispatched, [90, 91]);
+  assert.equal(w.done.length, 0);
+  // 实现产出分支后再恢复 → 完成
+  w.branches.add(90);
+  w.branches.add(91);
+  await recoverFollowUps([{ number: 7, headRefOid: H, comments: [rec] }], () => w.io, { attempts: 1, delayMs: 0 });
   assert.deepEqual(w.dispatched, [90, 91]);
   assert.equal(w.done.length, 1);
   // 有完成标记 / 非可信作者的登记 / head 不符 → 跳过
@@ -562,4 +574,49 @@ test('completeFollowUps：创建成功但响应丢失 → 找回编号，仍触�
   assert.deepEqual(r.failed, []);
   assert.equal(w.issues.length, 1);
   assert.deepEqual(w.dispatched, [90]);
+});
+
+test('completeFollowUps：记了触发标记但触发失败 → 不发完成；冷却期内恢复仍不发完成（待恢复）；超过 2 小时仍无分支 → 补触发后才完成', async () => {
+  const { completeFollowUps, followUpItems, REDISPATCH_AFTER_MS } = await import('./followups.mjs');
+  const items = followUpItems({ pr: 7, head: H, findings: [fd2('major')] });
+  const w = followWorld([], { dispatchPlan: ['fail'] });
+  const a = await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
+  assert.equal(a.failed.length, 1);
+  assert.equal(w.done.length, 0);
+  w.now += 10 * 60_000; // 10 分钟后恢复：冷却期内，未确认触发
+  const b = await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
+  assert.deepEqual(b.pending, [90]);
+  assert.equal(w.done.length, 0, '冷却期内未确认触发，不能发完成标记');
+  w.now += REDISPATCH_AFTER_MS; // 超过 2 小时仍无分支
+  const c = await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
+  assert.deepEqual(c.pending, []);
+  assert.deepEqual(w.dispatched, [90]);
+  assert.equal(w.done.length, 1);
+});
+
+test('completeFollowUps：冷却期内但已有 claude/issue-N 分支（实现已产出）→ 视为完成', async () => {
+  const { completeFollowUps, followUpItems } = await import('./followups.mjs');
+  const items = followUpItems({ pr: 7, head: H, findings: [fd2('major')] });
+  const w = followWorld();
+  await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
+  assert.equal(w.done.length, 1);
+  // 第二次调用（例如恢复重放）：已有分支 → settled，不重复触发
+  w.branches.add(90);
+  const again = await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
+  assert.deepEqual(again.pending, []);
+  assert.deepEqual(w.dispatched, [90]);
+});
+
+test('gpt-review.yml：recover 排在 decide 之后（同一次运行内串行），decide 失败或跳过也运行', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
+  const job = yml.slice(yml.indexOf('\n  recover:'));
+  assert.match(job, /\n {4}needs: \[select, decide\]\n/);
+  assert.match(job, /\n {4}if: always\(\) && github\.ref == 'refs\/heads\/main'/);
+});
+
+test('devloop.mjs：合并抛错时不撤回待办（结果不确定，交给 drainPending 核对实际合并状态）', () => {
+  const src = readFileSync(join(HERE, 'devloop.mjs'), 'utf8');
+  const merge = src.slice(src.indexOf('if (followItems.length) savePending('), src.indexOf("d.reason = 'merge';"));
+  assert.ok(merge.length > 0);
+  assert.doesNotMatch(merge, /rmSync\(/);
 });

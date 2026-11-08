@@ -291,7 +291,7 @@ async function main() {
     const prs = JSON.parse(ghR(['pr', 'list', '--state', 'merged', '--base', 'main', '--limit', '30', '--json', 'number,headRefOid,comments']))
       .map((p) => ({ ...p, comments: p.comments.map((c) => ({ author: c.author?.login ?? '', body: c.body })) }));
     const r = await recoverFollowUps(prs, (pr, head) => cloudFollowIo({ gh, ghR, repo: REPO, writeBody, pr, head }));
-    for (const x of r) console.log(JSON.stringify(x));
+    for (const x of r) console.log(JSON.stringify(x)); // pending 非空：冷却期内未确认触发，下一轮继续
     if (r.some((x) => x.failed.length)) throw new Error('遗留意见收尾仍有失败项，下一轮恢复继续');
     return out({ recovered: r.length });
   }

@@ -180,7 +180,8 @@ async function reviewLocked(pr, { merge }) {
       });
       d.text += `\n\n合并提交 \`${sha.slice(0, 8)}\`（父提交：main \`${ci.base.slice(0, 8)}\` + PR \`${head.slice(0, 8)}\`，与 CI 测试的组合一致）${branchDeleted ? '' : '；分支上有新提交或已删除，未删除分支'}。`;
     } catch (e) {
-      if (followItems.length) rmSync(join(PENDING_DIR, `pr-${pr}.json`), { force: true }); // 没合并成功：撤回待办（残留也会在补开前核对合并状态）
+      // 不在这里撤回待办：抛错不等于没合并（远端已接受推送但响应丢失、推送后清理工作区失败都会走到这里）。
+      // 待办留着，由 drainPending 核对 PR 的实际合并状态：开着就等，以该 head 合并就补开，否则撤回。
       d.state = 'retry';
       d.reason = 'merge';
       d.merge = false;

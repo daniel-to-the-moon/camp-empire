@@ -151,11 +151,20 @@ export function parseRecord(comments, { pr, head }) {
   return { items, done };
 }
 
-/** 是否应触发某 issue 的实现：打开、无 needs-user、尚无 claude/issue-N 分支、2 小时内没有触发记录 */
-export function shouldDispatch(info, now) {
-  if (info.state !== 'OPEN' || info.labels.includes('needs-user') || info.branch) return false;
+/**
+ * 某遗留 issue 的触发状态：
+ * - settled：已关闭、带 needs-user（执行者已停下等用户）、或已有 claude/issue-N 分支（实现已产出）→ 无需触发；
+ * - cooldown：2 小时内有触发标记但还没有分支 → 可能正在实现，也可能上次触发没生效；暂不重复触发，但也不算完成；
+ * - due：从未触发，或上次触发超过 2 小时仍无分支 → 应触发。
+ */
+export function dispatchState(info, now) {
+  if (info.state !== 'OPEN' || info.labels.includes('needs-user') || info.branch) return 'settled';
   const last = info.comments.filter((c) => String(c.body ?? '').includes(DISPATCH_MARK)).map((c) => Date.parse(c.createdAt)).filter(Number.isFinite);
-  return !last.length || now - Math.max(...last) >= REDISPATCH_AFTER_MS;
+  return !last.length || now - Math.max(...last) >= REDISPATCH_AFTER_MS ? 'due' : 'cooldown';
+}
+
+export function shouldDispatch(info, now) {
+  return dispatchState(info, now) === 'due';
 }
 
 /**
@@ -166,18 +175,23 @@ export function shouldDispatch(info, now) {
 export async function completeFollowUps(items, io, opts) {
   const r = await ensureFollowUps(items, io, opts);
   const failed = r.failed.map((f) => ({ what: `开 issue（${f.key}）`, err: f.err }));
+  const pending = []; // 冷却期内、尚未确认已触发（无分支）的 issue：不算完成，留给下一轮恢复
   const numbers = Object.values(r.numbers);
   for (const n of numbers) {
     try {
-      if (!shouldDispatch(await io.issueInfo(n), io.now())) continue;
+      const info = await io.issueInfo(n);
+      const st = dispatchState(info, io.now());
+      if (st === 'settled') continue; // 已有分支 / 已关闭 / needs-user：无需（再）触发
+      if (st === 'cooldown') { pending.push(n); continue; }
       await io.markDispatch(n);
-      await io.dispatch(n);
+      await io.dispatch(n); // 本轮确认触发成功
     } catch (e) {
       failed.push({ what: `触发 issue #${n} 的实现`, err: String(e.message).split('\n')[0] });
     }
   }
-  if (!failed.length) {
+  // 只有每条都“已确认触发 / 无需触发”才发完成标记；有失败或冷却中未确认的，保持待恢复
+  if (!failed.length && !pending.length) {
     try { await io.done(numbers); } catch (e) { failed.push({ what: '发完成评论', err: String(e.message).split('\n')[0] }); }
   }
-  return { numbers, failed };
+  return { numbers, failed, pending };
 }
