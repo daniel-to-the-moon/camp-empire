@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "economy:table": "tsx scripts/economy-table.ts",
-    "swept:table": "tsx scripts/swept-table.ts"
+    "swept:table": "tsx scripts/swept-table.ts",
+    "lap:table": "tsx scripts/lap-table.ts"
   },
   "dependencies": {
     "three": "0.187.0"

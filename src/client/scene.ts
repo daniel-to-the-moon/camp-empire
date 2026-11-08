@@ -9,7 +9,8 @@ import type { Variant } from '../data/models';
 import { GATE, ROAD, STALLS, TREES, WORLD, type Stall } from '../shared/camp';
 import { SIDE_AWNING } from '../shared/config';
 import { bodyCenter, type Pose, type VehicleSpec } from '../shared/kinematics';
-import { buildPlaceholderVehicle, buildSideAwning } from '../geometry/placeholder';
+import { buildPlaceholderVehicle, buildSideAwning, setLamps, type LampRole } from '../geometry/placeholder';
+import type { CamWant } from '../shared/camview';
 import { SNAPSHOT_FOV_DEG } from '../shared/cardcam';
 import { takeSnapshot } from './snapshot';
 
@@ -28,6 +29,8 @@ export function placeVehicle(obj: THREE.Object3D, s: VehicleSpec, p: Pose): void
 export interface VehicleView {
   root: THREE.Group;
   setAwning(on: boolean): void;
+  /** 车灯亮灭（issue #44）：只在状态变化时改顶点颜色 */
+  setLights(on: Record<LampRole, boolean>): void;
 }
 
 export function makeVehicle(v: Variant, tint?: number): VehicleView {
@@ -37,8 +40,15 @@ export function makeVehicle(v: Variant, tint?: number): VehicleView {
     (body.material as THREE.MeshStandardMaterial).color.setHex(tint);
   }
   let awning: THREE.Group | null = null;
+  let lit = '';
   return {
     root,
+    setLights(on) {
+      const key = `${+on.turnL}${+on.turnR}${+on.brake}${+on.reverse}`;
+      if (key === lit) return;
+      lit = key;
+      setLamps(root, on);
+    },
     setAwning(on) {
       if (on && !awning) {
         awning = buildSideAwning(v, SIDE_AWNING.depthM);
@@ -264,8 +274,8 @@ export interface CampScene {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   render(dt: number): void;
-  /** 相机跟随目标（车身中心 + 朝向）；overview = 俯瞰全营地 */
-  follow(target: { x: number; y: number; yaw: number; h: number } | null, overview: boolean): void;
+  /** 相机目标（四种视图的计算见 src/shared/camview.ts）；rate = Infinity 时直接到位 */
+  setCamera(want: CamWant): void;
   stallLabel(id: string): THREE.Sprite | undefined;
   /** 碰撞烟尘：point 为接触点（逻辑坐标），n 为推开方向，strength 为法向撞击速度 m/s */
   dust(point: [number, number], n: [number, number], strength: number): void;
@@ -395,18 +405,15 @@ export function createCampScene(container: HTMLElement): CampScene {
   let shakeAmt = 0;
   const dust = createDust(scene);
 
-  function follow(target: { x: number; y: number; yaw: number; h: number } | null, overview: boolean) {
-    if (overview || !target) {
-      want = { pos: new THREE.Vector3(0, 62, 38), look: new THREE.Vector3(0, 0, 4) };
-      return;
+  let rate = 3.5;
+  function setCamera(w: CamWant) {
+    want = { pos: new THREE.Vector3(...w.pos), look: new THREE.Vector3(...w.look) };
+    rate = w.rate;
+    if (camera.fov !== w.fov || camera.near !== w.near) {
+      camera.fov = w.fov;
+      camera.near = w.near;
+      camera.updateProjectionMatrix();
     }
-    const back = 13 + target.h;
-    const c = toThree(target.x, target.y);
-    const dir = new THREE.Vector3(Math.cos(target.yaw), 0, -Math.sin(target.yaw));
-    want = {
-      pos: c.clone().addScaledVector(dir, -back).add(new THREE.Vector3(0, 7 + target.h, 0)),
-      look: c.clone().addScaledVector(dir, 4).add(new THREE.Vector3(0, 1, 0)),
-    };
   }
 
   function resize() {
@@ -423,7 +430,7 @@ export function createCampScene(container: HTMLElement): CampScene {
   return {
     scene,
     camera,
-    follow,
+    setCamera,
     stallLabel: (id) => labels.get(id),
     dust: (point, n, strength) => dust.burst(point, n, strength),
     shake(amount) {
@@ -431,7 +438,7 @@ export function createCampScene(container: HTMLElement): CampScene {
     },
     render(dt) {
       t += dt;
-      const k = 1 - Math.exp(-dt * 3.5);
+      const k = Number.isFinite(rate) ? 1 - Math.exp(-dt * rate) : 1;
       camPos.lerp(want.pos, k);
       camLook.lerp(want.look, k);
       camera.position.copy(camPos);
