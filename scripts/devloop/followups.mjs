@@ -200,12 +200,15 @@ export async function completeFollowUps(items, io, opts) {
       if (st === 'settled') continue; // 已有分支 / 已关闭 / needs-user：无需（再）触发
       if (st === 'cooldown') { pending.push(n); continue; }
       await io.markDispatch(n);
-      await io.dispatch(n); // 本轮确认触发成功
+      await io.dispatch(n);
+      // 触发成功不等于实现会产出：实现任务可能因分支查询失败而 skip、或排队很久。仍算待恢复，
+      // 直到后续恢复看到实现分支（或 issue 关闭 / needs-user）才发完成标记、移除恢复标签
+      pending.push(n);
     } catch (e) {
       failed.push({ what: `触发 issue #${n} 的实现`, err: String(e.message).split('\n')[0] });
     }
   }
-  // 只有每条都“已确认触发 / 无需触发”才发完成标记；有失败或冷却中未确认的，保持待恢复
+  // 只有每条都 settled（已有实现分支 / 已关闭 / needs-user）才发完成标记；其余保持待恢复（标签保留，recover 继续看）
   if (!failed.length && !pending.length) {
     try { await io.done(numbers); } catch (e) { failed.push({ what: '发完成评论', err: String(e.message).split('\n')[0] }); }
   }

@@ -508,8 +508,8 @@ test('runDecide auto：合并前先在 PR 上登记遗留意见；合并后开 i
   assert.equal((await r.run()).state, 'merged');
   assert.deepEqual(r.calls, [
     'ci 7 aaaa bbbb', 'pr edit 7', 'pr comment 7', 'fetch', 'merge bbbb+aaaa', 'pushed', 'workflow run ci.yml', 'pr comment 7',
-    'issue create', 'issue create', 'mark #90', 'dispatch #90', 'mark #91', 'dispatch #91', 'done',
-  ]);
+    'issue create', 'issue create', 'mark #90', 'dispatch #90', 'mark #91', 'dispatch #91',
+  ]); // 触发成功不等于实现产出：不发完成标记，留给 recover 看到实现分支后再完成
   // 默认 needs-user：同样情形停下，不合并、不登记
   const d = decideRig({ review: limitReview, states: [{ markers: limitMarkers() }] });
   assert.equal((await d.run()).state, 'stopped');
@@ -536,7 +536,7 @@ test('recoverFollowUps：已合并、有登记、无完成标记 → 补齐；�
   // 恢复：只补第二条；第一条 2 小时内有触发标记，不重复触发，但还没有分支 → 待恢复，不发完成
   const second = await recoverFollowUps([{ number: 7, headRefOid: H, comments: [rec] }], () => w.io, { attempts: 1, delayMs: 0 });
   assert.deepEqual(second[0].failed, []);
-  assert.deepEqual(second[0].pending, [90]);
+  assert.deepEqual(second[0].pending, [90, 91]);
   assert.equal(w.issues.length, 2);
   assert.deepEqual(w.dispatched, [90, 91]);
   assert.equal(w.done.length, 0);
@@ -587,10 +587,13 @@ test('completeFollowUps：记了触发标记但触发失败 → 不发完成；�
   const b = await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
   assert.deepEqual(b.pending, [90]);
   assert.equal(w.done.length, 0, '冷却期内未确认触发，不能发完成标记');
-  w.now += REDISPATCH_AFTER_MS; // 超过 2 小时仍无分支
+  w.now += REDISPATCH_AFTER_MS; // 超过 2 小时仍无分支 → 补触发，但仍待恢复
   const c = await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
-  assert.deepEqual(c.pending, []);
+  assert.deepEqual(c.pending, [90]);
   assert.deepEqual(w.dispatched, [90]);
+  assert.equal(w.done.length, 0);
+  w.branches.add(90); // 实现产出分支
+  await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
   assert.equal(w.done.length, 1);
 });
 
@@ -599,12 +602,13 @@ test('completeFollowUps：冷却期内但已有 claude/issue-N 分支（实现�
   const items = followUpItems({ pr: 7, head: H, findings: [fd2('major')] });
   const w = followWorld();
   await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
-  assert.equal(w.done.length, 1);
-  // 第二次调用（例如恢复重放）：已有分支 → settled，不重复触发
+  assert.equal(w.done.length, 0, '刚触发、还没有分支：不算完成');
+  // 恢复重放：已有分支 → settled，不重复触发，发完成标记
   w.branches.add(90);
   const again = await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
   assert.deepEqual(again.pending, []);
   assert.deepEqual(w.dispatched, [90]);
+  assert.equal(w.done.length, 1);
 });
 
 test('gpt-review.yml：recover 排在 decide 之后（同一次运行内串行），decide 失败或跳过也运行', () => {
@@ -718,4 +722,23 @@ test('cloudFollowIo.issueInfo：按运行名 “claude issue#N” 识别未完�
 test('claude.yml：手动按 issue 触发的运行名为 “claude issue#N”', () => {
   const yml = readFileSync(join(HERE, '../../.github/workflows/claude.yml'), 'utf8');
   assert.match(yml, /^run-name: \$\{\{ inputs\.issue && format\('claude issue#\{0\}', inputs\.issue\)/m);
+});
+
+test('completeFollowUps：触发成功 → 实现任务因分支查询失败而 skip（无分支、无 needs-user）→ 冷却期内不重复触发、仍待恢复 → 冷却期后重新触发', async () => {
+  const { completeFollowUps, followUpItems, REDISPATCH_AFTER_MS } = await import('./followups.mjs');
+  const items = followUpItems({ pr: 7, head: H, findings: [fd2('major')] });
+  const w = followWorld();
+  const a = await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
+  assert.deepEqual(a.pending, [90]);
+  // 实现任务 skip：什么都没产出。30 分钟后恢复：冷却期内，不重复触发，不完成
+  w.now += 30 * 60_000;
+  const b = await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
+  assert.deepEqual(b.pending, [90]);
+  assert.deepEqual(w.dispatched, [90]);
+  assert.equal(w.done.length, 0);
+  // 冷却期后仍无分支 → 重新触发
+  w.now += REDISPATCH_AFTER_MS;
+  await completeFollowUps(items, w.io, { attempts: 1, delayMs: 0 });
+  assert.deepEqual(w.dispatched, [90, 90]);
+  assert.equal(w.done.length, 0);
 });
