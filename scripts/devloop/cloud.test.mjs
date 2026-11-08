@@ -425,3 +425,20 @@ test('runDecide：需修改 → 先评论成功再触发云端修复；CI 失败
   assert.equal((await b.run()).state, 'changes');
   assert.ok(!merged(b.calls) && !deployed(b.calls));
 });
+
+test('runDecide：该 head 已有终态标记（重放，或另一审核方先写了 changes / merged / stopped）→ 跳过，不评论、不触发、不合并', async () => {
+  for (const state of ['changes', 'merged', 'stopped']) {
+    const r = decideRig({ states: [{ markers: [{ state, reason: 'none', head: H, base: B }] }] });
+    assert.equal((await r.run()).state, 'skipped', state);
+    assert.deepEqual(r.calls, ['ci 7 aaaa bbbb'], state);
+  }
+  // 其他 head 的终态、本 head 的 retry 不影响
+  const ok = decideRig({ states: [{ markers: [{ state: 'changes', reason: 'none', head: 'c'.repeat(40), base: B }, { state: 'retry', reason: 'infra', head: H, base: B }] }] });
+  assert.equal((await ok.run()).state, 'merged');
+});
+
+test('runDecide：判定后、推送前另一审核方写入 changes → 不推送、不部署', async () => {
+  const r = decideRig({ states: [{}, { markers: [{ state: 'changes', reason: 'none', head: H, base: B }] }] });
+  assert.equal((await r.run()).state, 'retry');
+  assert.ok(!merged(r.calls) && !deployed(r.calls));
+});

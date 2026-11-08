@@ -91,6 +91,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 - **凭据**：`OPENAI_API_KEY`、`GPT_RESPONSES_ENDPOINT`、`GPT_MODEL`（与讨论评审共用）；签名密钥 `DEVLOOP_MARKER_KEY` 与本机 `../ce-devloop/marker.key` 相同，两边的审核记录互认、轮次连续计数。
 - **信任边界**：不设 `pull_request` 入口——那会用 PR 分支上的工作流定义运行，PR 能改 YAML 在过滤前读到签名密钥、或改写有写权限的 `decide`。定时任务只用 main 上的定义；手动触发时各任务校验 `github.ref == refs/heads/main`。
   残余风险：有仓库写权限、且能推送 `.github/workflows/` 改动的账号，可以推一个改过 YAML 的分支再对它手动触发，从而读到仓库级 secret。云端 Claude 用的 `GITHUB_TOKEN` 无 workflows 权限，推不了这类分支；真正隔离需把 `DEVLOOP_MARKER_KEY` 移进只允许 main 部署的 environment（私有仓库可能需要付费套餐），**待用户决定**。
+- **去重**：判定前与推送前都检查当前提交是否已有终态标记（`hasTerminal`）；decide 重放、或本机与云端重叠审核同一提交时，后到的一方跳过，不重复评论、不触发修复、不合并。
 - **结论校验**：GPT 结论按 `review-schema.json` 校验（`validateReview`，云端与本机共用）；不合法（如 `findings` 不是数组、`verdict` 非法）按 GPT 审核失败处理，计入同一提交 3 次的停止上限。
 - **费用**：每次审核消耗 AI 网关的共享额度（金额待核实）；网关限速见上文“GPT 云端参与讨论”。
 

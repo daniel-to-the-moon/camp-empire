@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCi } from './ci.mjs';
 import { mergeAndPush } from './gitops.mjs';
-import { decide, eligible, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, eligible, hasTerminal, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
 import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
 
@@ -141,6 +141,8 @@ export async function runDecide({ pr, head, base, reviewResult, reviewPath, meta
   const now = io.prState(pr);
   if (now.headRefOid !== head) return { state: 'skipped', reason: `审核期间有新提交（${head.slice(0, 8)} → ${now.headRefOid.slice(0, 8)}）` };
   if (touchesWorkflows(now.files)) return { state: 'skipped', reason: '改动工作流文件，交给本机审核方' };
+  // 该 head 已有终态标记（decide 重放，或审核期间另一个审核方已写入 changes / merged / stopped）→ 不再判定、不评论、不触发（GPT 审核 #41 第 6 轮）
+  if (hasTerminal(now.markers, head)) return { state: 'skipped', reason: '该提交已有审核终态标记' };
   const d = decide({
     ci,
     review,
@@ -160,7 +162,7 @@ export async function runDecide({ pr, head, base, reviewResult, reviewPath, meta
         branch: now.isCrossRepository ? null : now.headRefName,
         beforePush: () => {
           const last = io.prState(pr);
-          if (!eligible(last) || last.headRefOid !== head || last.labels.some((l) => l === 'hold' || l === 'needs-user') || touchesWorkflows(last.files)) throw new Error('推送前 PR 状态已变化');
+          if (!eligible(last) || last.headRefOid !== head || last.labels.some((l) => l === 'hold' || l === 'needs-user') || touchesWorkflows(last.files) || hasTerminal(last.markers, head)) throw new Error('推送前 PR 状态已变化');
         },
       });
       d.text += `\n\n合并提交 \`${sha.slice(0, 8)}\`（父提交：main \`${ci.base.slice(0, 8)}\` + PR \`${head.slice(0, 8)}\`，与 CI 测试的组合一致）${branchDeleted ? '' : '；分支上有新提交或已删除，未删除分支'}。`;

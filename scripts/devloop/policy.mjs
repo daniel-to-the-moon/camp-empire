@@ -66,6 +66,11 @@ export function shouldReview({ head, labels, markers, pr }) {
 }
 
 /** 已经消耗的轮次 = 得到 changes 结论的不同 head 数 */
+/** 该 head 是否已有终态标记（changes / merged / stopped）：已被某个审核方处理过，判定与推送都应跳过 */
+export function hasTerminal(markers, head) {
+  return markers.some((m) => m.head === head && TERMINAL.has(m.state));
+}
+
 export function roundsUsed(markers) {
   return new Set(markers.filter((m) => m.state === 'changes').map((m) => m.head)).size;
 }

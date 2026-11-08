@@ -20,7 +20,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCi } from './ci.mjs';
 import { acquireLock, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
-import { decide, eligible, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, eligible, hasTerminal, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
 import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
 
@@ -141,6 +141,10 @@ async function reviewLocked(pr, { merge }) {
     log(`#${pr} 审核期间有新提交（${head.slice(0, 8)} → ${now.headRefOid.slice(0, 8)}），本轮作废`);
     return { pr, skipped: 'head changed' };
   }
+  if (hasTerminal(now.markers, head)) {
+    log(`#${pr} 该提交在审核期间已被另一审核方处理（有终态标记），本轮作废`);
+    return { pr, skipped: 'already decided' };
+  }
   git(['fetch', '-q', 'origin', 'main']);
   const d = decide({
     ci,
@@ -163,7 +167,7 @@ async function reviewLocked(pr, { merge }) {
         // 推送前一刻再读一次 PR：已关闭 / 改草稿 / 改目标 / 有新提交 / 加了暂停标签 → 中止
         beforePush: () => {
           const last = prState(pr);
-          if (!eligible(last) || last.headRefOid !== head || last.labels.some((l) => l === 'hold' || l === 'needs-user')) {
+          if (!eligible(last) || last.headRefOid !== head || last.labels.some((l) => l === 'hold' || l === 'needs-user') || hasTerminal(last.markers, head)) {
             throw new Error('推送前 PR 状态已变化');
           }
         },
