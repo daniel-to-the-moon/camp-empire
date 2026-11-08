@@ -165,7 +165,11 @@ export async function runDecide({ pr, head, base, reviewResult, reviewPath, meta
   if (d.merge) {
     try {
       // 遗留意见先在 PR 上登记（持久化在 GitHub，runner 中断也不丢）；登记不成功就不合并
-      if (followItems.length) await withRetry(() => io.ghR(['pr', 'comment', String(pr), '--body-file', io.writeBody(recordComment({ pr, head, items: followItems }))]), { attempts: 3, sleep: io.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))), delayMs: 5000 });
+      if (followItems.length) {
+        const retry = { attempts: 3, sleep: io.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))), delayMs: 5000 };
+        await withRetry(() => io.ghR(['pr', 'edit', String(pr), '--add-label', FOLLOWUP_LABEL]), retry); // 待恢复索引
+        await withRetry(() => io.ghR(['pr', 'comment', String(pr), '--body-file', io.writeBody(recordComment({ pr, head, items: followItems }))]), retry);
+      }
       io.fetch(pr);
       const { sha, branchDeleted } = io.mergeAndPush({
         base: ci.base,
@@ -200,6 +204,27 @@ export async function runDecide({ pr, head, base, reviewResult, reviewPath, meta
   return { state: d.state, ci: ci.status, verdict: review?.verdict ?? 'error' };
 }
 
+/** 待恢复索引：登记遗留意见时给 PR 打上的标签，收尾完成后移除；recover 按标签查（不受“最近 N 个”窗口限制） */
+export const FOLLOWUP_LABEL = 'devloop-followups';
+
+/** 分支是否存在：只有明确的 404 算不存在；超时、限流、5xx 等向上抛，让本轮保持待恢复、不触发实现 */
+export function branchExists(gh, repo, branch) {
+  try {
+    gh(['api', `repos/${repo}/git/ref/heads/${branch}`]);
+    return true;
+  } catch (e) {
+    const text = `${e.message ?? ''}\n${e.stderr ?? ''}`;
+    if (/\bHTTP 404\b|Not Found/.test(text)) return false;
+    throw new Error(`查询分支 ${branch} 失败：${String(e.message).split('\n')[0]}`);
+  }
+}
+
+/** 已合并、带待恢复标签的 PR（gh 自动分页） */
+export function listRecoverable(ghR) {
+  return JSON.parse(ghR(['pr', 'list', '--state', 'merged', '--base', 'main', '--label', FOLLOWUP_LABEL, '--limit', '1000', '--json', 'number,headRefOid,comments']))
+    .map((p) => ({ ...p, comments: p.comments.map((c) => ({ author: c.author?.login ?? '', body: c.body })) }));
+}
+
 /** completeFollowUps 的真实 io（云端，GITHUB_TOKEN） */
 export function cloudFollowIo({ gh, ghR, repo, writeBody, pr, head }) {
   return {
@@ -207,13 +232,15 @@ export function cloudFollowIo({ gh, ghR, repo, writeBody, pr, head }) {
     create: (it) => ghR(['issue', 'create', '--title', it.title, '--body-file', writeBody(it.body), '--label', 'devloop']),
     issueInfo: (n) => {
       const m = JSON.parse(ghR(['issue', 'view', String(n), '--json', 'state,labels,comments']));
-      let branch = false;
-      try { gh(['api', `repos/${repo}/git/ref/heads/claude/issue-${n}`]); branch = true; } catch { /* 无分支 */ }
+      const branch = branchExists(gh, repo, `claude/issue-${n}`);
       return { state: m.state, labels: m.labels.map((l) => l.name), branch, comments: m.comments.filter((c) => ['github-actions', 'github-actions[bot]'].includes(c.author?.login)).map((c) => ({ body: c.body, createdAt: c.createdAt })) };
     },
     markDispatch: (n) => ghR(['issue', 'comment', String(n), '--body-file', writeBody(`执行者：devloop（云端审核）\n\n来自 PR #${pr} 的遗留意见，已触发云端 Claude 实现。\n\n${DISPATCH_MARK}pr=${pr} head=${head} -->`)]),
     dispatch: (n) => ghR(['workflow', 'run', 'claude.yml', '-f', `issue=${n}`]),
-    done: (numbers) => ghR(['pr', 'comment', String(pr), '--body-file', writeBody(doneComment({ pr, head, numbers }))]),
+    done: (numbers) => {
+      ghR(['pr', 'comment', String(pr), '--body-file', writeBody(doneComment({ pr, head, numbers }))]);
+      try { ghR(['pr', 'edit', String(pr), '--remove-label', FOLLOWUP_LABEL]); } catch { /* 完成标记已在，标签残留只会让 recover 多看一眼后跳过 */ }
+    },
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   };
@@ -288,8 +315,7 @@ async function main() {
   };
 
   if (cmd === 'recover') {
-    const prs = JSON.parse(ghR(['pr', 'list', '--state', 'merged', '--base', 'main', '--limit', '30', '--json', 'number,headRefOid,comments']))
-      .map((p) => ({ ...p, comments: p.comments.map((c) => ({ author: c.author?.login ?? '', body: c.body })) }));
+    const prs = listRecoverable(ghR);
     const r = await recoverFollowUps(prs, (pr, head) => cloudFollowIo({ gh, ghR, repo: REPO, writeBody, pr, head }));
     for (const x of r) console.log(JSON.stringify(x)); // pending 非空：冷却期内未确认触发，下一轮继续
     if (r.some((x) => x.failed.length)) throw new Error('遗留意见收尾仍有失败项，下一轮恢复继续');

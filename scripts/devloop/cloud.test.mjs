@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { finalize, followUps, loadReview, pickPr, recoverFollowUps, runDecide, trustedReviewer } from './cloud.mjs';
+import { branchExists, cloudFollowIo, finalize, FOLLOWUP_LABEL, followUps, listRecoverable, loadReview, pickPr, recoverFollowUps, runDecide, trustedReviewer } from './cloud.mjs';
 import { touchesWorkflows, validateReview } from './review-format.mjs';
 import { decide, MAX_CI_RETRIES, roundsUsed } from './policy.mjs';
 import { marker } from './policy.mjs';
@@ -507,7 +507,7 @@ test('runDecide auto：合并前先在 PR 上登记遗留意见；合并后开 i
   const r = decideRig({ review: limitReview, limitMode: 'auto', states: [{ markers: limitMarkers() }] });
   assert.equal((await r.run()).state, 'merged');
   assert.deepEqual(r.calls, [
-    'ci 7 aaaa bbbb', 'pr comment 7', 'fetch', 'merge bbbb+aaaa', 'pushed', 'workflow run ci.yml', 'pr comment 7',
+    'ci 7 aaaa bbbb', 'pr edit 7', 'pr comment 7', 'fetch', 'merge bbbb+aaaa', 'pushed', 'workflow run ci.yml', 'pr comment 7',
     'issue create', 'issue create', 'mark #90', 'dispatch #90', 'mark #91', 'dispatch #91', 'done',
   ]);
   // 默认 needs-user：同样情形停下，不合并、不登记
@@ -619,4 +619,59 @@ test('devloop.mjs：合并抛错时不撤回待办（结果不确定，交给 dr
   const merge = src.slice(src.indexOf('if (followItems.length) savePending('), src.indexOf("d.reason = 'merge';"));
   assert.ok(merge.length > 0);
   assert.doesNotMatch(merge, /rmSync\(/);
+});
+
+test('branchExists：只有明确的 404 算不存在；5xx、限流、超时向上抛', () => {
+  const err = (msg, stderr = '') => Object.assign(new Error(msg), { stderr });
+  assert.equal(branchExists(() => '{}', 'o/r', 'claude/issue-9'), true);
+  assert.equal(branchExists(() => { throw err('Command failed: gh api', 'gh: Not Found (HTTP 404)'); }, 'o/r', 'claude/issue-9'), false);
+  for (const e of [err('Command failed', 'gh: Server Error (HTTP 502)'), err('Command failed', 'API rate limit exceeded (HTTP 403)'), err('spawnSync gh ETIMEDOUT')]) {
+    assert.throws(() => branchExists(() => { throw e; }, 'o/r', 'claude/issue-9'), /查询分支/);
+  }
+});
+
+test('cloudFollowIo + completeFollowUps：分支查询 5xx → 不触发实现、不发完成标记（保持待恢复）', async () => {
+  const { completeFollowUps, followUpItems } = await import('./followups.mjs');
+  const items = followUpItems({ pr: 7, head: H, findings: [fd2('major')] });
+  const calls = [];
+  const issueBody = items[0].body;
+  const gh = (args) => {
+    calls.push(`gh ${args.slice(0, 2).join(' ')}`);
+    if (args[1].includes('/issues?')) return JSON.stringify({ number: 90, body: issueBody }) + '\n';
+    if (args[1].includes('/git/ref/heads/')) throw Object.assign(new Error('Command failed'), { stderr: 'gh: Server Error (HTTP 502)' });
+    return '';
+  };
+  const ghR = (args) => {
+    calls.push(args.slice(0, 3).join(' '));
+    if (args[0] === 'issue' && args[1] === 'view') return JSON.stringify({ state: 'OPEN', labels: [{ name: 'devloop' }], comments: [] });
+    return '';
+  };
+  const io = { ...cloudFollowIo({ gh, ghR, repo: 'o/r', writeBody: () => 'f.md', pr: 7, head: H }), sleep: async () => {} };
+  const r = await completeFollowUps(items, io, { attempts: 1, delayMs: 0 });
+  assert.equal(r.failed.length, 1);
+  assert.ok(!calls.some((c) => c.startsWith('workflow run')), '查询失败不能触发实现');
+  assert.ok(!calls.some((c) => c.startsWith('issue comment')), '查询失败不能记触发标记');
+  assert.ok(!calls.some((c) => c === 'pr comment 7'), '查询失败不能发完成标记');
+});
+
+test('listRecoverable：按待恢复标签查已合并 PR（不受最近 N 个窗口限制）；完成时移除标签', async () => {
+  const seen = [];
+  const prs = Array.from({ length: 45 }, (_, i) => ({ number: i + 1, headRefOid: H, comments: [] }));
+  const ghR = (args) => { seen.push(args); return JSON.stringify(prs.filter((p) => p.number === 3)); }; // 早期的 #3 仍带标签
+  const r = listRecoverable(ghR);
+  assert.deepEqual(r.map((p) => p.number), [3]);
+  const a = seen[0];
+  assert.equal(a[a.indexOf('--label') + 1], FOLLOWUP_LABEL);
+  assert.ok(Number(a[a.indexOf('--limit') + 1]) >= 1000);
+  assert.equal(a[a.indexOf('--state') + 1], 'merged');
+  const calls = [];
+  const io = cloudFollowIo({ gh: () => '', ghR: (x) => { calls.push(x.slice(0, 4).join(' ')); return ''; }, repo: 'o/r', writeBody: () => 'f.md', pr: 7, head: H });
+  await io.done([90]);
+  assert.deepEqual(calls, ['pr comment 7 --body-file', `pr edit 7 --remove-label`]);
+});
+
+test('runDecide auto：合并前先打待恢复标签再登记；任一失败都不合并', async () => {
+  const r = decideRig({ review: limitReview, limitMode: 'auto', states: [{ markers: limitMarkers() }] });
+  await r.run();
+  assert.ok(r.calls.indexOf('pr edit 7') < r.calls.indexOf('merge bbbb+aaaa'));
 });
