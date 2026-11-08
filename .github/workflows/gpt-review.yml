@@ -172,3 +172,30 @@ jobs:
           # 轮次用满后的处理（用户自选）：needs-user（默认，停下等用户）| auto（收敛则追加轮次，否则无 blocker 即合并并把遗留意见转 issue）
           ROUND_LIMIT_MODE: ${{ vars.ROUND_LIMIT_MODE }}
         run: node scripts/devloop/cloud.mjs decide --pr "${{ needs.select.outputs.pr }}" --head "${{ needs.select.outputs.head }}" --base "${{ needs.select.outputs.base }}" --review-result "$REVIEW_RESULT" --review review/review.json --meta review/meta.json
+
+  # 遗留意见收尾的恢复（auto 模式轮次用满合并后）：扫描最近合并的 PR，有登记、无完成标记的补开 issue 并触发实现。
+  # 与 select / review / decide 独立：decide 中途被取消或超时，这里会补齐（幂等，见 scripts/devloop/followups.mjs）。
+  recover:
+    if: github.ref == 'refs/heads/main' && (vars.CLOUD_REVIEW == 'on' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          sparse-checkout: scripts/devloop
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 补齐遗留意见收尾
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEVLOOP_MARKER_KEY: ${{ secrets.DEVLOOP_MARKER_KEY }}
+        run: node scripts/devloop/cloud.mjs recover

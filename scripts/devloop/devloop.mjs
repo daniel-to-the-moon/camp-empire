@@ -15,7 +15,7 @@
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCi } from './ci.mjs';
@@ -159,7 +159,10 @@ async function reviewLocked(pr, { merge }) {
   });
   if (d.addLabel) gh(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
   if (d.merge) {
+    const followItems = d.followUpFindings?.length ? followUpItems({ pr, head, findings: d.followUpFindings }) : [];
     try {
+      // 遗留意见待办在合并之前原子落盘：写不进去就不合并；合并后进程中断也能由下一轮 watch 补齐
+      if (followItems.length) savePending(pr, head, followItems);
       const { sha, branchDeleted } = mergeAndPush({
         repoDir: REPO_DIR,
         home: HOME,
@@ -177,6 +180,7 @@ async function reviewLocked(pr, { merge }) {
       });
       d.text += `\n\n合并提交 \`${sha.slice(0, 8)}\`（父提交：main \`${ci.base.slice(0, 8)}\` + PR \`${head.slice(0, 8)}\`，与 CI 测试的组合一致）${branchDeleted ? '' : '；分支上有新提交或已删除，未删除分支'}。`;
     } catch (e) {
+      if (followItems.length) rmSync(join(PENDING_DIR, `pr-${pr}.json`), { force: true }); // 没合并成功：撤回待办（残留也会在补开前核对合并状态）
       d.state = 'retry';
       d.reason = 'merge';
       d.merge = false;
@@ -184,7 +188,6 @@ async function reviewLocked(pr, { merge }) {
     }
   }
   // auto 模式轮次用满合并：先把遗留意见待办清单落盘，再发评论；评论失败不影响补开 issue（见 followups.mjs）
-  if (d.state === 'merged' && d.followUpFindings?.length) savePending(pr, followUpItems({ pr, head, findings: d.followUpFindings }));
   try {
     comment(pr, format({ pr, head, review: rv ?? { verdict: 'error', summary: `GPT 审核未能完成：${reviewError}`, findings: [] }, ci, d }));
   } catch (e) {
@@ -199,9 +202,11 @@ async function reviewLocked(pr, { merge }) {
 
 /** 遗留意见待办清单：<HOME>/followups/pr-<N>.json；全部开成功才删除，否则每轮 watch 继续补（幂等，不会重复开） */
 const PENDING_DIR = join(HOME, 'followups');
-function savePending(pr, items) {
+function savePending(pr, head, items) {
   mkdirSync(PENDING_DIR, { recursive: true });
-  writeFileSync(join(PENDING_DIR, `pr-${pr}.json`), JSON.stringify({ pr, items }));
+  const file = join(PENDING_DIR, `pr-${pr}.json`);
+  writeFileSync(`${file}.tmp`, JSON.stringify({ pr, head, items }));
+  renameSync(`${file}.tmp`, file); // 原子替换：不会留下半截文件
 }
 
 /** locked：调用方（reviewLocked）已持有进程锁；否则（watch 每轮）在这里获取同一把锁，忙则跳过本轮 */
@@ -219,6 +224,7 @@ async function processPending({ locked = false } = {}) {
       },
       comment: (pr, text) => comment(pr, text),
       flag: (pr) => gh(['pr', 'edit', String(pr), '--add-label', 'needs-user']),
+      prStatus: (pr) => JSON.parse(gh(['pr', 'view', String(pr), '--json', 'state,headRefOid'])),
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       log,
     },

@@ -66,7 +66,7 @@ export async function ensureFollowUps(items, io, { attempts = 3, delayMs = 5000 
 }
 
 /**
- * 本机待办清单：dir/pr-<N>.json = { pr, items, flagged? }。逐个补开 issue；全部开齐才发清单评论并删除文件，
+ * 本机待办清单：dir/pr-<N>.json = { pr, head, items, flagged? }（合并前落盘）。逐个补开 issue；全部开齐才发清单评论并删除文件，
  * 否则保留到下一轮（首次失败给 PR 加 needs-user，让用户看得见）。
  * io：ensureFollowUps 的 io + { comment(pr, text), flag(pr), log(msg) }
  * acquire()：进程间互斥锁，返回 release 或 null（忙）；默认不加锁（调用方已持锁）
@@ -87,14 +87,25 @@ export async function drainPending({ dir, io, opts, acquire = async () => () => 
 async function drainLocked({ dir, io, opts }) {
   for (const name of readdirSync(dir).filter((n) => /^pr-\d+\.json$/.test(n))) {
     const file = join(dir, name);
-    const { pr, items, flagged } = JSON.parse(readFileSync(file, 'utf8'));
+    const { pr, head, items, flagged } = JSON.parse(readFileSync(file, 'utf8'));
+    // 待办在合并前落盘：先核对 PR 是否真的以该 head 合并。还开着 → 留到下次；关闭未合并或以别的提交合并 → 撤回
+    if (io.prStatus) {
+      let st;
+      try { st = await io.prStatus(pr); } catch (e) { io.log(`#${pr} 查询合并状态失败，下一轮再补：${String(e.message).split('\n')[0]}`); continue; }
+      if (st.state === 'OPEN') continue;
+      if (st.state !== 'MERGED' || (head && st.headRefOid !== head)) {
+        io.log(`#${pr} 未以 ${String(head).slice(0, 8)} 合并（${st.state}），撤回遗留意见待办`);
+        rmSync(file, { force: true });
+        continue;
+      }
+    }
     const r = await ensureFollowUps(items, io, opts);
     if (r.failed.length) {
       io.log(`#${pr} 遗留意见 issue 有 ${r.failed.length} 条未开成功，下一轮继续：${r.failed.map((f) => f.err).join('；')}`);
       if (!flagged) {
         try {
           io.flag(pr);
-          writeFileSync(file, JSON.stringify({ pr, items, flagged: true }));
+          writeFileSync(file, JSON.stringify({ pr, head, items, flagged: true }));
         } catch { /* 尽力 */ }
       }
       continue;
@@ -104,4 +115,69 @@ async function drainLocked({ dir, io, opts }) {
     } catch { /* 清单评论尽力而为；issue 已开齐 */ }
     rmSync(file, { force: true });
   }
+}
+
+// ---------------- 云端：可恢复的遗留意见收尾 ----------------
+// 云端 runner 随时可能被取消或超时，内存里的进度会丢。持久化记录放在 GitHub 上：
+//   合并推送之前，先在 PR 上发“遗留意见记录”评论（发不出就不合并）；收尾全部完成后再发“已完成”评论。
+//   定时的恢复任务扫描最近合并的 PR：有记录、无完成标记 → 重新收尾（幂等）。
+
+export const RECORD_MARK = '<!-- devloop-followups ';
+export const DONE_MARK = '<!-- devloop-followups-done ';
+export const DISPATCH_MARK = '<!-- devloop-dispatch ';
+/** 同一 issue 的实现触发间隔下限：claude.yml 任务超时 90 分钟，超过 2 小时仍无分支即视为上次触发未生效 */
+export const REDISPATCH_AFTER_MS = 2 * 60 * 60 * 1000;
+
+export function recordComment({ pr, head, items }) {
+  const b64 = Buffer.from(JSON.stringify(items), 'utf8').toString('base64');
+  return `执行者：devloop（云端审核）\n\n轮次用满按 auto 模式合并前登记 ${items.length} 条遗留意见，合并后逐条开 devloop issue 并触发实现。\n\n${RECORD_MARK}pr=${pr} head=${head} b64=${b64} -->`;
+}
+
+export function doneComment({ pr, head, numbers }) {
+  return `执行者：devloop（云端审核）\n\n遗留意见已转为 devloop issue 并已触发实现：${numbers.map((n) => `#${n}`).join('、')}\n\n${DONE_MARK}pr=${pr} head=${head} -->`;
+}
+
+/** 从 PR 评论（[{ author, body }]，只传可信作者的）中找到某 head 的记录与完成标记 */
+export function parseRecord(comments, { pr, head }) {
+  let items = null;
+  let done = false;
+  for (const c of comments) {
+    const r = new RegExp(`${RECORD_MARK}pr=${pr} head=${head} b64=([A-Za-z0-9+/=]+) -->`).exec(c.body ?? '');
+    if (r) {
+      try { items = JSON.parse(Buffer.from(r[1], 'base64').toString('utf8')); } catch { /* 损坏的记录忽略 */ }
+    }
+    if (String(c.body ?? '').includes(`${DONE_MARK}pr=${pr} head=${head} -->`)) done = true;
+  }
+  return { items, done };
+}
+
+/** 是否应触发某 issue 的实现：打开、无 needs-user、尚无 claude/issue-N 分支、2 小时内没有触发记录 */
+export function shouldDispatch(info, now) {
+  if (info.state !== 'OPEN' || info.labels.includes('needs-user') || info.branch) return false;
+  const last = info.comments.filter((c) => String(c.body ?? '').includes(DISPATCH_MARK)).map((c) => Date.parse(c.createdAt)).filter(Number.isFinite);
+  return !last.length || now - Math.max(...last) >= REDISPATCH_AFTER_MS;
+}
+
+/**
+ * 收尾（幂等，可重复执行）：确保每条遗留意见有 issue → 对需要的 issue 先记触发标记、再触发实现 → 全部完成后发完成评论。
+ * io：ensureFollowUps 的 io + { issueInfo(n) → { state, labels, branch, comments:[{body, createdAt}] }, markDispatch(n), dispatch(n), done(numbers), now() }
+ * 先记标记再触发：中断在两者之间时，2 小时后的恢复会补触发；不会在 2 小时内重复启动。
+ */
+export async function completeFollowUps(items, io, opts) {
+  const r = await ensureFollowUps(items, io, opts);
+  const failed = r.failed.map((f) => ({ what: `开 issue（${f.key}）`, err: f.err }));
+  const numbers = Object.values(r.numbers);
+  for (const n of numbers) {
+    try {
+      if (!shouldDispatch(await io.issueInfo(n), io.now())) continue;
+      await io.markDispatch(n);
+      await io.dispatch(n);
+    } catch (e) {
+      failed.push({ what: `触发 issue #${n} 的实现`, err: String(e.message).split('\n')[0] });
+    }
+  }
+  if (!failed.length) {
+    try { await io.done(numbers); } catch (e) { failed.push({ what: '发完成评论', err: String(e.message).split('\n')[0] }); }
+  }
+  return { numbers, failed };
 }

@@ -130,6 +130,7 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
 - 切换：`gh variable set ROUND_LIMIT_MODE --body auto`（改回：`--body needs-user`）。本机审核方每次判定时读取，云端审核由 `gpt-review.yml` 读取。
 - 判断“意见数”用每条 `changes` 标记里记下的 `f<n>`（签名的一部分）；旧标记没有记录时按持平处理。
 - 云端开的遗留意见 issue 由 `GITHUB_TOKEN` 打标签，不会触发 `claude.yml`，所以云端直接 `gh workflow run claude.yml -f issue=<编号>`；本机以用户账号开 issue，标签会正常触发。
+- 遗留意见收尾可恢复：本机在合并前把待办原子落盘（`../ce-devloop/followups/pr-N.json`），每轮 watch 核对 PR 确已以该提交合并后补开；云端在合并前于 PR 上发“遗留意见记录”评论（发不出就不合并），收尾完成发“已完成”评论，`gpt-review.yml` 的 `recover` 任务每轮扫描最近合并的 PR 补齐。开 issue 按稳定标识去重；触发实现前先在 issue 上记触发标记，2 小时内不重复触发、已有 `claude/issue-N` 分支不触发。
 - 风险（如实）：auto 模式会合并 GPT 仍认为有 major 问题的代码，靠后续 issue 修；涉及收费 / 广告 / 对公众上线等用户保留决定的改动，Claude 本就不写，不受此开关影响。
 
 ## 模型网关与手动重跑

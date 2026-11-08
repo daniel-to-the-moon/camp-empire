@@ -19,7 +19,7 @@ import { runCi } from './ci.mjs';
 import { mergeAndPush } from './gitops.mjs';
 import { decide, eligible, hasTerminal, lastFindings, limitMode, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
-import { ensureFollowUps, followUpItems } from './followups.mjs';
+import { completeFollowUps, DISPATCH_MARK, doneComment, followUpItems, parseRecord, recordComment } from './followups.mjs';
 import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -73,7 +73,7 @@ async function withRetry(fn, { attempts, sleep, delayMs }) {
  * - 每个动作有界重试；最终仍失败 → 给 PR 加 needs-user，并（尽力）发一条说明，写明要手动执行的命令，然后抛错让本次运行失败。
  *   不会重复合并（合并已完成），也不新增审核标记（不累计轮次）。
  */
-export async function finalize({ ghR, pr, state, body, writeBody, issues = [], listIssues = () => [], attempts = 3, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), delayMs = 5000 }) {
+export async function finalize({ ghR, pr, state, body, writeBody, followUp = null, attempts = 3, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), delayMs = 5000 }) {
   const failed = [];
   const tryDo = async (label, args) => {
     try {
@@ -89,20 +89,11 @@ export async function finalize({ ghR, pr, state, body, writeBody, issues = [], l
   if (state === 'merged') {
     await follow();
     await comment();
-    // auto 模式轮次用满合并：遗留意见逐条开 devloop issue（幂等，见 followups.mjs）；
-    // GITHUB_TOKEN 打的标签不会触发 claude.yml，所以对新开的 issue 直接按 issue 触发实现
-    if (issues.length) {
-      const r = await ensureFollowUps(issues, {
-        list: () => listIssues(),
-        create: (it) => ghR(['issue', 'create', '--title', it.title, '--body-file', writeBody(it.body), '--label', 'devloop']),
-        sleep,
-      }, { attempts, delayMs });
-      for (const f of r.failed) failed.push({ label: '开遗留意见 issue', cmd: `手动补开 devloop issue，正文末尾附 <!-- devloop-followup key=${f.key} -->（已有同标识的 issue 则不必再开）`, err: f.err });
-      // 对本次确认存在的全部遗留 issue 触发实现，包括“创建成功但响应丢失、重新核对时找回”的那些（它们不在 created 里，
-      // 但同样从未触发过）。finalize 对同一提交只运行一次（判定前有终态去重），所以这里不会重复启动。
-      const all = Object.values(r.numbers);
-      for (const n of all) await tryDo(`触发 issue #${n} 的实现`, ['workflow', 'run', 'claude.yml', '-f', `issue=${n}`]);
-      if (all.length) await tryDo('发遗留意见清单', ['pr', 'comment', String(pr), '--body-file', writeBody(`执行者：devloop（云端审核）\n\n遗留意见已转为 devloop issue：${all.map((n) => `#${n}`).join('、')}`)]);
+    // auto 模式轮次用满合并：遗留意见收尾（幂等、可恢复，见 followups.mjs 的 completeFollowUps）。
+    // 合并前已在 PR 上登记记录；这里中断也没关系，定时的 recover 任务会补齐。
+    if (followUp?.items.length) {
+      const r = await completeFollowUps(followUp.items, followUp.io, { attempts, delayMs });
+      for (const f of r.failed) failed.push({ label: f.what, cmd: 'gh workflow run gpt-review.yml（恢复任务会自动补齐，也可手动触发）', err: f.err });
     }
   } else {
     await comment();
@@ -148,7 +139,7 @@ export function loadReview({ reviewResult, reviewPath, metaPath, pr, head, base,
 
 /**
  * decide 编排（入口级测试见 cloud.test.mjs，GPT 审核 #41 第 5 轮）：读结论 → CI → 重新核对 PR → 判定 → 合并推送 → 评论与后续。
- * io：{ key, model, limitMode?, ghR, prState, mainSha, runCi({pr,head,base}), fetch(pr), mergeAndPush(opts), writeBody, sleep? }
+ * io：{ key, model, limitMode?, followIo(pr, head), ghR, prState, mainSha, runCi({pr,head,base}), fetch(pr), mergeAndPush(opts), writeBody, sleep? }
  * 返回 { state, ci?, verdict?, reason? }；跳过时不评论、不触发任何后续。
  */
 export async function runDecide({ pr, head, base, reviewResult, reviewPath, metaPath, read, exists }, io) {
@@ -170,8 +161,11 @@ export async function runDecide({ pr, head, base, reviewResult, reviewPath, meta
     prevFindings: lastFindings(now.markers),
   });
   if (d.addLabel) io.ghR(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
+  const followItems = d.merge && d.followUpFindings?.length ? followUpItems({ pr, head, findings: d.followUpFindings }) : [];
   if (d.merge) {
     try {
+      // 遗留意见先在 PR 上登记（持久化在 GitHub，runner 中断也不丢）；登记不成功就不合并
+      if (followItems.length) await withRetry(() => io.ghR(['pr', 'comment', String(pr), '--body-file', io.writeBody(recordComment({ pr, head, items: followItems }))]), { attempts: 3, sleep: io.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))), delayMs: 5000 });
       io.fetch(pr);
       const { sha, branchDeleted } = io.mergeAndPush({
         base: ci.base,
@@ -201,9 +195,43 @@ export async function runDecide({ pr, head, base, reviewResult, reviewPath, meta
     ci,
     d,
   });
-  const issues = d.state === 'merged' && d.followUpFindings?.length ? followUpItems({ pr, head, findings: d.followUpFindings }) : [];
-  await finalize({ ghR: io.ghR, pr, state: d.state, body, writeBody: io.writeBody, issues, listIssues: io.listIssues, ...(io.sleep ? { sleep: io.sleep } : {}) });
+  const followUp = d.state === 'merged' && followItems.length ? { items: followItems, io: io.followIo(pr, head) } : null;
+  await finalize({ ghR: io.ghR, pr, state: d.state, body, writeBody: io.writeBody, followUp, ...(io.sleep ? { sleep: io.sleep } : {}) });
   return { state: d.state, ci: ci.status, verdict: review?.verdict ?? 'error' };
+}
+
+/** completeFollowUps 的真实 io（云端，GITHUB_TOKEN） */
+export function cloudFollowIo({ gh, ghR, repo, writeBody, pr, head }) {
+  return {
+    list: () => listDevloopIssues(gh, repo),
+    create: (it) => ghR(['issue', 'create', '--title', it.title, '--body-file', writeBody(it.body), '--label', 'devloop']),
+    issueInfo: (n) => {
+      const m = JSON.parse(ghR(['issue', 'view', String(n), '--json', 'state,labels,comments']));
+      let branch = false;
+      try { gh(['api', `repos/${repo}/git/ref/heads/claude/issue-${n}`]); branch = true; } catch { /* 无分支 */ }
+      return { state: m.state, labels: m.labels.map((l) => l.name), branch, comments: m.comments.filter((c) => ['github-actions', 'github-actions[bot]'].includes(c.author?.login)).map((c) => ({ body: c.body, createdAt: c.createdAt })) };
+    },
+    markDispatch: (n) => ghR(['issue', 'comment', String(n), '--body-file', writeBody(`执行者：devloop（云端审核）\n\n来自 PR #${pr} 的遗留意见，已触发云端 Claude 实现。\n\n${DISPATCH_MARK}pr=${pr} head=${head} -->`)]),
+    dispatch: (n) => ghR(['workflow', 'run', 'claude.yml', '-f', `issue=${n}`]),
+    done: (numbers) => ghR(['pr', 'comment', String(pr), '--body-file', writeBody(doneComment({ pr, head, numbers }))]),
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  };
+}
+
+/**
+ * 恢复：扫描最近合并的 PR，对“有遗留意见记录、无完成标记”的补做收尾（幂等）。只认 github-actions 发的记录。
+ * prs：[{ number, headRefOid, comments:[{ author, body }] }]；io(pr, head) → completeFollowUps 的 io
+ */
+export async function recoverFollowUps(prs, io, opts) {
+  const results = [];
+  for (const p of prs) {
+    const trusted = p.comments.filter((c) => ['github-actions', 'github-actions[bot]'].includes(c.author?.login ?? c.author));
+    const { items, done } = parseRecord(trusted, { pr: p.number, head: p.headRefOid });
+    if (!items || done) continue;
+    results.push({ pr: p.number, ...(await completeFollowUps(items, io(p.number, p.headRefOid), opts)) });
+  }
+  return results;
 }
 
 /** 打开与关闭的 devloop issue（REST 列表，强一致）：[{ number, body }] */
@@ -253,6 +281,21 @@ async function main() {
     return out({ prompt: arg('out') });
   }
 
+  const writeBody = (text) => {
+    const f = join(mkdtempSync(join(tmpdir(), 'cloud-comment-')), 'c.md');
+    writeFileSync(f, text);
+    return f;
+  };
+
+  if (cmd === 'recover') {
+    const prs = JSON.parse(ghR(['pr', 'list', '--state', 'merged', '--base', 'main', '--limit', '30', '--json', 'number,headRefOid,comments']))
+      .map((p) => ({ ...p, comments: p.comments.map((c) => ({ author: c.author?.login ?? '', body: c.body })) }));
+    const r = await recoverFollowUps(prs, (pr, head) => cloudFollowIo({ gh, ghR, repo: REPO, writeBody, pr, head }));
+    for (const x of r) console.log(JSON.stringify(x));
+    if (r.some((x) => x.failed.length)) throw new Error('遗留意见收尾仍有失败项，下一轮恢复继续');
+    return out({ recovered: r.length });
+  }
+
   if (cmd === 'decide') {
     const ciIo = {
       dispatch: async ({ pr: p, head: h, base: b, nonce }) => ghR(['workflow', 'run', 'ci.yml', '--ref', 'main', '-f', `pr=${p}`, '-f', `head=${h}`, '-f', `base=${b}`, '-f', `nonce=${nonce}`]),
@@ -267,18 +310,14 @@ async function main() {
         key: KEY,
         model: process.env.GPT_MODEL || 'GPT',
         limitMode: process.env.ROUND_LIMIT_MODE,
-        listIssues: () => listDevloopIssues(gh, REPO),
+        followIo: (pr, head) => cloudFollowIo({ gh, ghR, repo: REPO, writeBody, pr, head }),
         ghR,
         prState,
         mainSha,
         runCi: (p) => runCi({ ...p, io: ciIo, timeoutMs: 30 * 60_000 }),
         fetch: (pr) => sh('git', ['fetch', '-q', 'origin', 'main', `pull/${pr}/head`]),
         mergeAndPush: (opts) => mergeAndPush({ repoDir: process.cwd(), home: mkdtempSync(join(tmpdir(), 'cloud-merge-')), ...opts }),
-        writeBody: (text) => {
-          const f = join(mkdtempSync(join(tmpdir(), 'cloud-comment-')), 'c.md');
-          writeFileSync(f, text);
-          return f;
-        },
+        writeBody,
       },
     );
     return out(r);
