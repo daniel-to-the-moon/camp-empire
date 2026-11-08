@@ -191,7 +191,7 @@ async function reviewLocked(pr, { merge }) {
     if (d.state !== 'merged') throw e;
     log(`#${pr} 已合并，但审核评论发送失败：${e.message.split('\n')[0]}`);
   }
-  await processPending();
+  await processPending({ locked: true });
   const result = { pr, head, state: d.state, ci: ci.status, verdict: rv?.verdict ?? 'error', findings: rv?.findings.length ?? 0 };
   console.log(JSON.stringify(result));
   return result;
@@ -204,9 +204,11 @@ function savePending(pr, items) {
   writeFileSync(join(PENDING_DIR, `pr-${pr}.json`), JSON.stringify({ pr, items }));
 }
 
-async function processPending() {
+/** locked：调用方（reviewLocked）已持有进程锁；否则（watch 每轮）在这里获取同一把锁，忙则跳过本轮 */
+async function processPending({ locked = false } = {}) {
   return drainPending({
     dir: PENDING_DIR,
+    acquire: locked ? async () => () => {} : acquireLock,
     io: {
       list: () => sh('gh', ['api', '--paginate', `repos/${REPO}/issues?labels=devloop&state=all&per_page=100`, '--jq', '.[] | {number, body}'])
         .split('\n').filter(Boolean).map((l) => JSON.parse(l)),

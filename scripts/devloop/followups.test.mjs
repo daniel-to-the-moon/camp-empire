@@ -107,3 +107,42 @@ test('drainPending：清单评论失败不影响删除（issue 已开齐）；�
   await drainPending({ dir: join(root, 'nope'), io: {} });
   assert.equal(readFileSync.length > 0, true);
 });
+
+/** 进程间互斥锁的假实现：被占用时返回 null（与 gitops.acquireLock 相同约定） */
+function fakeLock() {
+  let held = false;
+  return async () => {
+    await null;
+    if (held) return null;
+    held = true;
+    return async () => { held = false; };
+  };
+}
+
+/** 异步 io：每次 list / create 之间让出事件循环，模拟两个处理者交错 */
+function asyncGh() {
+  const g = fakeGh();
+  return { ...g, list: async () => { await null; return g.list(); }, create: async (it) => { await null; return g.create(it); } };
+}
+
+test('drainPending：两个处理者交错执行——不加锁会重复创建；共用同一把锁时每个 key 只创建一次', async () => {
+  const mk = (name) => {
+    const dir = join(root, name);
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'pr-7.json'), JSON.stringify({ pr: 7, items }));
+    return dir;
+  };
+  const quiet = { flag: () => {}, comment: () => {}, log: () => {} };
+  // 对照：不加锁，两个处理者都先查到“不存在”，各自创建
+  const d1 = mk('race-nolock');
+  const g1 = asyncGh();
+  await Promise.all([drainPending({ dir: d1, io: { ...g1, ...quiet } }), drainPending({ dir: d1, io: { ...g1, ...quiet } })]);
+  assert.ok(g1.issues.length > items.length, '对照组应出现重复，说明测试确实制造了交错');
+  // 共用锁：后到者拿不到锁就跳过，不会重复
+  const d2 = mk('race-lock');
+  const g2 = asyncGh();
+  const acquire = fakeLock();
+  await Promise.all([drainPending({ dir: d2, io: { ...g2, ...quiet }, acquire }), drainPending({ dir: d2, io: { ...g2, ...quiet }, acquire })]);
+  assert.equal(g2.issues.length, items.length);
+  assert.ok(!existsSync(join(d2, 'pr-7.json')));
+});

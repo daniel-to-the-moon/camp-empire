@@ -475,3 +475,22 @@ test('gpt-review.yml：decide 读取仓库变量 ROUND_LIMIT_MODE', () => {
   const yml = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
   assert.match(yml, /ROUND_LIMIT_MODE: \$\{\{ vars\.ROUND_LIMIT_MODE \}\}/);
 });
+
+test('finalize：issue 创建成功但响应丢失 → 重新核对找回编号，仍触发该 issue 的实现，不重复创建', async () => {
+  const { followUpItems } = await import('./followups.mjs');
+  const its = followUpItems({ pr: 7, head: H, findings: [fd2('major')] });
+  const created = [];
+  const calls = [];
+  const ghR = (args) => {
+    calls.push(args.slice(0, 4).join(' '));
+    if (args[0] === 'issue' && args[1] === 'create') {
+      created.push({ number: 300 + created.length, body: its[0].body });
+      throw new Error('socket hang up'); // 服务端已创建，客户端没拿到响应
+    }
+    return '';
+  };
+  await finalize({ ghR, pr: 7, state: 'merged', body: 'b', writeBody: () => 'f.md', issues: its, listIssues: () => created, sleep: async () => {}, delayMs: 0 });
+  assert.equal(created.length, 1);
+  assert.ok(calls.includes('workflow run claude.yml -f'));
+  assert.equal(calls.filter((c) => c.startsWith('issue create')).length, 1);
+});

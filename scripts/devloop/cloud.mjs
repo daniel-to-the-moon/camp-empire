@@ -98,8 +98,10 @@ export async function finalize({ ghR, pr, state, body, writeBody, issues = [], l
         sleep,
       }, { attempts, delayMs });
       for (const f of r.failed) failed.push({ label: '开遗留意见 issue', cmd: `手动补开 devloop issue，正文末尾附 <!-- devloop-followup key=${f.key} -->（已有同标识的 issue 则不必再开）`, err: f.err });
-      for (const n of r.created) await tryDo(`触发 issue #${n} 的实现`, ['workflow', 'run', 'claude.yml', '-f', `issue=${n}`]);
+      // 对本次确认存在的全部遗留 issue 触发实现，包括“创建成功但响应丢失、重新核对时找回”的那些（它们不在 created 里，
+      // 但同样从未触发过）。finalize 对同一提交只运行一次（判定前有终态去重），所以这里不会重复启动。
       const all = Object.values(r.numbers);
+      for (const n of all) await tryDo(`触发 issue #${n} 的实现`, ['workflow', 'run', 'claude.yml', '-f', `issue=${n}`]);
       if (all.length) await tryDo('发遗留意见清单', ['pr', 'comment', String(pr), '--body-file', writeBody(`执行者：devloop（云端审核）\n\n遗留意见已转为 devloop issue：${all.map((n) => `#${n}`).join('、')}`)]);
     }
   } else {

@@ -38,7 +38,7 @@ export async function ensureFollowUps(items, io, { attempts = 3, delayMs = 5000 
     let err = '';
     for (let i = 0; i < attempts && n === null; i++) {
       try {
-        n = findByKey(io.list(), it.key);
+        n = findByKey(await io.list(), it.key);
         if (n !== null) break;
       } catch (e) {
         err = `查询已有 issue 失败：${String(e.message).split('\n')[0]}`;
@@ -46,7 +46,7 @@ export async function ensureFollowUps(items, io, { attempts = 3, delayMs = 5000 
         continue; // 查不到远端状态就不创建，避免重复
       }
       try {
-        const out = String(io.create(it));
+        const out = String(await io.create(it));
         const m = /\/issues\/(\d+)\s*$/.exec(out.trim());
         if (m) {
           n = Number(m[1]);
@@ -69,9 +69,22 @@ export async function ensureFollowUps(items, io, { attempts = 3, delayMs = 5000 
  * 本机待办清单：dir/pr-<N>.json = { pr, items, flagged? }。逐个补开 issue；全部开齐才发清单评论并删除文件，
  * 否则保留到下一轮（首次失败给 PR 加 needs-user，让用户看得见）。
  * io：ensureFollowUps 的 io + { comment(pr, text), flag(pr), log(msg) }
+ * acquire()：进程间互斥锁，返回 release 或 null（忙）；默认不加锁（调用方已持锁）
  */
-export async function drainPending({ dir, io, opts }) {
+export async function drainPending({ dir, io, opts, acquire = async () => () => {} }) {
   if (!existsSync(dir)) return;
+  // 读取清单、查询远端、创建、清理全程持有进程间互斥锁：两个处理者交错时同一 key 只会创建一次。
+  // 拿不到锁（另一个进程正在审核或补开）就跳过本轮，下一轮再补。调用方已持锁时传入空操作的 acquire。
+  const release = await acquire();
+  if (!release) return;
+  try {
+    await drainLocked({ dir, io, opts });
+  } finally {
+    await release();
+  }
+}
+
+async function drainLocked({ dir, io, opts }) {
   for (const name of readdirSync(dir).filter((n) => /^pr-\d+\.json$/.test(n))) {
     const file = join(dir, name);
     const { pr, items, flagged } = JSON.parse(readFileSync(file, 'utf8'));
