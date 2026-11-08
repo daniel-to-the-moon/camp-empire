@@ -10,7 +10,7 @@ import { GATE, ROAD, STALLS, TREES, WORLD, type Stall } from '../shared/camp';
 import { SIDE_AWNING } from '../shared/config';
 import { bodyCenter, type Pose, type VehicleSpec } from '../shared/kinematics';
 import { buildPlaceholderVehicle, buildSideAwning, setLamps, type LampRole } from '../geometry/placeholder';
-import type { CamWant } from '../shared/camview';
+import { applyShake, type CamWant, type V3 } from '../shared/camview';
 import { SNAPSHOT_FOV_DEG } from '../shared/cardcam';
 import { takeSnapshot } from './snapshot';
 
@@ -406,9 +406,11 @@ export function createCampScene(container: HTMLElement): CampScene {
   const dust = createDust(scene);
 
   let rate = 3.5;
+  let shakeMode: CamWant['shake'] = 'pos';
   function setCamera(w: CamWant) {
     want = { pos: new THREE.Vector3(...w.pos), look: new THREE.Vector3(...w.look) };
     rate = w.rate;
+    shakeMode = w.shake;
     if (camera.fov !== w.fov || camera.near !== w.near) {
       camera.fov = w.fov;
       camera.near = w.near;
@@ -441,16 +443,12 @@ export function createCampScene(container: HTMLElement): CampScene {
       const k = Number.isFinite(rate) ? 1 - Math.exp(-dt * rate) : 1;
       camPos.lerp(want.pos, k);
       camLook.lerp(want.look, k);
-      camera.position.copy(camPos);
-      // 震屏：衰减的高频抖动，幅度最大约 0.35 m
-      if (shakeAmt > 0.001) {
-        const a = shakeAmt * shakeAmt * 0.35;
-        camera.position.x += Math.sin(t * 61) * a;
-        camera.position.y += Math.sin(t * 47 + 1.3) * a;
-        camera.position.z += Math.cos(t * 53) * a;
-        shakeAmt *= Math.exp(-dt * 7);
-      }
-      camera.lookAt(camLook);
+      // 震屏：衰减的高频抖动，幅度最大 SHAKE_MAX_M；引擎盖视角只抖看向点，相机不进车体（applyShake）
+      const amt = shakeAmt > 0.001 ? shakeAmt : 0;
+      const shaken = applyShake(camPos.toArray() as V3, camLook.toArray() as V3, shakeMode, t, amt);
+      if (amt > 0) shakeAmt *= Math.exp(-dt * 7);
+      camera.position.set(...shaken.pos);
+      camera.lookAt(...shaken.look);
       dust.update(dt);
       if (flame) {
         flame.scale.set(1 + Math.sin(t * 9) * 0.06, 1 + Math.sin(t * 13) * 0.12, 1 + Math.cos(t * 7) * 0.06);

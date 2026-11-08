@@ -4,9 +4,13 @@ import { describe, expect, it } from 'vitest';
 import { ALL_VARIANTS, findVariant } from '../src/data/models';
 import { playerObstacles } from '../src/client/drive';
 import { fenceShapes, loopLength, treeShapes } from '../src/shared/camp';
+import css from '../src/style.css?raw';
+import sceneSrc from '../src/client/scene.ts?raw';
 import {
+  applyShake,
   camFor,
   clampOrbit,
+  SHAKE_MAX_M,
   followCam,
   HOOD,
   hoodCam,
@@ -359,6 +363,59 @@ describe('引擎盖视角', () => {
     expect(c.look[1]).toBeLessThan(c.pos[1]);
     expect(c.rate).toBe(Infinity);
   });
+  /** 机盖顶面在车身局部 forward 处的高度：车头 (zFront, 机盖顶) 到风挡底边的斜线（layout.ts 车身侧轮廓） */
+  const hoodSurfaceY = (v: (typeof ALL_VARIANTS)[number], f: number) => {
+    const lay = computeLayout(v);
+    const [wbz, wby] = lay.windshield.bottom;
+    const front = wby - 0.1;
+    const k = Math.min(1, Math.max(0, (lay.zFront - f) / (lay.zFront - wbz)));
+    return front + (wby - front) * k;
+  };
+  /** three 坐标 → 车身局部 forward（相对车身中心） */
+  const localForward = (p: readonly number[], tg: Target) => (p[0] - tg.x) * Math.cos(tg.yaw) + (-p[2] - tg.y) * Math.sin(tg.yaw);
+  it.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('%s：满强度碰撞震屏时，最终相机仍在机盖上方（只抖看向点）', (_id, v) => {
+    const m = hoodMount(v);
+    for (const yaw of [0, Math.PI / 2, Math.PI, -0.7]) {
+      const tg = { x: 3, y: -2, yaw, h: 1 };
+      const c = hoodCam(tg, m);
+      expect(c.shake).toBe('look');
+      for (let t = 0; t <= 5; t += 0.01) {
+        const r = applyShake(c.pos, c.look, c.shake, t, 1);
+        expect(r.pos).toEqual(c.pos); // 相机位置不动：仍是上面逐款验证过的车外位置
+        expect(r.pos[1] - hoodSurfaceY(v, localForward(r.pos, tg))).toBeGreaterThan(HOOD.aboveHoodM - 0.1);
+      }
+    }
+  });
+  it('GPT 审核 #48 反例：首款车朝东、t = 3 s、满强度——旧做法（抖位置）相机低于机盖面，新做法不会', () => {
+    const v = ALL_VARIANTS[0];
+    const m = hoodMount(v);
+    const tg = { x: 0, y: 0, yaw: 0, h: 1 };
+    const c = hoodCam(tg, m);
+    const old = applyShake(c.pos, c.look, 'pos', 3, 1); // 改动前对所有视图都抖位置
+    expect(old.pos[1]).toBeLessThan(hoodSurfaceY(v, localForward(old.pos, tg)));
+    const now = applyShake(c.pos, c.look, c.shake, 3, 1);
+    expect(now.pos[1]).toBeGreaterThan(hoodSurfaceY(v, localForward(now.pos, tg)) + HOOD.near);
+    // 看向点仍有抖动（保留碰撞反馈）：20 m 外最大 0.35 m ≈ 1°
+    expect(Math.hypot(...now.look.map((x, i) => x - c.look[i]))).toBeGreaterThan(0.01);
+  });
+  it('其他视图仍抖位置，幅度不超过 SHAKE_MAX_M，强度 0 时不抖', () => {
+    const t = { x: 0, y: 0, yaw: 0.3, h: 1 };
+    for (const view of ['overview', 'follow', 'orbit'] as const) {
+      const c = camFor(view, t, orbitBehind(0.3), hoodMount(ALL_VARIANTS[0]));
+      expect(c.shake).toBe('pos');
+      for (let s = 0; s <= 2; s += 0.05) {
+        const r = applyShake(c.pos, c.look, c.shake, s, 1);
+        expect(r.look).toEqual(c.look);
+        for (let i = 0; i < 3; i++) expect(Math.abs(r.pos[i] - c.pos[i])).toBeLessThanOrEqual(SHAKE_MAX_M + 1e-12);
+      }
+      expect(applyShake(c.pos, c.look, c.shake, 1, 0)).toEqual({ pos: c.pos, look: c.look });
+    }
+  });
+  it('scene.ts 每帧的相机经 applyShake 叠加震屏，并按 CamWant.shake 选择方式', () => {
+    expect(sceneSrc).toMatch(/applyShake\(camPos.*shakeMode/);
+    expect(sceneSrc).toMatch(/shakeMode = w\.shake/);
+    expect(sceneSrc).not.toMatch(/camera\.position\.[xyz] \+=/);
+  });
   it('跟随视图参数与改动前一致（车后 13 + h、上方 7 + h）', () => {
     const c = followCam({ x: 0, y: 0, yaw: 0, h: 2 });
     expect(c.pos).toEqual([-15, 9, -0]);
@@ -372,6 +429,25 @@ describe('车灯不影响原有车体预算', () => {
     const size = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3());
     expect(Math.round(size.z * 1000)).toBe(Math.round(v.lengthM * 1000));
     expect(Math.round(size.x * 1000)).toBe(Math.round(v.widthM * 1000));
+  });
+});
+
+describe('底栏窄屏布局（GPT 审核 #48）', () => {
+  // 测试环境没有布局引擎，这里只锁住静态约束；真机窄屏效果待真人试玩核验（见 docs/DRIVING_VIEW.md 待核实）
+  const rule = (sel: string) => {
+    const m = css.match(new RegExp(`(?:^|\\n)${sel.replace(/[.#]/g, '\\$&')} \\{([^}]*)\\}`));
+    expect(m, `style.css 缺少 ${sel} 规则`).not.toBeNull();
+    return m![1];
+  };
+  it('底栏宽度不超过视口，放不下时换行', () => {
+    const dock = rule('.dock');
+    expect(dock).toMatch(/max-width:\s*calc\(100vw - \d+px\)/);
+    expect(dock).toMatch(/flex-wrap:\s*wrap/);
+  });
+  it('视图按钮组与驾驶控件组都能换行；快捷键提示不再禁止换行', () => {
+    expect(rule('#views')).toMatch(/flex-wrap:\s*wrap/);
+    expect(rule('#controls')).toMatch(/flex-wrap:\s*wrap/);
+    expect(rule('.keys')).not.toMatch(/nowrap/);
   });
 });
 

@@ -26,6 +26,32 @@ export interface CamWant {
   rate: number;
   /** 近裁剪面 m */
   near: number;
+  /**
+   * 碰撞震屏作用在哪里：'pos' = 抖相机位置（第三人称视图）；'look' = 只抖看向点、相机位置不动
+   *（引擎盖视角：相机离机盖顶面只有 0.3 m，位置抖动最大 0.35 m 会把相机推进车体，GPT 审核 #48）。
+   */
+  shake: 'pos' | 'look';
+}
+
+/** 震屏最大位移 m（满强度时；强度按平方衰减），与改动前 scene.ts 的数值相同 */
+export const SHAKE_MAX_M = 0.35;
+
+/** 震屏的三轴单位抖动（每轴 ∈ [−1, 1]），t 为场景时间 s */
+export function shakeWave(t: number): V3 {
+  return [Math.sin(t * 61), Math.sin(t * 47 + 1.3), Math.cos(t * 53)];
+}
+
+/**
+ * 叠加震屏后的最终相机位置与看向点（scene.ts 每帧调用；纯函数便于测试）。
+ * amount ∈ [0, 1] 为当前震屏强度；位移幅度 = amount² × SHAKE_MAX_M。
+ */
+export function applyShake(pos: V3, look: V3, mode: CamWant['shake'], t: number, amount: number): { pos: V3; look: V3 } {
+  const a = Math.min(1, Math.max(0, amount)) ** 2 * SHAKE_MAX_M;
+  if (a <= 0) return { pos: [...pos], look: [...look] };
+  const w = shakeWave(t);
+  const off: V3 = [w[0] * a, w[1] * a, w[2] * a];
+  const add = (p: V3): V3 => [p[0] + off[0], p[1] + off[1], p[2] + off[2]];
+  return mode === 'pos' ? { pos: add(pos), look: [...look] } : { pos: [...pos], look: add(look) };
 }
 
 export const BASE_FOV = 45;
@@ -85,11 +111,11 @@ export function orbitCam(t: Target, o: Orbit): CamWant {
   const px = t.x + horiz * Math.cos(c.azimuth);
   const py = t.y + horiz * Math.sin(c.azimuth);
   const ph = Math.max(ORBIT.minHeight, ORBIT_LOOK_H + c.dist * Math.sin(c.pitch));
-  return { pos: [px, ph, -py], look: [t.x, ORBIT_LOOK_H, -t.y], fov: BASE_FOV, rate: ORBIT.rate, near: 0.1 };
+  return { pos: [px, ph, -py], look: [t.x, ORBIT_LOOK_H, -t.y], fov: BASE_FOV, rate: ORBIT.rate, near: 0.1, shake: 'pos' };
 }
 
 export function overviewCam(): CamWant {
-  return { pos: [0, 62, 38], look: [0, 0, 4], fov: BASE_FOV, rate: 3.5, near: 0.1 };
+  return { pos: [0, 62, 38], look: [0, 0, 4], fov: BASE_FOV, rate: 3.5, near: 0.1, shake: 'pos' };
 }
 
 /** 跟随：与改动前的参数相同（车后 13 + h、上方 7 + h，看向车前 4 m） */
@@ -103,6 +129,7 @@ export function followCam(t: Target): CamWant {
     fov: BASE_FOV,
     rate: 3.5,
     near: 0.1,
+    shake: 'pos',
   };
 }
 
@@ -138,7 +165,7 @@ export function hoodCam(t: Target, m: HoodMount): CamWant {
   const py = t.y + dy * m.forward;
   const ahead = 20;
   const lookH = m.height - ahead * Math.tan((HOOD.pitchDownDeg * Math.PI) / 180);
-  return { pos: [px, m.height, -py], look: [px + dx * ahead, lookH, -(py + dy * ahead)], fov: HOOD.fov, rate: Infinity, near: HOOD.near };
+  return { pos: [px, m.height, -py], look: [px + dx * ahead, lookH, -(py + dy * ahead)], fov: HOOD.fov, rate: Infinity, near: HOOD.near, shake: 'look' };
 }
 
 export function camFor(view: View, t: Target, o: Orbit, m: HoodMount): CamWant {

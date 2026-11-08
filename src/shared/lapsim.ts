@@ -1,7 +1,8 @@
 /**
  * 环路圈速仿真（issue #44 基线实测用）。与游戏用同一个 stepDrive / resolveDrive（同一套运动学、碰撞），
  * 由一个纯追踪（pure pursuit）驾驶员沿环路中心线逆时针开，油门踩到底，统计“越过起点线”的用时。
- * 这是对游戏物理本身的测量，不是真人手感实测；真人圈速只会更慢（会松油门、修方向）。
+ * 这是对游戏物理本身的测量，不是真人手感实测，也不是最短圈时（只沿中心线走，走线未优化）；
+ * 真人圈时与仿真值的关系待核实（见 docs/DRIVING_VIEW.md）。
  */
 import { loopLength, loopPose } from './camp';
 import { resolveDrive } from './collision';
