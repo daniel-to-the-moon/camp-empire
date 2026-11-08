@@ -110,6 +110,10 @@ jobs:
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
         with:
           path_to_bun_executable: ${{ steps.bun.outputs.path }}
+          # 云端审核（gpt-review.yml，GITHUB_TOKEN）需修改时直接 workflow_dispatch 本工作流，发起者是 github-actions 机器人；
+          # action 默认拒绝非人类发起（2026-11-08 #48 首次云端退回时被拒）。只对手动触发事件放行 github-actions，
+          # 其他事件（issue 打标签、评论）仍只认人类，不扩大触发面。
+          allowed_bots: ${{ github.event_name == 'workflow_dispatch' && 'github-actions' || '' }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
           # 完整输出：失败时能在日志里看到 Claude 的实际报错（用户 2026-11-07 同意开启）。
