@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { finalize, followUps, loadReview, pickPr, runDecide, trustedReviewer } from './cloud.mjs';
+import { finalize, followUps, loadReview, pickPr, recoverFollowUps, runDecide, trustedReviewer } from './cloud.mjs';
 import { touchesWorkflows, validateReview } from './review-format.mjs';
 import { decide, MAX_CI_RETRIES, roundsUsed } from './policy.mjs';
 import { marker } from './policy.mjs';
@@ -289,7 +289,7 @@ test('gpt-review.yml：无 pull_request 入口；每个任务都校验 github.re
   assert.doesNotMatch(on, /pull_request/);
   assert.doesNotMatch(yml, /github\.event\.pull_request/);
   const ifs = [...yml.matchAll(/^ {4}if: (.*)$/gm)].map((m) => m[1]);
-  assert.equal(ifs.length, 3);
+  assert.equal(ifs.length, 4); // select、review、decide、recover
   for (const c of ifs) assert.match(c, /github\.ref == 'refs\/heads\/main'/);
 });
 
@@ -341,16 +341,22 @@ test('gpt-review.yml：prompt 收到 select 选定的 head', () => {
  * decide 入口级测试：替换 GitHub / CI / git 接口，记录调用顺序。
  * states：prState 依次返回的 PR 状态（最后一个重复使用）；push：'ok' | 'fail'（mergeAndPush 是否抛错，成功前会先调用 beforePush）
  */
-function decideRig({ reviewResult = 'success', review = { verdict: 'approve', summary: 'ok', findings: [] }, ci = 'ok', states = [{}], push = 'ok', mainBase = B, limitMode } = {}) {
+function decideRig({ reviewResult = 'success', review = { verdict: 'approve', summary: 'ok', findings: [] }, ci = 'ok', states = [{}], push = 'ok', mainBase = B, limitMode, recordFails = false } = {}) {
   const calls = [];
+  const fio = followWorld(calls).io;
   const pr = { title: 't', headRefOid: H, headRefName: 'claude/x', isCrossRepository: false, baseRefName: 'main', state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', labels: [], markers: [], files: ['src/a.ts'] };
   let i = 0;
   const io = {
     key: KEY,
     model: 'm',
     limitMode,
+    followIo: () => fio,
     sleep: async () => {},
-    ghR: (args) => { calls.push(args.slice(0, 3).join(' ')); return args[0] === 'issue' && args[1] === 'create' ? `https://github.com/o/r/issues/${90 + calls.filter((c) => c.startsWith('issue create')).length}\n` : ''; },
+    ghR: (args) => {
+      calls.push(args.slice(0, 3).join(' '));
+      if (recordFails && args[0] === 'pr' && args[1] === 'comment' && /devloop-followups pr=/.test(bodies.at(-1) ?? '')) throw new Error('comment 502');
+      return '';
+    },
     prState: () => ({ ...pr, ...states[Math.min(i++, states.length - 1)] }),
     mainSha: () => mainBase,
     runCi: async (p) => { calls.push(`ci ${p.pr} ${p.head.slice(0, 4)} ${p.base.slice(0, 4)}`); return { status: ci, base: B, url: '' }; },
@@ -362,8 +368,9 @@ function decideRig({ reviewResult = 'success', review = { verdict: 'approve', su
       calls.push('pushed');
       return { sha: 'd'.repeat(40), branchDeleted: true };
     },
-    writeBody: () => 'body.md',
+    writeBody: (t) => { bodies.push(t); return 'body.md'; },
   };
+  const bodies = [];
   const files = { 'r.json': JSON.stringify(review), 'm.json': JSON.stringify({ pr: '7', head: H, base: B }) };
   const run = () => runDecide({ pr: 7, head: H, base: B, reviewResult, reviewPath: 'r.json', metaPath: 'm.json', read: (f) => files[f], exists: (f) => f in files }, io);
   return { calls, run };
@@ -444,26 +451,6 @@ test('runDecide：判定后、推送前另一审核方写入 changes → 不推�
   assert.ok(!merged(r.calls) && !deployed(r.calls));
 });
 
-test('runDecide auto：轮次用满、意见持平无 blocker → 合并、部署、评论，再逐条开 devloop issue 并按 issue 触发实现', async () => {
-  const changes = (h, n) => ({ state: 'changes', reason: `f${n}`, head: h, base: B });
-  const markers = ['1', '2', '3', '4', '5'].map((c, i) => changes(c.repeat(40), i === 4 ? 2 : 3));
-  const review = { verdict: 'request_changes', summary: 'x', findings: [fd2('major'), fd2('minor')] };
-  const r = decideRig({ review, limitMode: 'auto', states: [{ markers }] });
-  assert.equal((await r.run()).state, 'merged');
-  assert.deepEqual(r.calls, [
-    'ci 7 aaaa bbbb', 'fetch', 'merge bbbb+aaaa', 'pushed', 'workflow run ci.yml', 'pr comment 7',
-    'issue create --title', 'issue create --title', 'workflow run claude.yml', 'workflow run claude.yml', 'pr comment 7',
-  ]);
-  // 默认 needs-user：同样情形停下，不合并
-  const d = decideRig({ review, states: [{ markers }] });
-  assert.equal((await d.run()).state, 'stopped');
-  assert.ok(!merged(d.calls) && d.calls.includes('pr edit 7'));
-});
-
-function fd2(severity) {
-  return { severity, file: 'a.ts', line: 1, issue: '问题', suggestion: '建议' };
-}
-
 test('followUpIssues：每条意见一个 issue，含来源、位置、建议与验收标准；标题截断', async () => {
   const { followUpIssues } = await import('./review-format.mjs');
   const [a] = followUpIssues({ pr: 7, head: H, findings: [{ ...fd2('major'), issue: 'x'.repeat(300) }] });
@@ -476,21 +463,103 @@ test('gpt-review.yml：decide 读取仓库变量 ROUND_LIMIT_MODE', () => {
   assert.match(yml, /ROUND_LIMIT_MODE: \$\{\{ vars\.ROUND_LIMIT_MODE \}\}/);
 });
 
-test('finalize：issue 创建成功但响应丢失 → 重新核对找回编号，仍触发该 issue 的实现，不重复创建', async () => {
-  const { followUpItems } = await import('./followups.mjs');
-  const its = followUpItems({ pr: 7, head: H, findings: [fd2('major')] });
-  const created = [];
-  const calls = [];
-  const ghR = (args) => {
-    calls.push(args.slice(0, 4).join(' '));
-    if (args[0] === 'issue' && args[1] === 'create') {
-      created.push({ number: 300 + created.length, body: its[0].body });
-      throw new Error('socket hang up'); // 服务端已创建，客户端没拿到响应
-    }
-    return '';
+
+function fd2(severity) {
+  return { severity, file: 'a.ts', line: 1, issue: '问题', suggestion: '建议' };
+}
+
+/** 内存里的 GitHub：issues、触发记录、分支；calls 记录动作顺序 */
+function followWorld(calls = [], { now = 1e12, createPlan = [] } = {}) {
+  const w = { issues: [], dispatched: [], marks: [], done: [], branches: new Set(), now };
+  let c = 0;
+  w.io = {
+    list: () => w.issues.map((x) => ({ number: x.number, body: x.body })),
+    create: (it) => {
+      calls.push('issue create');
+      const mode = createPlan[c++] ?? 'ok';
+      if (mode === 'crash') throw new Error('runner cancelled');
+      w.issues.push({ number: 90 + w.issues.length, body: it.body, comments: [] });
+      if (mode === 'lost') throw new Error('socket hang up');
+      return `https://github.com/o/r/issues/${w.issues.at(-1).number}\n`;
+    },
+    issueInfo: (n) => {
+      const x = w.issues.find((i) => i.number === n);
+      return { state: 'OPEN', labels: ['devloop'], branch: w.branches.has(n), comments: x.comments };
+    },
+    markDispatch: (n) => { calls.push(`mark #${n}`); w.issues.find((i) => i.number === n).comments.push({ body: '<!-- devloop-dispatch pr=7 -->', createdAt: new Date(w.now).toISOString() }); },
+    dispatch: (n) => { calls.push(`dispatch #${n}`); w.dispatched.push(n); },
+    done: (numbers) => { calls.push('done'); w.done.push(numbers); },
+    now: () => w.now,
+    sleep: async () => {},
   };
-  await finalize({ ghR, pr: 7, state: 'merged', body: 'b', writeBody: () => 'f.md', issues: its, listIssues: () => created, sleep: async () => {}, delayMs: 0 });
-  assert.equal(created.length, 1);
-  assert.ok(calls.includes('workflow run claude.yml -f'));
-  assert.equal(calls.filter((c) => c.startsWith('issue create')).length, 1);
+  return w;
+}
+
+const limitMarkers = () => ['1', '2', '3', '4', '5'].map((c, i) => ({ state: 'changes', reason: `f${i === 4 ? 2 : 3}`, head: c.repeat(40), base: B }));
+const limitReview = { verdict: 'request_changes', summary: 'x', findings: [fd2('major'), fd2('minor')] };
+
+test('runDecide auto：合并前先在 PR 上登记遗留意见；合并后开 issue、先记标记再触发实现、最后发完成评论', async () => {
+  const r = decideRig({ review: limitReview, limitMode: 'auto', states: [{ markers: limitMarkers() }] });
+  assert.equal((await r.run()).state, 'merged');
+  assert.deepEqual(r.calls, [
+    'ci 7 aaaa bbbb', 'pr comment 7', 'fetch', 'merge bbbb+aaaa', 'pushed', 'workflow run ci.yml', 'pr comment 7',
+    'issue create', 'issue create', 'mark #90', 'dispatch #90', 'mark #91', 'dispatch #91', 'done',
+  ]);
+  // 默认 needs-user：同样情形停下，不合并、不登记
+  const d = decideRig({ review: limitReview, states: [{ markers: limitMarkers() }] });
+  assert.equal((await d.run()).state, 'stopped');
+  assert.ok(!merged(d.calls) && d.calls.includes('pr edit 7'));
+});
+
+test('runDecide auto：登记评论发不出去 → 不合并（retry:merge），不开 issue', async () => {
+  const r = decideRig({ review: limitReview, limitMode: 'auto', states: [{ markers: limitMarkers() }], recordFails: true });
+  assert.equal((await r.run()).state, 'retry');
+  assert.ok(!r.calls.some((c) => c.startsWith('merge')) && !r.calls.includes('issue create'));
+});
+
+test('recoverFollowUps：已合并、有登记、无完成标记 → 补齐；中途中断（部分 issue 已开）恢复后不重复开、不重复触发', async () => {
+  const { followUpItems, recordComment, doneComment } = await import('./followups.mjs');
+  const items = followUpItems({ pr: 7, head: H, findings: [fd2('major'), fd2('minor')] });
+  const rec = { author: 'github-actions', body: recordComment({ pr: 7, head: H, items }) };
+  const calls = [];
+  const w = followWorld(calls, { createPlan: ['ok', 'crash'] });
+  // 第一次：第二条创建时 runner 中断（completeFollowUps 记为失败，不发完成评论）
+  const first = await recoverFollowUps([{ number: 7, headRefOid: H, comments: [rec] }], () => w.io, { attempts: 1, delayMs: 0 });
+  assert.equal(first[0].failed.length, 1);
+  assert.equal(w.done.length, 0);
+  assert.deepEqual(w.dispatched, [90]); // 已开的那条照常触发
+  // 恢复：只补第二条；第一条 2 小时内有触发标记，不重复触发
+  const second = await recoverFollowUps([{ number: 7, headRefOid: H, comments: [rec] }], () => w.io, { attempts: 1, delayMs: 0 });
+  assert.deepEqual(second[0].failed, []);
+  assert.equal(w.issues.length, 2);
+  assert.deepEqual(w.dispatched, [90, 91]);
+  assert.equal(w.done.length, 1);
+  // 有完成标记 / 非可信作者的登记 / head 不符 → 跳过
+  const doneC = { author: 'github-actions', body: doneComment({ pr: 7, head: H, numbers: [90, 91] }) };
+  assert.equal((await recoverFollowUps([{ number: 7, headRefOid: H, comments: [rec, doneC] }], () => w.io)).length, 0);
+  assert.equal((await recoverFollowUps([{ number: 7, headRefOid: H, comments: [{ ...rec, author: 'someone' }] }], () => w.io)).length, 0);
+  assert.equal((await recoverFollowUps([{ number: 7, headRefOid: 'c'.repeat(40), comments: [rec] }], () => w.io)).length, 0);
+});
+
+test('shouldDispatch：已有分支或 needs-user 不触发；2 小时内有触发标记不重复；超过 2 小时仍无分支则补触发', async () => {
+  const { shouldDispatch, REDISPATCH_AFTER_MS } = await import('./followups.mjs');
+  const now = 1e12;
+  const mark = (ago) => ({ body: '<!-- devloop-dispatch pr=7 -->', createdAt: new Date(now - ago).toISOString() });
+  const base = { state: 'OPEN', labels: ['devloop'], branch: false, comments: [] };
+  assert.equal(shouldDispatch(base, now), true);
+  assert.equal(shouldDispatch({ ...base, branch: true }, now), false);
+  assert.equal(shouldDispatch({ ...base, labels: ['devloop', 'needs-user'] }, now), false);
+  assert.equal(shouldDispatch({ ...base, state: 'CLOSED' }, now), false);
+  assert.equal(shouldDispatch({ ...base, comments: [mark(60_000)] }, now), false);
+  assert.equal(shouldDispatch({ ...base, comments: [mark(REDISPATCH_AFTER_MS + 1)] }, now), true);
+});
+
+test('completeFollowUps：创建成功但响应丢失 → 找回编号，仍触发实现，不重复创建', async () => {
+  const { completeFollowUps, followUpItems } = await import('./followups.mjs');
+  const calls = [];
+  const w = followWorld(calls, { createPlan: ['lost'] });
+  const r = await completeFollowUps(followUpItems({ pr: 7, head: H, findings: [fd2('major')] }), w.io, { attempts: 3, delayMs: 0 });
+  assert.deepEqual(r.failed, []);
+  assert.equal(w.issues.length, 1);
+  assert.deepEqual(w.dispatched, [90]);
 });

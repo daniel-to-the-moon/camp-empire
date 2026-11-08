@@ -146,3 +146,23 @@ test('drainPending：两个处理者交错执行——不加锁会重复创建�
   assert.equal(g2.issues.length, items.length);
   assert.ok(!existsSync(join(d2, 'pr-7.json')));
 });
+
+test('drainPending：待办在合并前落盘——补开前核对合并状态：还开着留到下次；关闭未合并或以别的提交合并则撤回；已合并才补开', async () => {
+  const quiet = { flag: () => {}, comment: () => {}, log: () => {} };
+  const run = async (status) => {
+    const dir = mkdtempSync(join(root, 'st-'));
+    writeFileSync(join(dir, 'pr-7.json'), JSON.stringify({ pr: 7, head: H, items }));
+    const g = fakeGh();
+    await drainPending({ dir, io: { ...g, ...quiet, prStatus: async () => status } });
+    return { kept: existsSync(join(dir, 'pr-7.json')), created: g.issues.length };
+  };
+  assert.deepEqual(await run({ state: 'OPEN', headRefOid: H }), { kept: true, created: 0 });
+  assert.deepEqual(await run({ state: 'CLOSED', headRefOid: H }), { kept: false, created: 0 });
+  assert.deepEqual(await run({ state: 'MERGED', headRefOid: 'c'.repeat(40) }), { kept: false, created: 0 });
+  assert.deepEqual(await run({ state: 'MERGED', headRefOid: H }), { kept: false, created: 2 });
+  // 查询失败：保留，下一轮再试
+  const dir = mkdtempSync(join(root, 'st-'));
+  writeFileSync(join(dir, 'pr-7.json'), JSON.stringify({ pr: 7, head: H, items }));
+  await drainPending({ dir, io: { ...fakeGh(), ...quiet, prStatus: async () => { throw new Error('502'); } } });
+  assert.ok(existsSync(join(dir, 'pr-7.json')));
+});
