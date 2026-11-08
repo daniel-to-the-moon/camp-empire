@@ -42,7 +42,10 @@ export function formatReview({ key, model, where, pr, head, review, ci, d }) {
   ].join('\n');
 }
 
-/** PR 是否改动工作流文件：GITHUB_TOKEN 无 workflows 权限，这类 PR 云端合并不了，交给本机审核方 */
+/**
+ * PR 是否改动工作流文件：GITHUB_TOKEN 无 workflows 权限，这类 PR 云端合并不了，交给本机审核方。
+ * paths 须含重命名前后两个路径（prstate 从 REST 取 filename + previous_filename），移入、移出、删除都算。
+ */
 export function touchesWorkflows(paths) {
-  return paths.some((p) => p.startsWith('.github/workflows/'));
+  return paths.some((p) => String(p).replace(/^\.\//, '').startsWith('.github/workflows/'));
 }

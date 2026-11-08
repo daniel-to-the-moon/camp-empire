@@ -8,10 +8,12 @@
 import { parseMarkers } from './policy.mjs';
 import { CLOUD_REVIEWER_LOGINS } from './review-format.mjs';
 
-const FIELDS = 'title,body,headRefOid,headRefName,isCrossRepository,baseRefName,state,isDraft,mergeable,labels,comments,files';
+const FIELDS = 'title,body,headRefOid,headRefName,isCrossRepository,baseRefName,state,isDraft,mergeable,labels,comments';
 
 /**
  * gh(args) → stdout 字符串：原样执行 gh（不自动追加 -R）。
+ * files：改动涉及的全部路径，含重命名前的旧路径（REST previous_filename）——`gh pr view --json files` 只给新路径，
+ * 会漏掉“把 .github/workflows/x.yml 移出目录”这类改动（GPT 审核 #41 第 2 轮）。
  * 返回 prState(pr)：每次调用都重新查询审核方登录名与 PR。
  */
 export function createPrState({ gh, repo, key, whoami = () => gh(['api', 'user', '-q', '.login']).trim() }) {
@@ -22,6 +24,8 @@ export function createPrState({ gh, repo, key, whoami = () => gh(['api', 'user',
     const comments = m.comments.map((c) => ({ author: c.author?.login ?? '', body: c.body }));
     // 本机审核方（当前登录账号）与云端审核（github-actions）的签名标记都认：两者共用同一把签名密钥
     const reviewers = [reviewer, ...CLOUD_REVIEWER_LOGINS];
-    return { ...m, files: (m.files ?? []).map((f) => f.path), labels: m.labels.map((l) => l.name), markers: parseMarkers(comments, { key, reviewer: reviewers, pr }) };
+    const files = gh(['api', '--paginate', `repos/${repo}/pulls/${pr}/files?per_page=100`, '--jq', '.[] | .filename, (.previous_filename // empty)'])
+      .split('\n').map((l) => l.trim()).filter(Boolean);
+    return { ...m, files, labels: m.labels.map((l) => l.name), markers: parseMarkers(comments, { key, reviewer: reviewers, pr }) };
   };
 }

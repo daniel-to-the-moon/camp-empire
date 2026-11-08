@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { finalize, followUps, pickPr, trustedReviewer } from './cloud.mjs';
+import { finalize, followUps, loadReview, pickPr, trustedReviewer } from './cloud.mjs';
+import { touchesWorkflows } from './review-format.mjs';
 import { roundsUsed } from './policy.mjs';
 import { marker } from './policy.mjs';
 
@@ -40,7 +41,11 @@ function fakeGh(prs) {
   const dir = mkdtempSync(join(root, 'gh-'));
   const bin = join(dir, 'bin');
   mkdirSync(bin);
-  for (const p of prs) writeFileSync(join(dir, `pr-${p.number}.json`), JSON.stringify(p.view));
+  for (const p of prs) {
+    const { files, ...view } = p.view;
+    writeFileSync(join(dir, `pr-${p.number}.json`), JSON.stringify(view));
+    writeFileSync(join(dir, `files-${p.number}.txt`), files.join('\n') + '\n');
+  }
   writeFileSync(join(dir, 'list.json'), JSON.stringify(prs.map((p) => ({ number: p.number }))));
   writeFileSync(
     join(bin, 'gh'),
@@ -49,6 +54,7 @@ echo "$*" >> "${dir}/gh.log"
 if [ "$1 $2" = "api user" ]; then echo "Resource not accessible by integration" >&2; exit 1; fi
 if [ "$1 $2" = "pr list" ]; then cat "${dir}/list.json"; exit 0; fi
 if [ "$1 $2" = "pr view" ]; then cat "${dir}/pr-$3.json"; exit 0; fi
+if [ "$1 $2" = "api --paginate" ] && [[ "$3" =~ ^repos/o/r/pulls/([0-9]+)/files ]]; then cat "${dir}/files-\${BASH_REMATCH[1]}.txt"; exit 0; fi
 if [ "$1" = api ] && [[ "$2" == repos/*/commits/main ]]; then echo "${B}"; exit 0; fi
 echo "unexpected: $*" >&2; exit 1
 `,
@@ -59,7 +65,7 @@ echo "unexpected: $*" >&2; exit 1
 
 const view = (head, { files = ['src/a.ts'], comments = [] } = {}) => ({
   title: 't', body: 'b', headRefOid: head, headRefName: 'claude/x', isCrossRepository: false, baseRefName: 'main',
-  state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', labels: [], comments, files: files.map((path) => ({ path })),
+  state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', labels: [], comments, files,
 });
 const botReview = (pr, state, head) => ({ author: { login: 'github-actions' }, body: `执行者：GPT（云端）\n${marker(KEY, { pr, state, head, base: B })}` });
 
@@ -188,4 +194,57 @@ test('finalize retry / stopped：只发评论，无后续动作', async () => {
     await fin({ ghR: f.ghR, state });
     assert.deepEqual(f.calls, ['pr comment 7']);
   }
+});
+
+test('touchesWorkflows：工作流移入、移出、删除都算；普通文件改名不算', () => {
+  assert.equal(touchesWorkflows(['ci/old.yml', '.github/workflows/ci.yml']), true); // 移入（新路径在目录内）
+  assert.equal(touchesWorkflows(['archived/ci.yml', '.github/workflows/ci.yml']), true); // 移出（旧路径在目录内）
+  assert.equal(touchesWorkflows(['.github/workflows/old.yml']), true); // 删除
+  assert.equal(touchesWorkflows(['src/b.ts', 'src/a.ts', '.github/ISSUE_TEMPLATE/x.md']), false); // 普通改名
+});
+
+test('select：把工作流移出目录的 PR 不归云端审', () => {
+  const r = select([{ number: 3, view: view(H, { files: ['archived/ci.yml', '.github/workflows/ci.yml'] }) }]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(r.out, /^pr=\n/);
+  assert.match(r.log, /pulls\/3\/files/);
+});
+
+/** 内存里的产物：files[path] = 内容 */
+const mem = (files) => ({ read: (f) => files[f], exists: (f) => f in files });
+const artifact = (meta, review = { verdict: 'approve', summary: 's', findings: [] }) =>
+  mem({ 'r.json': JSON.stringify(review), 'm.json': JSON.stringify(meta) });
+const want = { pr: 7, head: H, base: B, reviewPath: 'r.json', metaPath: 'm.json' };
+
+test('loadReview：本次 review 任务未成功时，即使目录里有（上一次尝试的）approve 也不采用', () => {
+  for (const reviewResult of ['failure', 'cancelled', 'skipped', '']) {
+    const r = loadReview({ ...want, reviewResult, ...artifact({ pr: '7', head: H, base: B }) });
+    assert.equal(r.review, null);
+    assert.match(r.reviewError, /未成功/);
+  }
+});
+
+test('loadReview：元数据的 pr / head / base 任一与本次判定不符 → 不采用（跨尝试、head 变化、base 变化）', () => {
+  const other = 'c'.repeat(40);
+  for (const meta of [{ pr: '7', head: other, base: B }, { pr: '7', head: H, base: other }, { pr: '8', head: H, base: B }, { head: H, base: B }]) {
+    const r = loadReview({ ...want, reviewResult: 'success', ...artifact(meta) });
+    assert.equal(r.review, null, JSON.stringify(meta));
+    assert.match(r.reviewError, /不符/);
+  }
+});
+
+test('loadReview：缺产物或元数据、无法解析 → 不采用；全部一致才采用', () => {
+  assert.match(loadReview({ ...want, reviewResult: 'success', ...mem({ 'r.json': '{}' }) }).reviewError, /没有产出/);
+  assert.match(loadReview({ ...want, reviewResult: 'success', ...mem({ 'r.json': '{', 'm.json': '{}' }) }).reviewError, /无法解析/);
+  const ok = loadReview({ ...want, reviewResult: 'success', ...artifact({ pr: '7', head: H, base: B }) });
+  assert.equal(ok.review.verdict, 'approve');
+});
+
+test('gpt-review.yml：产物名带 run_attempt、由 review 输出传给 decide；review 未成功不下载；元数据由工作流步骤写入', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
+  assert.match(yml, /artifact=gpt-review-\$GITHUB_RUN_ID-\$GITHUB_RUN_ATTEMPT/);
+  assert.match(yml, /artifact: \$\{\{ steps\.wrap\.outputs\.artifact \}\}/);
+  assert.match(yml, /if: needs\.review\.result == 'success' && needs\.review\.outputs\.artifact != ''\n.*\n.*\n {10}name: \$\{\{ needs\.review\.outputs\.artifact \}\}/);
+  assert.match(yml, /--review-result "\$REVIEW_RESULT" --review review\/review\.json --meta review\/meta\.json/);
+  assert.doesNotMatch(yml, /name: gpt-review-\$\{\{ github\.run_id \}\}\n/);
 });

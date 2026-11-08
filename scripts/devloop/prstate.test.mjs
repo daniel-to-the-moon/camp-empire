@@ -19,6 +19,7 @@ function fakeGh(comments) {
   s.gh = (args) => {
     s.calls.push(args.join(' '));
     if (args[0] === 'api' && args[1] === 'user') return `${s.login}\n`;
+    if (args[0] === 'api' && args[1] === '--paginate' && args[2] === `repos/${REPO}/pulls/${PR}/files?per_page=100`) return (s.files ?? ['src/a.ts']).join('\n') + '\n';
     if (args[0] === 'pr' && args[1] === 'view') {
       assert.equal(args[2], String(PR));
       assert.deepEqual(args.slice(-2), ['-R', REPO]);
@@ -67,4 +68,12 @@ test('改名后其他账号发的同签名格式评论仍不被认可', () => {
   const m = prState(PR);
   assert.equal(m.markers.length, 0);
   assert.equal(wantsReview(m), true);
+});
+
+test('files：含重命名前的旧路径（REST previous_filename），用于识别移出工作流目录的改动', () => {
+  const f = fakeGh([]);
+  f.files = ['archived/ci.yml', '.github/workflows/ci.yml', 'src/a.ts'];
+  const prState = createPrState({ gh: f.gh, repo: REPO, key: KEY });
+  assert.deepEqual(prState(PR).files, ['archived/ci.yml', '.github/workflows/ci.yml', 'src/a.ts']);
+  assert.ok(f.calls.some((c) => c.includes('.previous_filename')));
 });

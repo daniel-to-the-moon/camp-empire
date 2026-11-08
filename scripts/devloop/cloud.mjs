@@ -5,7 +5,7 @@
  *
  *   node cloud.mjs select [--pr N]                      选出一个要审的 PR → $GITHUB_OUTPUT：pr、head、base
  *   node cloud.mjs prompt --pr N --base B --dir D --out F   在 PR 检出目录 D 里生成审核提示词
- *   node cloud.mjs decide --pr N --head H --base B [--review review.json]   跑 CI、判定、合并或退回、评论、触发后续
+ *   node cloud.mjs decide --pr N --head H --base B --review-result R [--review review.json --meta meta.json]   跑 CI、判定、合并或退回、评论、触发后续
  *
  * 分工：云端只审“不改 .github/workflows/”的 PR（GITHUB_TOKEN 无 workflows 权限，合并不了这类 PR），这类交给本机审核方。
  * 环境：GH_TOKEN（gh 使用）、REPO、DEVLOOP_MARKER_KEY、GPT_MODEL（仅用于评论里标注模型名）。
@@ -102,6 +102,31 @@ export async function finalize({ ghR, pr, state, body, writeBody, attempts = 3, 
   throw new Error(`后续动作失败：${failed.map((f) => f.label).join('、')}`);
 }
 
+/**
+ * 读取本次 review 任务的结论，并逐项核对它属于本次判定（GPT 审核 #41 第 2 轮）：
+ * - review 任务本次没成功（reviewResult ≠ success）→ 一律不读结论，按基础设施问题处理；
+ *   GitHub 重跑保留 run_id，若按固定名字下载，可能拿到上一次尝试、针对旧提交的 approve；
+ * - 产物元数据（review 任务里由工作流步骤、而非模型写入）的 pr / head / base 必须与本次判定一致。
+ * 返回 { review, reviewError }；review 为 null 时 reviewError 说明原因。
+ */
+export function loadReview({ reviewResult, reviewPath, metaPath, pr, head, base, read = (f) => readFileSync(f, 'utf8'), exists = existsSync }) {
+  if (reviewResult !== 'success') return { review: null, reviewError: `GPT 审核任务本次未成功（${reviewResult || '未知'}），不采用任何旧结论` };
+  if (!metaPath || !exists(metaPath) || !reviewPath || !exists(reviewPath)) return { review: null, reviewError: 'GPT 审核任务没有产出结论' };
+  let meta;
+  let review;
+  try {
+    meta = JSON.parse(read(metaPath));
+    review = JSON.parse(read(reviewPath));
+  } catch (e) {
+    return { review: null, reviewError: `GPT 结论无法解析：${e.message}` };
+  }
+  const want = { pr: String(pr), head, base };
+  for (const k of Object.keys(want)) {
+    if (String(meta[k] ?? '') !== want[k]) return { review: null, reviewError: `GPT 结论与本次判定不符（${k}：${String(meta[k] ?? '').slice(0, 12)} ≠ ${want[k].slice(0, 12)}）` };
+  }
+  return { review, reviewError: '' };
+}
+
 function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : undefined;
@@ -140,16 +165,7 @@ async function main() {
     const pr = Number(arg('pr'));
     const head = arg('head');
     const base = arg('base');
-    const reviewPath = arg('review');
-    let review = null;
-    let reviewError = 'GPT 审核任务没有产出结论';
-    if (reviewPath && existsSync(reviewPath)) {
-      try {
-        review = JSON.parse(readFileSync(reviewPath, 'utf8'));
-      } catch (e) {
-        reviewError = `GPT 结论无法解析：${e.message}`;
-      }
-    }
+    const { review, reviewError } = loadReview({ reviewResult: arg('review-result'), reviewPath: arg('review'), metaPath: arg('meta'), pr, head, base });
     const ciIo = {
       dispatch: async ({ pr: p, head: h, base: b, nonce }) => ghR(['workflow', 'run', 'ci.yml', '--ref', 'main', '-f', `pr=${p}`, '-f', `head=${h}`, '-f', `base=${b}`, '-f', `nonce=${nonce}`]),
       listDispatchRuns: async () => JSON.parse(ghR(['run', 'list', '--workflow', 'ci.yml', '--event', 'workflow_dispatch', '--limit', '30', '--json', 'displayTitle,status,conclusion,url'])),
