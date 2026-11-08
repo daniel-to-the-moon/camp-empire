@@ -30,6 +30,8 @@ export function limitMode(v) {
 }
 export const SKIP_LABELS = ['needs-user', 'hold'];
 const TERMINAL = new Set(['changes', 'merged', 'stopped']);
+/** 判定结论是否为终态（该 head 之后不再审）：终态时保留判定权领取，见 gitops.mjs claimDecision（#42） */
+export const isTerminalState = (state) => TERMINAL.has(state);
 const REVIEW_PREFIX = '执行者：GPT';
 
 function sign(key, pr, state, head, base) {

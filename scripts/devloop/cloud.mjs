@@ -16,8 +16,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCi } from './ci.mjs';
-import { mergeAndPush } from './gitops.mjs';
-import { decide, eligible, hasTerminal, lastFindings, limitMode, roundsUsed, shouldReview } from './policy.mjs';
+import { claimDecision, mergeAndPush, pruneClaims } from './gitops.mjs';
+import { decide, eligible, hasTerminal, isTerminalState, lastFindings, limitMode, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
 import { ensureFollowUps, followUpItems } from './followups.mjs';
 import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
@@ -99,7 +99,7 @@ export async function finalize({ ghR, pr, state, body, writeBody, issues = [], l
       }, { attempts, delayMs });
       for (const f of r.failed) failed.push({ label: '开遗留意见 issue', cmd: `手动补开 devloop issue，正文末尾附 <!-- devloop-followup key=${f.key} -->（已有同标识的 issue 则不必再开）`, err: f.err });
       // 对本次确认存在的全部遗留 issue 触发实现，包括“创建成功但响应丢失、重新核对时找回”的那些（它们不在 created 里，
-      // 但同样从未触发过）。finalize 对同一提交只运行一次（判定前有终态去重），所以这里不会重复启动。
+      // 但同样从未触发过）。finalize 对同一提交只运行一次（判定前原子领取判定权、再查终态，#42），所以这里不会重复启动。
       const all = Object.values(r.numbers);
       for (const n of all) await tryDo(`触发 issue #${n} 的实现`, ['workflow', 'run', 'claude.yml', '-f', `issue=${n}`]);
       if (all.length) await tryDo('发遗留意见清单', ['pr', 'comment', String(pr), '--body-file', writeBody(`执行者：devloop（云端审核）\n\n遗留意见已转为 devloop issue：${all.map((n) => `#${n}`).join('、')}`)]);
@@ -148,12 +148,27 @@ export function loadReview({ reviewResult, reviewPath, metaPath, pr, head, base,
 
 /**
  * decide 编排（入口级测试见 cloud.test.mjs，GPT 审核 #41 第 5 轮）：读结论 → CI → 重新核对 PR → 判定 → 合并推送 → 评论与后续。
- * io：{ key, model, limitMode?, ghR, prState, mainSha, runCi({pr,head,base}), fetch(pr), mergeAndPush(opts), writeBody, sleep? }
+ * io：{ key, model, limitMode?, ghR, prState, mainSha, runCi({pr,head,base}), claim({pr,head}), fetch(pr), mergeAndPush(opts), writeBody, sleep? }
+ * claim 返回 claimDecision（gitops.mjs）的结果；判定、合并、评论、后续触发都在持有领取期间完成，结束后（含异常）释放。
  * 返回 { state, ci?, verdict?, reason? }；跳过时不评论、不触发任何后续。
  */
 export async function runDecide({ pr, head, base, reviewResult, reviewPath, metaPath, read, exists }, io) {
   const { review, reviewError } = loadReview({ reviewResult, reviewPath, metaPath, pr, head, base, ...(read ? { read } : {}), ...(exists ? { exists } : {}) });
   const ci = await io.runCi({ pr, head, base });
+  // 先原子领取该 PR/head 的判定权，再读 PR 状态（#42）：领取后才读，终态检查才可靠；领取失败 → 跳过，不评论、不触发
+  const claim = io.claim({ pr, head });
+  if (!claim.ok) return { state: 'skipped', reason: claim.reason };
+  let result;
+  try {
+    result = await decideClaimed({ pr, head, review, reviewError, ci }, io);
+    return result;
+  } finally {
+    // 终态保留领取（晚到的一方即使读到旧的评论列表也领取不到）；retry / 跳过 / 异常则释放，下一轮可重新领取
+    if (!result || !isTerminalState(result.state)) claim.release();
+  }
+}
+
+async function decideClaimed({ pr, head, review, reviewError, ci }, io) {
   const now = io.prState(pr);
   if (now.headRefOid !== head) return { state: 'skipped', reason: `审核期间有新提交（${head.slice(0, 8)} → ${now.headRefOid.slice(0, 8)}）` };
   if (touchesWorkflows(now.files)) return { state: 'skipped', reason: '改动工作流文件，交给本机审核方' };
@@ -272,6 +287,7 @@ async function main() {
         prState,
         mainSha,
         runCi: (p) => runCi({ ...p, io: ciIo, timeoutMs: 30 * 60_000 }),
+        claim: ({ pr, head }) => claimDecision({ repoDir: process.cwd(), pr, head, holder: `cloud-run-${process.env.GITHUB_RUN_ID ?? 'manual'}` }),
         fetch: (pr) => sh('git', ['fetch', '-q', 'origin', 'main', `pull/${pr}/head`]),
         mergeAndPush: (opts) => mergeAndPush({ repoDir: process.cwd(), home: mkdtempSync(join(tmpdir(), 'cloud-merge-')), ...opts }),
         writeBody: (text) => {
@@ -281,6 +297,14 @@ async function main() {
         },
       },
     );
+    // 清理已合并 / 关闭 PR 的判定权领取引用；失败只记日志，不影响本次判定结果
+    try {
+      const openPrs = new Set(JSON.parse(ghR(['pr', 'list', '--state', 'open', '--json', 'number', '--limit', '500'])).map((p) => p.number));
+      const removed = pruneClaims({ repoDir: process.cwd(), isOpen: (n) => openPrs.has(n) });
+      if (removed.length) console.error(`[cloud-review] 清理领取引用：${removed.join(' ')}`);
+    } catch (e) {
+      console.error(`[cloud-review] 清理领取引用失败（下次再试）：${String(e.message).split('\n')[0]}`);
+    }
     return out(r);
   }
   throw new Error('用法：cloud.mjs select|prompt|decide …');

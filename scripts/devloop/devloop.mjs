@@ -19,8 +19,8 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, wr
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCi } from './ci.mjs';
-import { acquireLock, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
-import { decide, eligible, hasTerminal, lastFindings, limitMode, roundsUsed, shouldReview } from './policy.mjs';
+import { acquireLock, claimDecision, mergeAndPush, pruneClaims, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
+import { decide, eligible, hasTerminal, isTerminalState, lastFindings, limitMode, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
 import { drainPending, followUpItems } from './followups.mjs';
 import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
@@ -137,6 +137,28 @@ async function reviewLocked(pr, { merge }) {
   }
   const ci = await ciPromise;
 
+  // 与云端审核方共享的原子领取（#42）：端口锁只管本机进程，领取引用在远端、两边互斥；领取之后才读 PR 状态做终态检查
+  const claim = claimDecision({ repoDir: REPO_DIR, pr, head, holder: `local-${process.pid}` });
+  if (!claim.ok) {
+    log(`#${pr} ${claim.reason}，本轮跳过`);
+    return { pr, skipped: 'claimed by another reviewer' };
+  }
+  let d;
+  try {
+    d = decideClaimed({ pr, head, rv, reviewError, ci, merge });
+  } finally {
+    // 终态保留领取（晚到的一方即使读到旧的评论列表也领取不到）；retry / 跳过 / 异常则释放，下一轮可重新领取
+    if (!d || !isTerminalState(d.state)) claim.release();
+  }
+  if (d.skipped) return d;
+  await processPending({ locked: true });
+  const result = { pr, head, state: d.state, ci: ci.status, verdict: rv?.verdict ?? 'error', findings: rv?.findings.length ?? 0 };
+  console.log(JSON.stringify(result));
+  return result;
+}
+
+/** 持有判定权期间：复查 → 判定 → 合并 → 评论（遗留意见待办落盘）。返回 { pr, skipped } 或判定结果 d */
+function decideClaimed({ pr, head, rv, reviewError, ci, merge }) {
   const now = prState(pr);
   if (now.headRefOid !== head) {
     log(`#${pr} 审核期间有新提交（${head.slice(0, 8)} → ${now.headRefOid.slice(0, 8)}），本轮作废`);
@@ -191,10 +213,7 @@ async function reviewLocked(pr, { merge }) {
     if (d.state !== 'merged') throw e;
     log(`#${pr} 已合并，但审核评论发送失败：${e.message.split('\n')[0]}`);
   }
-  await processPending({ locked: true });
-  const result = { pr, head, state: d.state, ci: ci.status, verdict: rv?.verdict ?? 'error', findings: rv?.findings.length ?? 0 };
-  console.log(JSON.stringify(result));
-  return result;
+  return d;
 }
 
 /** 遗留意见待办清单：<HOME>/followups/pr-<N>.json；全部开成功才删除，否则每轮 watch 继续补（幂等，不会重复开） */
@@ -248,6 +267,13 @@ async function watch(intervalSec) {
     try {
       await processPending(); // 已合并 PR 的遗留意见 issue 没开齐的，每轮继续补
       const prs = JSON.parse(gh(['pr', 'list', '--state', 'open', '--base', 'main', '--json', 'number', '--limit', '50']));
+      // 清理已合并 / 关闭 PR 的判定权领取引用（#42）；以全部打开的 PR（不限目标分支）为准，失败只记日志
+      try {
+        const openPrs = new Set(JSON.parse(gh(['pr', 'list', '--state', 'open', '--json', 'number', '--limit', '500'])).map((p) => p.number));
+        for (const ref of pruneClaims({ repoDir: REPO_DIR, isOpen: (n) => openPrs.has(n) })) log(`清理领取引用 ${ref}`);
+      } catch (e) {
+        log(`清理领取引用失败（下轮再试）：${e.message.split('\n')[0]}`);
+      }
       for (const { number } of prs.sort((a, b) => a.number - b.number)) {
         const m = prState(number);
         if (!shouldReview({ head: m.headRefOid, labels: m.labels, markers: m.markers, pr: m })) continue;

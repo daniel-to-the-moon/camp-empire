@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
-import { acquireLock, git, matchPrRun, mergeAndPush, reviewCacheKey } from './gitops.mjs';
+import { acquireLock, claimDecision, claimRef, git, matchPrRun, mergeAndPush, pruneClaims, reviewCacheKey } from './gitops.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'devloop-gitops-'));
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -131,4 +131,77 @@ test('进程锁：同时只有一个持有者；8 个进程并发抢锁不重叠
   const again = await acquireLock(port);
   assert.ok(again);
   await again();
+});
+
+// —— 判定权领取（#42）：两个克隆模拟本机审核方与云端审核方，共用同一远端 ——
+function twoReviewers() {
+  const t = setup();
+  const other = `${t.dir}-other`;
+  execFileSync('git', ['clone', '-q', t.remote, other]);
+  return { ...t, other };
+}
+
+test('claimDecision：双方都读到“无终态”后先后领取，只有先到的一方成功；释放后另一方才能领取', () => {
+  const t = twoReviewers();
+  const a = claimDecision({ repoDir: t.dir, pr: 7, head: t.head, holder: 'local-1' });
+  const b = claimDecision({ repoDir: t.other, pr: 7, head: t.head, holder: 'cloud-run-9' });
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, false);
+  assert.match(b.reason, /local-1/);
+  assert.equal(t.remoteRef(claimRef(7, t.head)), a.sha);
+  // 领取提交是空树根提交：不带任何文件、无父提交
+  assert.equal(git(['ls-tree', a.sha], t.remote), '');
+  assert.throws(() => t.remoteRef(`${a.sha}^1`));
+  assert.equal(a.release(), true);
+  assert.throws(() => t.remoteRef(claimRef(7, t.head)));
+  assert.equal(claimDecision({ repoDir: t.other, pr: 7, head: t.head, holder: 'cloud-run-9' }).ok, true);
+  // 不同 PR / head 互不影响
+  assert.equal(claimDecision({ repoDir: t.dir, pr: 8, head: t.head, holder: 'local-1' }).ok, true);
+  assert.equal(claimDecision({ repoDir: t.dir, pr: 7, head: t.base, holder: 'local-1' }).ok, true);
+});
+
+test('claimDecision：两个进程真正同时领取，恰好一方成功（重复 3 次）', async () => {
+  const t = twoReviewers();
+  const mod = JSON.stringify(new URL('./gitops.mjs', import.meta.url).href);
+  const run = (dir, holder) => new Promise((resolve) => {
+    const code = `import { claimDecision } from ${mod}; console.log(String(claimDecision({ repoDir: ${JSON.stringify(dir)}, pr: 5, head: ${JSON.stringify(t.head)}, holder: ${JSON.stringify(holder)} }).ok));`;
+    const p = spawn(process.execPath, ['--input-type=module', '-e', code]);
+    let out = '';
+    p.stdout.on('data', (d) => { out += d; });
+    p.on('close', () => resolve(out.trim()));
+  });
+  for (let i = 0; i < 3; i++) {
+    const results = await Promise.all([run(t.dir, 'local'), run(t.other, 'cloud')]);
+    assert.deepEqual(results.sort(), ['false', 'true'], `第 ${i + 1} 次`);
+    git(['push', '-q', 'origin', `:${claimRef(5, t.head)}`], t.dir);
+  }
+});
+
+test('claimDecision：持有方崩溃留下的过期领取可被原子接管；未过期不接管；原持有方之后的释放不会删掉新领取', () => {
+  const t = twoReviewers();
+  const t0 = 1_800_000_000_000;
+  const a = claimDecision({ repoDir: t.dir, pr: 7, head: t.head, holder: 'local-1', now: () => t0 });
+  assert.equal(claimDecision({ repoDir: t.other, pr: 7, head: t.head, holder: 'cloud', now: () => t0 + 29 * 60_000 }).ok, false);
+  const b = claimDecision({ repoDir: t.other, pr: 7, head: t.head, holder: 'cloud', now: () => t0 + 31 * 60_000 });
+  assert.equal(b.ok, true);
+  assert.equal(b.takeover, true);
+  assert.equal(a.release(), false);
+  assert.equal(t.remoteRef(claimRef(7, t.head)), b.sha);
+});
+
+test('pruneClaims：只删除已不再打开的 PR 的领取引用', () => {
+  const t = twoReviewers();
+  claimDecision({ repoDir: t.dir, pr: 7, head: t.head, holder: 'a' });
+  claimDecision({ repoDir: t.dir, pr: 8, head: t.head, holder: 'a' });
+  claimDecision({ repoDir: t.dir, pr: 8, head: t.base, holder: 'a' });
+  const removed = pruneClaims({ repoDir: t.other, isOpen: (n) => n === 7 });
+  assert.deepEqual(removed.sort(), [claimRef(8, t.base), claimRef(8, t.head)].sort());
+  assert.ok(t.remoteRef(claimRef(7, t.head)));
+  assert.throws(() => t.remoteRef(claimRef(8, t.head)));
+  assert.deepEqual(pruneClaims({ repoDir: t.other, isOpen: () => true }), []);
+});
+
+test('claimDecision：推送本身出错（远端不可用）→ 抛错，不当作“他方已领取”静默跳过', () => {
+  const t = twoReviewers();
+  assert.throws(() => claimDecision({ repoDir: t.dir, remote: join(root, 'no-such-remote.git'), pr: 7, head: t.head, holder: 'x' }), /推送本身出错|ls-remote|Command failed/);
 });

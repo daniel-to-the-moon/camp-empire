@@ -31,7 +31,7 @@ Muse 验收 / 讨论 ──► acceptance / proposal issue ──► 用户确�
 | `scripts/devloop/devloop.mjs` | 用户 Mac | `watch`：常驻审核；`review <PR>`：手动审核一次 |
 | `scripts/devloop/policy.mjs`（+ `policy.test.mjs`） | — | 合并决策与评论标记（CI 里用 `node --test` 自测） |
 | `scripts/devloop/prstate.mjs`（+ `prstate.test.mjs`） | — | 读取 PR 状态与审核方标记；审核方账号每次重新查询（假 gh 模拟账号改名做回归测试） |
-| `scripts/devloop/gitops.mjs`（+ `gitops.test.mjs`） | — | 合并推送、删分支、CI 运行匹配、进程锁（本地临时仓库集成测试） |
+| `scripts/devloop/gitops.mjs`（+ `gitops.test.mjs`） | — | 合并推送、删分支、CI 运行匹配、进程锁、本机与云端共享的判定权领取（本地临时仓库集成测试） |
 | `scripts/devloop/ci.mjs`（+ `ci.test.mjs`） | — | 触发与等待 CI；任何查询异常都转为“基础设施问题”，不向外抛 |
 | `scripts/devloop/review-prompt.md`、`review-schema.json` | — | GPT 审核必查项与结构化结论格式 |
 | `.github/workflows/ci.yml` | GitHub Actions | devloop 触发：PR 合并到指定 main 后测试；人工 PR；main 构建并上传发布产物 |
@@ -91,7 +91,13 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 - **凭据**：`OPENAI_API_KEY`、`GPT_RESPONSES_ENDPOINT`、`GPT_MODEL`（与讨论评审共用）；签名密钥 `DEVLOOP_MARKER_KEY` 与本机 `../ce-devloop/marker.key` 相同，两边的审核记录互认、轮次连续计数。
 - **信任边界**：不设 `pull_request` 入口——那会用 PR 分支上的工作流定义运行，PR 能改 YAML 在过滤前读到签名密钥、或改写有写权限的 `decide`。定时任务只用 main 上的定义；手动触发时各任务校验 `github.ref == refs/heads/main`。
   残余风险：有仓库写权限、且能推送 `.github/workflows/` 改动的账号，可以推一个改过 YAML 的分支再对它手动触发，从而读到仓库级 secret。云端 Claude 用的 `GITHUB_TOKEN` 无 workflows 权限，推不了这类分支；真正隔离需把 `DEVLOOP_MARKER_KEY` 移进只允许 main 部署的 environment（私有仓库可能需要付费套餐），**待用户决定**。
-- **去重**：判定前与推送前都检查当前提交是否已有终态标记（`hasTerminal`）；decide 重放、或本机与云端重叠审核同一提交时，后到的一方跳过，不重复评论、不触发修复、不合并。
+- **去重：原子领取判定权**（#42）：只靠“读后检查终态标记”挡不住两方同时读到“无终态”（`CLOUD_REVIEW` 未开时手动触发云端审核、开关切换瞬间、本机查询变量失败按未开启处理），云端 concurrency 与本机端口锁也不互通。现在本机与云端在 CI 结束后、读 PR 状态之前，都先在远端创建领取引用 `refs/devloop/claim/pr-<N>-<head>`（`git push --force-with-lease=<ref>:`，引用不存在才成功；远端引用更新是原子的，同时推只有一方成功），领取失败即跳过本轮：不评论、不打标签、不合并、不触发。实现在 `gitops.mjs` 的 `claimDecision`。
+  - 领取之后再读 PR 状态，检查终态标记（`hasTerminal`）、判定、合并、评论、触发后续；推送前仍复查一次。
+  - 结论为终态（changes / merged / stopped）时**保留**领取：晚到的一方即使读到尚未刷新的评论列表，也领取不到。retry、领取后跳过、中途异常时按自己的 sha 租约释放，下一轮可重新领取。
+  - 领取提交是不含文件的空树根提交，不会被当作改动工作流而被 `GITHUB_TOKEN` 拒推；GitHub 是否接受 `GITHUB_TOKEN` 推送 `refs/devloop/*` 这类自定义引用，**待核实**（首次云端判定即可验证）。推送失败且远端并无该引用时直接报错（云端运行失败、本机日志可见），不会当作“他方已领取”静默跳过。
+  - 持有方崩溃留下的领取超过 30 分钟（**提案值，待核实**：持有期只含合并推送、评论、后续触发及其有界重试，按 finalize 3 次重试、5s/10s 退避估计为几分钟）可被原子接管（以旧 sha 为租约，仍只有一方成功）；接管后若该 head 已有终态标记照常跳过。
+  - 清理：云端每次 decide 结束、本机 watch 每轮，删除已合并或关闭 PR 的领取引用（`pruneClaims`）。手动查看：`git ls-remote origin 'refs/devloop/claim/*'`；手动删除：`git push origin :refs/devloop/claim/pr-<N>-<head>`。
+  - 测试：`gitops.test.mjs` 用本地临时远端验证两个进程同时领取恰好一方成功、过期接管、清理；`cloud.test.mjs` 用两个克隆共用一个远端，模拟本机与云端同时到达判定（含评论列表刷新滞后），只产生一条评论、一次修复触发，并有“无领取时会重复”的对照。本机 `devloop.mjs` 的领取顺序由源码顺序测试覆盖（该文件启动时读本机密钥，无法直接导入）。
 - **结论校验**：GPT 结论按 `review-schema.json` 校验（`validateReview`，云端与本机共用）；不合法（如 `findings` 不是数组、`verdict` 非法）按 GPT 审核失败处理，计入同一提交 3 次的停止上限。
 - **费用**：每次审核消耗 AI 网关的共享额度（金额待核实）；网关限速见上文“GPT 云端参与讨论”。
 
@@ -107,7 +113,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 推送前一刻会再读一次 PR（打开、非草稿、目标 main、头部未变、无暂停标签），任一不符即中止。这一刻到推送之间仍有一个很短的窗口（中间只有本地 git 操作和一次 git 推送，**时长未测量，待核实**）；要由 GitHub 强制“状态检查通过才能进 main”，需要分支保护（私有仓库需 GitHub Pro），**待用户决定**。
 
-同一时刻只允许一个 devloop 进程审核或合并（监听本机 127.0.0.1:47831 作为锁，进程退出由系统释放）；工作区目录每次唯一。git 操作在 `gitops.test.mjs` 里用本地临时仓库做了集成测试。
+同一时刻只允许一个 devloop 进程审核或合并（监听本机 127.0.0.1:47831 作为锁，进程退出由系统释放）；工作区目录每次唯一。本机与云端之间靠远端领取引用互斥（见第四节后“云端审核”的“去重”）。git 操作在 `gitops.test.mjs` 里用本地临时仓库做了集成测试。
 
 | 标签 | 含义 |
 |---|---|

@@ -8,6 +8,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { finalize, followUps, loadReview, pickPr, runDecide, trustedReviewer } from './cloud.mjs';
 import { touchesWorkflows, validateReview } from './review-format.mjs';
+import { claimDecision } from './gitops.mjs';
 import { decide, MAX_CI_RETRIES, roundsUsed } from './policy.mjs';
 import { marker } from './policy.mjs';
 
@@ -341,7 +342,7 @@ test('gpt-review.yml：prompt 收到 select 选定的 head', () => {
  * decide 入口级测试：替换 GitHub / CI / git 接口，记录调用顺序。
  * states：prState 依次返回的 PR 状态（最后一个重复使用）；push：'ok' | 'fail'（mergeAndPush 是否抛错，成功前会先调用 beforePush）
  */
-function decideRig({ reviewResult = 'success', review = { verdict: 'approve', summary: 'ok', findings: [] }, ci = 'ok', states = [{}], push = 'ok', mainBase = B, limitMode } = {}) {
+function decideRig({ reviewResult = 'success', review = { verdict: 'approve', summary: 'ok', findings: [] }, ci = 'ok', states = [{}], push = 'ok', mainBase = B, limitMode, claim = () => ({ ok: true, release: () => {} }), live = null, ciDelay = 0 } = {}) {
   const calls = [];
   const pr = { title: 't', headRefOid: H, headRefName: 'claude/x', isCrossRepository: false, baseRefName: 'main', state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', labels: [], markers: [], files: ['src/a.ts'] };
   let i = 0;
@@ -349,11 +350,12 @@ function decideRig({ reviewResult = 'success', review = { verdict: 'approve', su
     key: KEY,
     model: 'm',
     limitMode,
+    claim,
     sleep: async () => {},
-    ghR: (args) => { calls.push(args.slice(0, 3).join(' ')); return args[0] === 'issue' && args[1] === 'create' ? `https://github.com/o/r/issues/${90 + calls.filter((c) => c.startsWith('issue create')).length}\n` : ''; },
-    prState: () => ({ ...pr, ...states[Math.min(i++, states.length - 1)] }),
+    ghR: (args) => { calls.push(args.slice(0, 3).join(' ')); if (live && args[0] === 'pr' && args[1] === 'comment') live.onComment(); return args[0] === 'issue' && args[1] === 'create' ? `https://github.com/o/r/issues/${90 + calls.filter((c) => c.startsWith('issue create')).length}\n` : ''; },
+    prState: () => ({ ...pr, ...(live ? { markers: live.markers() } : {}), ...states[Math.min(i++, states.length - 1)] }),
     mainSha: () => mainBase,
-    runCi: async (p) => { calls.push(`ci ${p.pr} ${p.head.slice(0, 4)} ${p.base.slice(0, 4)}`); return { status: ci, base: B, url: '' }; },
+    runCi: async (p) => { calls.push(`ci ${p.pr} ${p.head.slice(0, 4)} ${p.base.slice(0, 4)}`); if (ciDelay) await new Promise((r) => setTimeout(r, ciDelay)); return { status: ci, base: B, url: '' }; },
     fetch: () => calls.push('fetch'),
     mergeAndPush: (opts) => {
       calls.push(`merge ${opts.base.slice(0, 4)}+${opts.head.slice(0, 4)}`);
@@ -442,6 +444,123 @@ test('runDecide：判定后、推送前另一审核方写入 changes → 不推�
   const r = decideRig({ states: [{}, { markers: [{ state: 'changes', reason: 'none', head: H, base: B }] }] });
   assert.equal((await r.run()).state, 'retry');
   assert.ok(!merged(r.calls) && !deployed(r.calls));
+});
+
+// —— 判定权领取（#42）——
+test('runDecide：领取失败（另一审核方持有）→ 跳过，不读 PR、不评论、不打标签、不触发', async () => {
+  const r = decideRig({ review: { verdict: 'request_changes', summary: 'x', findings: [] }, claim: () => ({ ok: false, reason: '判定权已被 local-1 领取' }) });
+  const out = await r.run();
+  assert.equal(out.state, 'skipped');
+  assert.match(out.reason, /local-1/);
+  assert.deepEqual(r.calls, ['ci 7 aaaa bbbb']);
+});
+
+test('runDecide：终态（changes / merged）保留领取；retry、领取后跳过、后续动作失败抛错时释放', async () => {
+  const log = [];
+  const claim = () => { log.push('claim'); return { ok: true, release: () => log.push('release') }; };
+  const a = decideRig({ review: { verdict: 'request_changes', summary: 'x', findings: [] }, claim });
+  assert.equal((await a.run()).state, 'changes');
+  assert.deepEqual(log, ['claim']);
+  log.length = 0;
+  assert.equal((await decideRig({ claim }).run()).state, 'merged');
+  assert.deepEqual(log, ['claim']);
+  log.length = 0;
+  assert.equal((await decideRig({ reviewResult: 'failure', claim }).run()).state, 'retry');
+  assert.deepEqual(log, ['claim', 'release']);
+  log.length = 0;
+  assert.equal((await decideRig({ claim, states: [{ markers: [{ state: 'changes', reason: 'none', head: H, base: B }] }] }).run()).state, 'skipped');
+  assert.deepEqual(log, ['claim', 'release']);
+  log.length = 0;
+  // 评论一直失败：finalize 加 needs-user 后抛错——领取仍被释放
+  await assert.rejects(runDecide(
+    { pr: 7, head: H, base: B, reviewResult: 'success', reviewPath: 'r.json', metaPath: 'm.json', read: (f) => ({ 'r.json': JSON.stringify({ verdict: 'request_changes', summary: 'x', findings: [] }), 'm.json': JSON.stringify({ pr: '7', head: H, base: B }) })[f], exists: () => true },
+    { key: KEY, model: 'm', claim, sleep: async () => {}, ghR: (args) => { if (args[1] === 'comment') throw new Error('boom'); return ''; },
+      prState: () => ({ title: 't', headRefOid: H, headRefName: 'x', baseRefName: 'main', state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', labels: [], markers: [], files: ['a'] }),
+      mainSha: () => B, runCi: async () => ({ status: 'ok', base: B, url: '' }), writeBody: () => 'b.md' },
+  ));
+  assert.deepEqual(log, ['claim', 'release']);
+});
+
+/**
+ * 交错场景（#42）：本机 watch 与云端 decide 同时处理同一 PR/head。触发途径——CLOUD_REVIEW 未开时手动触发云端审核、
+ * 开关切换瞬间、本机查询 CLOUD_REVIEW 失败按“未开启”处理——到这里都归结为“两方都在审同一 head，且审核前都读到无终态”。
+ * 两方共用一个真实 git 远端做领取（各自一个克隆）。评论发出后要过 lagMs 才出现在 PR 状态里（模拟两个进程真正并行、
+ * 以及评论列表刷新滞后），所以晚到的一方读到的仍是“无终态”——只靠读后检查会重复评论，必须靠领取挡住。
+ */
+function sharedWorld({ lagMs = 40, claimFor, commentState = 'changes' } = {}) {
+  const remote = join(root, `claims-${Math.random().toString(36).slice(2)}.git`);
+  spawnSync('git', ['init', '-q', '--bare', remote]);
+  const clone = (name) => {
+    const d = `${remote}-${name}`;
+    spawnSync('git', ['clone', '-q', remote, d]);
+    return d;
+  };
+  const markers = [];
+  const live = { markers: () => [...markers], onComment: () => setTimeout(() => markers.push({ state: commentState, reason: commentState === 'retry' ? 'infra' : 'f1', head: H, base: B }), lagMs) };
+  const reviewer = (holder, ciDelay, review = { verdict: 'request_changes', summary: 'x', findings: [] }) => {
+    const dir = clone(holder);
+    return decideRig({ review, live, ciDelay,
+      claim: claimFor ? claimFor(holder) : ({ pr, head }) => claimDecision({ repoDir: dir, pr, head, holder }) });
+  };
+  return { reviewer, remote };
+}
+const effects = (...rigs) => {
+  const all = rigs.flatMap((r) => r.calls);
+  return { comments: all.filter((c) => c === 'pr comment 7').length, fixes: all.filter((c) => c === 'workflow run claude.yml').length };
+};
+
+test('对照：没有领取（人人都“领取成功”）时，双方读到无终态会各发一条评论、各触发一次修复——这正是 #42 的问题', async () => {
+  const w = sharedWorld({ claimFor: () => () => ({ ok: true, release: () => {} }) });
+  const local = w.reviewer('local-0', 0);
+  const cloud = w.reviewer('cloud-run-0', 5);
+  await Promise.all([local.run(), cloud.run()]);
+  assert.deepEqual(effects(local, cloud), { comments: 2, fixes: 2 });
+});
+
+test('交错：本机与云端同时到达判定 → 只有一条有效评论、一次修复触发（手动触发 / 开关切换 / 变量查询失败）', async () => {
+  for (const [dl, dc] of [[0, 0], [0, 5], [5, 0]]) {
+    const w = sharedWorld();
+    const local = w.reviewer('local-1', dl);
+    const cloud = w.reviewer('cloud-run-1', dc);
+    const outs = await Promise.all([local.run(), cloud.run()]);
+    assert.deepEqual(outs.map((o) => o.state).sort(), ['changes', 'skipped'], `${dl}/${dc}`);
+    assert.deepEqual(effects(local, cloud), { comments: 1, fixes: 1 }, `${dl}/${dc}`);
+  }
+});
+
+test('交错：一方已完成判定后另一方才到达、评论列表尚未刷新 → 终态保留的领取挡住它；仍只有一条评论、一次触发', async () => {
+  const w = sharedWorld({ lagMs: 200 });
+  const first = w.reviewer('cloud-run-2', 0);
+  const late = w.reviewer('local-2', 30);
+  const outs = await Promise.all([first.run(), late.run()]);
+  assert.deepEqual(outs.map((o) => o.state), ['changes', 'skipped']);
+  assert.match(outs[1].reason, /cloud-run-2/);
+  assert.deepEqual(effects(first, late), { comments: 1, fixes: 1 });
+});
+
+test('交错：先到的一方结论为 retry（非终态）→ 释放领取，下一轮另一方可以领取并判定', async () => {
+  const w = sharedWorld({ lagMs: 0, commentState: 'retry' });
+  // 不符合 schema 的结论 → 按 GPT 审核失败处理 → retry:infra
+  const a = w.reviewer('cloud-run-3', 0, { verdict: 'error-not-valid' });
+  assert.equal((await a.run()).state, 'retry');
+  await new Promise((r) => setTimeout(r, 5)); // retry 评论已可见
+  const b = w.reviewer('local-3', 0);
+  assert.equal((await b.run()).state, 'changes');
+});
+
+test('devloop.mjs：本机在 CI 结束后、读 PR 状态做终态复查之前领取判定权，失败即跳过；判定与评论在 finally 释放之前', () => {
+  const src = readFileSync(join(HERE, 'devloop.mjs'), 'utf8');
+  const body = src.slice(src.indexOf('async function reviewLocked'));
+  const iCi = body.indexOf('await ciPromise');
+  const iClaim = body.indexOf('claimDecision(');
+  const iSkip = body.indexOf('if (!claim.ok)');
+  const iDecide = body.indexOf('decideClaimed(');
+  const iRelease = body.indexOf('claim.release()');
+  assert.ok(iCi > 0 && iCi < iClaim && iClaim < iSkip && iSkip < iDecide && iDecide < iRelease, '顺序：CI → 领取 → 失败跳过 → 判定 → 释放');
+  assert.match(body.slice(iDecide - 40, iRelease), /try \{[\s\S]*\} finally \{/);
+  const claimed = src.slice(src.indexOf('function decideClaimed'));
+  assert.ok(claimed.indexOf('prState(pr)') < claimed.indexOf('hasTerminal(now.markers, head)'));
+  assert.ok(claimed.indexOf('hasTerminal(now.markers, head)') < claimed.indexOf('comment(pr'));
 });
 
 test('runDecide auto：轮次用满、意见持平无 blocker → 合并、部署、评论，再逐条开 devloop issue 并按 issue 触发实现', async () => {
