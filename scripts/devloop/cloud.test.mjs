@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { finalize, followUps, loadReview, pickPr, trustedReviewer } from './cloud.mjs';
+import { finalize, followUps, loadReview, pickPr, runDecide, trustedReviewer } from './cloud.mjs';
 import { touchesWorkflows, validateReview } from './review-format.mjs';
 import { decide, MAX_CI_RETRIES, roundsUsed } from './policy.mjs';
 import { marker } from './policy.mjs';
@@ -335,4 +335,93 @@ test('prompt：PR 被暂时重置到本地已有的祖先（或检出与选定�
 test('gpt-review.yml：prompt 收到 select 选定的 head', () => {
   const yml = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
   assert.match(yml, /cloud\.mjs prompt --pr "\$\{\{ needs\.select\.outputs\.pr \}\}" --head "\$\{\{ needs\.select\.outputs\.head \}\}"/);
+});
+
+/**
+ * decide 入口级测试：替换 GitHub / CI / git 接口，记录调用顺序。
+ * states：prState 依次返回的 PR 状态（最后一个重复使用）；push：'ok' | 'fail'（mergeAndPush 是否抛错，成功前会先调用 beforePush）
+ */
+function decideRig({ reviewResult = 'success', review = { verdict: 'approve', summary: 'ok', findings: [] }, ci = 'ok', states = [{}], push = 'ok', mainBase = B } = {}) {
+  const calls = [];
+  const pr = { title: 't', headRefOid: H, headRefName: 'claude/x', isCrossRepository: false, baseRefName: 'main', state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', labels: [], markers: [], files: ['src/a.ts'] };
+  let i = 0;
+  const io = {
+    key: KEY,
+    model: 'm',
+    sleep: async () => {},
+    ghR: (args) => { calls.push(args.slice(0, 3).join(' ')); return ''; },
+    prState: () => ({ ...pr, ...states[Math.min(i++, states.length - 1)] }),
+    mainSha: () => mainBase,
+    runCi: async (p) => { calls.push(`ci ${p.pr} ${p.head.slice(0, 4)} ${p.base.slice(0, 4)}`); return { status: ci, base: B, url: '' }; },
+    fetch: () => calls.push('fetch'),
+    mergeAndPush: (opts) => {
+      calls.push(`merge ${opts.base.slice(0, 4)}+${opts.head.slice(0, 4)}`);
+      opts.beforePush();
+      if (push === 'fail') throw new Error('push rejected');
+      calls.push('pushed');
+      return { sha: 'd'.repeat(40), branchDeleted: true };
+    },
+    writeBody: () => 'body.md',
+  };
+  const files = { 'r.json': JSON.stringify(review), 'm.json': JSON.stringify({ pr: '7', head: H, base: B }) };
+  const run = () => runDecide({ pr: 7, head: H, base: B, reviewResult, reviewPath: 'r.json', metaPath: 'm.json', read: (f) => files[f], exists: (f) => f in files }, io);
+  return { calls, run };
+}
+const merged = (calls) => calls.includes('pushed');
+const deployed = (calls) => calls.some((c) => c.startsWith('workflow run ci.yml'));
+
+test('runDecide：审核与 CI 都通过 → 在测试过的 base 上合并，先部署再评论', async () => {
+  const r = decideRig();
+  const out = await r.run();
+  assert.equal(out.state, 'merged');
+  assert.deepEqual(r.calls, ['ci 7 aaaa bbbb', 'fetch', 'merge bbbb+aaaa', 'pushed', 'workflow run ci.yml', 'pr comment 7']);
+});
+
+test('runDecide：review 任务失败但 CI 成功 → 不合并、不部署，记基础设施重试并评论', async () => {
+  const r = decideRig({ reviewResult: 'failure' });
+  const out = await r.run();
+  assert.equal(out.state, 'retry');
+  assert.ok(!merged(r.calls) && !deployed(r.calls));
+  assert.ok(r.calls.includes('pr comment 7'));
+});
+
+test('runDecide：head 变化或改动工作流 → 跳过，不评论、不合并、不触发任何后续', async () => {
+  for (const st of [{ headRefOid: 'c'.repeat(40) }, { files: ['archived/ci.yml', '.github/workflows/ci.yml'] }]) {
+    const r = decideRig({ states: [st] });
+    assert.equal((await r.run()).state, 'skipped');
+    assert.deepEqual(r.calls, ['ci 7 aaaa bbbb']);
+  }
+});
+
+test('runDecide：暂停标签 → 不合并；推送前才出现暂停 / head 变化 / 改工作流 → 不推送、不部署', async () => {
+  const a = decideRig({ states: [{ labels: ['hold'] }] });
+  assert.equal((await a.run()).state, 'retry');
+  assert.ok(!a.calls.some((c) => c.startsWith('merge')) && !deployed(a.calls));
+  for (const late of [{ labels: ['hold'] }, { headRefOid: 'c'.repeat(40) }, { files: ['.github/workflows/x.yml'] }, { state: 'CLOSED' }]) {
+    const b = decideRig({ states: [{}, late] });
+    assert.equal((await b.run()).state, 'retry', JSON.stringify(late));
+    assert.ok(!merged(b.calls) && !deployed(b.calls), JSON.stringify(late));
+  }
+});
+
+test('runDecide：推送失败 → retry:merge，不部署', async () => {
+  const r = decideRig({ push: 'fail' });
+  assert.equal((await r.run()).state, 'retry');
+  assert.ok(!deployed(r.calls));
+  assert.ok(r.calls.includes('pr comment 7'));
+});
+
+test('runDecide：main 在测试后变化 → 不合并', async () => {
+  const r = decideRig({ mainBase: 'e'.repeat(40) });
+  assert.equal((await r.run()).state, 'retry');
+  assert.ok(!r.calls.some((c) => c.startsWith('merge')));
+});
+
+test('runDecide：需修改 → 先评论成功再触发云端修复；CI 失败同样退回', async () => {
+  const a = decideRig({ review: { verdict: 'request_changes', summary: 'x', findings: [] } });
+  assert.equal((await a.run()).state, 'changes');
+  assert.deepEqual(a.calls, ['ci 7 aaaa bbbb', 'pr comment 7', 'workflow run claude.yml']);
+  const b = decideRig({ ci: 'failed' });
+  assert.equal((await b.run()).state, 'changes');
+  assert.ok(!merged(b.calls) && !deployed(b.calls));
 });

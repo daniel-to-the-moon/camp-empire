@@ -130,6 +130,61 @@ export function loadReview({ reviewResult, reviewPath, metaPath, pr, head, base,
   return { review, reviewError: '' };
 }
 
+/**
+ * decide 编排（入口级测试见 cloud.test.mjs，GPT 审核 #41 第 5 轮）：读结论 → CI → 重新核对 PR → 判定 → 合并推送 → 评论与后续。
+ * io：{ key, model, ghR, prState, mainSha, runCi({pr,head,base}), fetch(pr), mergeAndPush(opts), writeBody, sleep? }
+ * 返回 { state, ci?, verdict?, reason? }；跳过时不评论、不触发任何后续。
+ */
+export async function runDecide({ pr, head, base, reviewResult, reviewPath, metaPath, read, exists }, io) {
+  const { review, reviewError } = loadReview({ reviewResult, reviewPath, metaPath, pr, head, base, ...(read ? { read } : {}), ...(exists ? { exists } : {}) });
+  const ci = await io.runCi({ pr, head, base });
+  const now = io.prState(pr);
+  if (now.headRefOid !== head) return { state: 'skipped', reason: `审核期间有新提交（${head.slice(0, 8)} → ${now.headRefOid.slice(0, 8)}）` };
+  if (touchesWorkflows(now.files)) return { state: 'skipped', reason: '改动工作流文件，交给本机审核方' };
+  const d = decide({
+    ci,
+    review,
+    now: { labels: now.labels, base: io.mainSha(), mergeable: now.mergeable, state: now.state, isDraft: now.isDraft, baseRefName: now.baseRefName },
+    roundsBefore: roundsUsed(now.markers),
+    retriesForHead: now.markers.filter((m) => m.head === head && m.state === 'retry' && m.reason === 'infra').length,
+    allowMerge: true,
+  });
+  if (d.addLabel) io.ghR(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
+  if (d.merge) {
+    try {
+      io.fetch(pr);
+      const { sha, branchDeleted } = io.mergeAndPush({
+        base: ci.base,
+        head,
+        message: `合并 PR #${pr}：${now.title}\n\ndevloop（云端审核）：GPT 审核通过，CI 在 ${ci.base.slice(0, 8)} + ${head.slice(0, 8)} 上测试通过。`,
+        branch: now.isCrossRepository ? null : now.headRefName,
+        beforePush: () => {
+          const last = io.prState(pr);
+          if (!eligible(last) || last.headRefOid !== head || last.labels.some((l) => l === 'hold' || l === 'needs-user') || touchesWorkflows(last.files)) throw new Error('推送前 PR 状态已变化');
+        },
+      });
+      d.text += `\n\n合并提交 \`${sha.slice(0, 8)}\`（父提交：main \`${ci.base.slice(0, 8)}\` + PR \`${head.slice(0, 8)}\`，与 CI 测试的组合一致）${branchDeleted ? '' : '；分支上有新提交或已删除，未删除分支'}。`;
+    } catch (e) {
+      d.state = 'retry';
+      d.reason = 'merge';
+      d.merge = false;
+      d.text = `审核与测试都通过，但合并未完成（${String(e.message).split('\n')[0]}），下一轮重试。`;
+    }
+  }
+  const body = formatReview({
+    key: io.key,
+    model: io.model,
+    where: '云端审核，openai/codex-action',
+    pr,
+    head,
+    review: review ?? { verdict: 'error', summary: `GPT 审核未能完成：${reviewError}`, findings: [] },
+    ci,
+    d,
+  });
+  await finalize({ ghR: io.ghR, pr, state: d.state, body, writeBody: io.writeBody, ...(io.sleep ? { sleep: io.sleep } : {}) });
+  return { state: d.state, ci: ci.status, verdict: review?.verdict ?? 'error' };
+}
+
 function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : undefined;
@@ -172,10 +227,6 @@ async function main() {
   }
 
   if (cmd === 'decide') {
-    const pr = Number(arg('pr'));
-    const head = arg('head');
-    const base = arg('base');
-    const { review, reviewError } = loadReview({ reviewResult: arg('review-result'), reviewPath: arg('review'), metaPath: arg('meta'), pr, head, base });
     const ciIo = {
       dispatch: async ({ pr: p, head: h, base: b, nonce }) => ghR(['workflow', 'run', 'ci.yml', '--ref', 'main', '-f', `pr=${p}`, '-f', `head=${h}`, '-f', `base=${b}`, '-f', `nonce=${nonce}`]),
       listDispatchRuns: async () => JSON.parse(ghR(['run', 'list', '--workflow', 'ci.yml', '--event', 'workflow_dispatch', '--limit', '30', '--json', 'displayTitle,status,conclusion,url'])),
@@ -183,59 +234,25 @@ async function main() {
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       now: () => Date.now(),
     };
-    const ci = await runCi({ pr, head, base, io: ciIo, timeoutMs: 30 * 60_000 });
-    const now = prState(pr);
-    if (now.headRefOid !== head) return out({ state: 'skipped', reason: `审核期间有新提交（${head.slice(0, 8)} → ${now.headRefOid.slice(0, 8)}）` });
-    if (touchesWorkflows(now.files)) return out({ state: 'skipped', reason: '改动工作流文件，交给本机审核方' });
-    const d = decide({
-      ci,
-      review,
-      now: { labels: now.labels, base: mainSha(), mergeable: now.mergeable, state: now.state, isDraft: now.isDraft, baseRefName: now.baseRefName },
-      roundsBefore: roundsUsed(now.markers),
-      retriesForHead: now.markers.filter((m) => m.head === head && m.state === 'retry' && m.reason === 'infra').length,
-      allowMerge: true,
-    });
-    if (d.addLabel) ghR(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
-    if (d.merge) {
-      try {
-        sh('git', ['fetch', '-q', 'origin', 'main', `pull/${pr}/head`]);
-        const { sha, branchDeleted } = mergeAndPush({
-          repoDir: process.cwd(),
-          home: mkdtempSync(join(tmpdir(), 'cloud-merge-')),
-          base: ci.base,
-          head,
-          message: `合并 PR #${pr}：${now.title}\n\ndevloop（云端审核）：GPT 审核通过，CI 在 ${ci.base.slice(0, 8)} + ${head.slice(0, 8)} 上测试通过。`,
-          branch: now.isCrossRepository ? null : now.headRefName,
-          beforePush: () => {
-            const last = prState(pr);
-            if (!eligible(last) || last.headRefOid !== head || last.labels.some((l) => l === 'hold' || l === 'needs-user')) throw new Error('推送前 PR 状态已变化');
-          },
-        });
-        d.text += `\n\n合并提交 \`${sha.slice(0, 8)}\`（父提交：main \`${ci.base.slice(0, 8)}\` + PR \`${head.slice(0, 8)}\`，与 CI 测试的组合一致）${branchDeleted ? '' : '；分支上有新提交或已删除，未删除分支'}。`;
-      } catch (e) {
-        d.state = 'retry';
-        d.reason = 'merge';
-        d.merge = false;
-        d.text = `审核与测试都通过，但合并未完成（${String(e.message).split('\n')[0]}），下一轮重试。`;
-      }
-    }
-    const body = formatReview({
-      key: KEY,
-      model: process.env.GPT_MODEL || 'GPT',
-      where: '云端审核，openai/codex-action',
-      pr,
-      head,
-      review: review ?? { verdict: 'error', summary: `GPT 审核未能完成：${reviewError}`, findings: [] },
-      ci,
-      d,
-    });
-    const writeBody = (text) => {
-      const f = join(mkdtempSync(join(tmpdir(), 'cloud-comment-')), 'c.md');
-      writeFileSync(f, text);
-      return f;
-    };
-    await finalize({ ghR, pr, state: d.state, body, writeBody });
-    return out({ state: d.state, ci: ci.status, verdict: review?.verdict ?? 'error' });
+    const r = await runDecide(
+      { pr: Number(arg('pr')), head: arg('head'), base: arg('base'), reviewResult: arg('review-result'), reviewPath: arg('review'), metaPath: arg('meta') },
+      {
+        key: KEY,
+        model: process.env.GPT_MODEL || 'GPT',
+        ghR,
+        prState,
+        mainSha,
+        runCi: (p) => runCi({ ...p, io: ciIo, timeoutMs: 30 * 60_000 }),
+        fetch: (pr) => sh('git', ['fetch', '-q', 'origin', 'main', `pull/${pr}/head`]),
+        mergeAndPush: (opts) => mergeAndPush({ repoDir: process.cwd(), home: mkdtempSync(join(tmpdir(), 'cloud-merge-')), ...opts }),
+        writeBody: (text) => {
+          const f = join(mkdtempSync(join(tmpdir(), 'cloud-comment-')), 'c.md');
+          writeFileSync(f, text);
+          return f;
+        },
+      },
+    );
+    return out(r);
   }
   throw new Error('用法：cloud.mjs select|prompt|decide …');
 }
