@@ -20,9 +20,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCi } from './ci.mjs';
 import { acquireLock, mergeAndPush, reviewCacheKey, uniqueDir, withWorktree } from './gitops.mjs';
-import { decide, eligible, hasTerminal, roundsUsed, shouldReview } from './policy.mjs';
+import { decide, eligible, hasTerminal, lastFindings, limitMode, roundsUsed, shouldReview } from './policy.mjs';
 import { createPrState } from './prstate.mjs';
-import { buildReviewPrompt, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
+import { buildReviewPrompt, followUpIssues, formatReview, touchesWorkflows, validateReview } from './review-format.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = resolve(HERE, '../..');
@@ -153,6 +153,8 @@ async function reviewLocked(pr, { merge }) {
     roundsBefore: roundsUsed(now.markers),
     retriesForHead: now.markers.filter((m) => m.head === head && m.state === 'retry' && m.reason === 'infra').length,
     allowMerge: merge,
+    mode: roundLimitMode(),
+    prevFindings: lastFindings(now.markers),
   });
   if (d.addLabel) gh(['pr', 'edit', String(pr), '--add-label', d.addLabel]);
   if (d.merge) {
@@ -181,9 +183,33 @@ async function reviewLocked(pr, { merge }) {
     }
   }
   comment(pr, format({ pr, head, review: rv ?? { verdict: 'error', summary: `GPT 审核未能完成：${reviewError}`, findings: [] }, ci, d }));
+  // auto 模式轮次用满合并：遗留意见逐条开 devloop issue（本机以用户账号打标签，会正常触发 claude.yml）
+  if (d.state === 'merged' && d.followUpFindings?.length) {
+    const urls = [];
+    for (const it of followUpIssues({ pr, head, findings: d.followUpFindings })) {
+      try {
+        const f = join(HOME, `issue-${pr}-${Date.now()}-${urls.length}.md`);
+        writeFileSync(f, it.body);
+        urls.push(gh(['issue', 'create', '--title', it.title, '--body-file', f, '--label', 'devloop']).trim());
+      } catch (e) {
+        log(`#${pr} 开遗留意见 issue 失败：${e.message.split('\n')[0]}`);
+        gh(['pr', 'edit', String(pr), '--add-label', 'needs-user']);
+      }
+    }
+    if (urls.length) comment(pr, `执行者：devloop\n\n遗留意见已转为 devloop issue：\n${urls.map((u) => `- ${u}`).join('\n')}`);
+  }
   const result = { pr, head, state: d.state, ci: ci.status, verdict: rv?.verdict ?? 'error', findings: rv?.findings.length ?? 0 };
   console.log(JSON.stringify(result));
   return result;
+}
+
+/** 轮次用满后的处理方式：仓库变量 ROUND_LIMIT_MODE（needs-user | auto），查询失败按 needs-user */
+function roundLimitMode() {
+  try {
+    return limitMode(gh(['variable', 'get', 'ROUND_LIMIT_MODE']).trim());
+  } catch {
+    return 'needs-user';
+  }
 }
 
 function cloudReviewOn() {

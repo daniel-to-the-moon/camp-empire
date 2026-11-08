@@ -169,4 +169,6 @@ jobs:
           DEVLOOP_MARKER_KEY: ${{ secrets.DEVLOOP_MARKER_KEY }}
           GPT_MODEL: ${{ vars.GPT_MODEL }}
           REVIEW_RESULT: ${{ needs.review.result }}
+          # 轮次用满后的处理（用户自选）：needs-user（默认，停下等用户）| auto（收敛则追加轮次，否则无 blocker 即合并并把遗留意见转 issue）
+          ROUND_LIMIT_MODE: ${{ vars.ROUND_LIMIT_MODE }}
         run: node scripts/devloop/cloud.mjs decide --pr "${{ needs.select.outputs.pr }}" --head "${{ needs.select.outputs.head }}" --base "${{ needs.select.outputs.base }}" --review-result "$REVIEW_RESULT" --review review/review.json --meta review/meta.json

@@ -111,7 +111,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 | 标签 | 含义 |
 |---|---|
-| `needs-user` | 自动循环停下等用户：同一 PR 连续 5 轮未通过；或 Claude 判断命中下列条件 |
+| `needs-user` | 自动循环停下等用户：同一 PR 连续 5 轮未通过（`ROUND_LIMIT_MODE=needs-user`，默认）；auto 模式下出现 blocker 或意见数回升；或 Claude 判断命中下列条件 |
 | `hold` | 用户手动暂停某个 PR 的自动审核与合并 |
 
 Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`：
@@ -119,6 +119,18 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
 2. 需要外部付费服务、新账号或新的第三方数据源；
 3. issue 之间互相矛盾，或与 CHARTER 硬边界冲突；
 4. 信息不足以动手。
+
+### 轮次用满后的处理（用户自选，仓库变量 `ROUND_LIMIT_MODE`）
+
+| 值 | 第 5 轮仍未通过时 |
+|---|---|
+| `needs-user`（默认，未设置也是它） | 停下、加 `needs-user`，等用户裁决（再给一轮 / 先合并 / 先放着）。 |
+| `auto`（免人工合码） | ① 有 blocker 或意见数比上一轮多 → 仍停下加 `needs-user`；② 意见数比上一轮少 → 自动追加一轮，最多追加 3 轮（到第 8 轮）；CI 失败或冲突也在追加轮次内交 Claude 修；③ 意见数持平或追加轮次用完，且剩余只有 major / minor、CI 通过、无冲突 → 合并，剩余意见逐条开 `devloop` issue 交给循环。 |
+
+- 切换：`gh variable set ROUND_LIMIT_MODE --body auto`（改回：`--body needs-user`）。本机审核方每次判定时读取，云端审核由 `gpt-review.yml` 读取。
+- 判断“意见数”用每条 `changes` 标记里记下的 `f<n>`（签名的一部分）；旧标记没有记录时按持平处理。
+- 云端开的遗留意见 issue 由 `GITHUB_TOKEN` 打标签，不会触发 `claude.yml`，所以云端直接 `gh workflow run claude.yml -f issue=<编号>`；本机以用户账号开 issue，标签会正常触发。
+- 风险（如实）：auto 模式会合并 GPT 仍认为有 major 问题的代码，靠后续 issue 修；涉及收费 / 广告 / 对公众上线等用户保留决定的改动，Claude 本就不写，不受此开关影响。
 
 ## 模型网关与手动重跑
 

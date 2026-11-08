@@ -73,3 +73,34 @@ export function formatReview({ key, model, where, pr, head, review, ci, d }) {
 export function touchesWorkflows(paths) {
   return paths.some((p) => String(p).replace(/^\.\//, '').startsWith('.github/workflows/'));
 }
+
+/**
+ * auto 模式轮次用满合并后，剩余意见逐条转成 devloop issue（格式见 docs/DEVLOOP.md 四、issue 格式）。
+ * 返回 [{ title, body }]；标题截断到 120 字。
+ */
+export function followUpIssues({ pr, head, findings }) {
+  const sevText = { blocker: 'blocker', major: 'major', minor: 'minor' };
+  return findings.map((f) => {
+    const oneLine = String(f.issue).replace(/\s+/g, ' ').trim();
+    const title = `[#${pr} 遗留·${sevText[f.severity]}] ${oneLine}`.slice(0, 120);
+    const body = [
+      `来源：PR #${pr} 轮次用满后按 auto 模式合并（审核提交 \`${String(head).slice(0, 8)}\`），GPT 最后一轮的遗留意见。`,
+      '',
+      '## 现象',
+      '',
+      `\`${f.file}:${f.line}\`（${sevText[f.severity]}）`,
+      '',
+      f.issue,
+      '',
+      '## 建议',
+      '',
+      f.suggestion,
+      '',
+      '## 验收标准',
+      '',
+      '- [ ] 上述问题在 main 上不再成立，或说明为何不成立',
+      '- [ ] 为修复补充回归测试',
+    ].join('\n');
+    return { title, body };
+  });
+}
