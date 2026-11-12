@@ -9,12 +9,14 @@
     "preview": "vite preview",
     "test": "vitest run",
     "economy:table": "tsx scripts/economy-table.ts",
-    "swept:table": "tsx scripts/swept-table.ts"
+    "swept:table": "tsx scripts/swept-table.ts",
+    "perf:measure": "tsx scripts/perf-measure.ts"
   },
   "dependencies": {
     "three": "0.187.0"
   },
   "devDependencies": {
+    "@types/node": "24.19.2",
     "@types/three": "0.187.0",
     "fake-indexeddb": "6.2.7",
     "tsx": "^4.20.0",

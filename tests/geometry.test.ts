@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
+import specText from '../CLEANROOM_SPEC.md?raw';
+import packageText from '../MODEL_PACKAGE.md?raw';
+import layoutText from '../src/geometry/layout.ts?raw';
 import raw from '../models.json';
 import { ALL_VARIANTS, CATALOG } from '../src/data/models';
-import { computeLayout } from '../src/geometry/layout';
+import { computeLayout, PLACEHOLDER } from '../src/geometry/layout';
 import { buildPlaceholderVehicle, drawCallCount, triangleCount } from '../src/geometry/placeholder';
 
 describe('车型数据', () => {
@@ -58,5 +61,31 @@ describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('占位几何 %s', (_
     expect(Math.abs(anchors.side_awning.position.x)).toBeCloseTo(v.widthM / 2, 6);
     const lay = computeLayout(v);
     expect(lay.frontAxleZ - lay.rearAxleZ).toBeCloseTo(v.wheelbaseM, 6);
+  });
+});
+
+describe('涉水喉符号（规格字面 +W/2 与代码 −x，未改锚点）', () => {
+  const specLine = specText.split('\n').find((line) => line.includes('涉水喉'));
+  const packageLine = packageText.split('\n').find((line) => line.includes('涉水喉'));
+  const layout = layoutText;
+
+  it('规格把「右前翼子板」和 x=+W/2 写在同一句；代码按右手系把右侧放在 −x', () => {
+    expect(specLine).toContain('右前翼子板');
+    expect(specLine).toContain('x = +W/2');
+    expect(packageLine).toContain('右前翼子板');
+    expect(packageLine).toContain('x = +W/2');
+    expect(layout).toContain('车辆右侧为 −x');
+    expect(layout).toContain('snorkel: { x: -W / 2');
+  });
+
+  it('现状锁在 −x：与侧边帐同一侧，高度在机盖，z 在车头半边。符号冲突等维护者定', () => {
+    for (const variant of ALL_VARIANTS) {
+      const lay = computeLayout(variant);
+      expect(lay.anchors.snorkel.x).toBeCloseTo(-variant.widthM / 2, 6);
+      expect(lay.anchors.snorkel.x).toBeCloseTo(lay.anchors.side_awning.x, 6);
+      expect(lay.anchors.snorkel.y).toBeCloseTo(PLACEHOLDER.hoodTopM, 6);
+      expect(lay.anchors.snorkel.z).toBeGreaterThan(0);
+      expect(lay.anchors.snorkel.z).toBeLessThan(lay.zFront);
+    }
   });
 });

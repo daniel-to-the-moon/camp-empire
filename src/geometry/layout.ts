@@ -127,7 +127,7 @@ export function computeLayout(v: Variant): Layout {
     // 侧边帐装在车辆右侧（−x）：中国右侧通行，右侧为路缘 / 营位侧，与滑门同侧
     side_awning: { x: -W / 2, y: Math.min(H, v.hasBrow ? H - 0.12 : H - 0.08), z: (sdStart + sdEnd) / 2 },
     bull_bar: { x: 0, y: 0.55, z: zFront + P.bullBarOutM },
-    // 涉水喉：文字“右前翼子板”= 车辆右侧（−x）。MODEL_PACKAGE 写 x=+W/2，与本坐标系右侧冲突，见规格文档待讨论项
+    // 涉水喉：文字“右前翼子板”= 车辆右侧（−x）。规格同一句又写 x=+W/2，在本右手系里与「右侧」相反。符号未改，证据见 docs/PERF_BODY.md，等维护者定。
     snorkel: { x: -W / 2, y: P.hoodTopM, z: zFront - hoodLen + 0.1 },
     rear_mount: { x: 0, y: 0.75, z: zRear - P.rearMountOutM },
     suspension: { x: 0, y: 0, z: 0 },

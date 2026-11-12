@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>单车性能探针 · camp-empire</title>
+    <style>
+      :root { color-scheme: light; }
+      body { margin: 0; font: 16px/1.45 "Songti SC", "Noto Serif SC", serif; background: #f4f1ea; color: #1c1915; }
+      main { max-width: 46rem; margin: 0 auto; padding: 1.25rem 1rem 2rem; }
+      h1 { font-size: 1.35rem; margin: 0 0 0.4rem; }
+      h2 { font-size: 1.05rem; margin: 1.4rem 0 0.4rem; }
+      p, li { margin: 0.35rem 0; }
+      .banner { background: #f3e0c2; border: 1px solid #c9a56a; padding: 0.6rem 0.75rem; }
+      label { display: block; margin: 0.8rem 0; }
+      select { font: inherit; }
+      .copy { background: #fff; border: 2px solid #1c1915; padding: 0.75rem 0.9rem; }
+      .copy dt { font-weight: 700; }
+      .copy dd { margin: 0 0 0.55rem; font-variant-numeric: tabular-nums; }
+      .sample { background: #fff; border: 1px solid #d9d3c7; padding: 0.55rem 0.75rem; margin: 0.45rem 0; }
+      .sample h3 { margin: 0 0 0.25rem; font-size: 1rem; }
+      .sample p { font-variant-numeric: tabular-nums; }
+      #view { width: 100%; height: 16rem; margin-top: 1rem; background: #a9cbc3; }
+      code { font-family: ui-monospace, monospace; font-size: 0.92em; }
+      ol { padding-left: 1.2rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>单车性能探针</h1>
+      <p id="banner" class="banner">占位几何，不是 SH5043 正式样件。本页只有一辆车，没有营地。</p>
+      <label>车型
+        <select id="variant"></select>
+      </label>
+      <h2>抄这三行</h2>
+      <p>阴影开、无侧边帐，和游戏里这辆车的渲染设置一致。旋转屏幕后请刷新再抄。</p>
+      <dl class="copy" id="copy"></dl>
+      <h2>和网格计数对照</h2>
+      <div id="compare"></div>
+      <h2>这台设备</h2>
+      <dl class="copy" id="device"></dl>
+      <h2>真机复测</h2>
+      <ol>
+        <li>目标机器是盛俊的 MacBook（型号待核实）和 Google Pixel 6。在那台机器自己的浏览器里打开本页 <code>/perf.html</code>。不要打开营地首页，也不要开 Chrome 的设备模拟。</li>
+        <li>开发服务器：<code>npm run dev -- --host</code>。电脑打开终端里的地址，把路径换成 <code>/perf.html</code>。手机用同一局域网里的主机地址。</li>
+        <li>地址保持默认（SH5043 占位车，阴影开，无侧边帐）。看上面「抄这三行」：运行时三角面、运行时 draw call、加载体积。</li>
+        <li>同时抄「这台设备」里的 UA、布局视口、devicePixelRatio、WebGL 渲染器。MacBook 从「关于本机」抄型号。Pixel 6 在系统设置里确认型号是 Pixel 6。</li>
+        <li>云端表格里的真机列保持「待核实」。headless 和设备模拟的数字不能填进真机列。</li>
+      </ol>
+      <div id="view"></div>
+      <pre id="perf-report" hidden></pre>
+    </main>
+    <script type="module" src="/src/client/perf.ts"></script>
+  </body>
+</html>

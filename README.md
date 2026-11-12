@@ -32,6 +32,7 @@ npm test               # 单元测试：账本、NPC 回放、运动学、全部
 npm run build          # 类型检查 + 生产构建
 npm run economy:table  # 重算 docs/ECONOMY_M1.md 的数字
 npm run swept:table    # 重算 docs/SWEPT_PATH.md 的数字
+npm run perf:measure   # 单车占位几何的 renderer.info。页面是 /perf.html，口径见 docs/PERF_BODY.md
 ```
 
 操作：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 或方向键驾驶，空格刹车，<kbd>P</kbd> 自动泊回家位，<kbd>O</kbd> 从家位开出，<kbd>C</kbd> 俯瞰。
