@@ -129,7 +129,8 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
 
 - 切换：`gh variable set ROUND_LIMIT_MODE --body auto`（改回：`--body needs-user`）。本机审核方每次判定时读取，云端审核由 `gpt-review.yml` 读取。
 - 判断“意见数”用每条 `changes` 标记里记下的 `f<n>`（签名的一部分）；旧标记没有记录时按持平处理。
-- 云端开的遗留意见 issue 由 `GITHUB_TOKEN` 打标签，不会触发 `claude.yml`，所以云端直接 `gh workflow run claude.yml -f issue=<编号>`；本机以用户账号开 issue，标签会正常触发。
+- 云端开的遗留意见 issue 由 `GITHUB_TOKEN` 打标签，不会触发 `claude.yml`，所以云端直接 `gh workflow run claude.yml -f issue=<编号>`；本机以用户账号开 issue，标签会正常触发。这一段是 main 上已有的 auto 模式，本变更没有改云端这条路径。
+- 本机遗留意见待办（#47 拆分的第 1 部分，只做持久化与合并状态核对）：合并尝试前把 `{ pr, head, items }` 原子写入 `../ce-devloop/followups/pr-<N>.json`（临时文件再 rename）。写失败则不调用合并。合并调用抛错时不删除该文件。每轮补开前用只读的 `gh pr view --json state,headRefOid` 核对：仍为 OPEN，或查询失败，则保留文件且不创建 issue；CLOSED，或 head 与记录不一致，则删除文件且不创建；MERGED 且 head 一致，才走原先的 `ensureFollowUps`。云端自动 recover、合并前登记评论、`devloop-followups` 标签，以及用 `completeFollowUps` 替换云端收尾，都不在本变更里。后续方案默认不启用，见 `docs/DEVLOOP_FOLLOWUP_RECOVERY.md`。
 - 风险（如实）：auto 模式会合并 GPT 仍认为有 major 问题的代码，靠后续 issue 修；涉及收费 / 广告 / 对公众上线等用户保留决定的改动，Claude 本就不写，不受此开关影响。
 
 ## 模型网关与手动重跑
