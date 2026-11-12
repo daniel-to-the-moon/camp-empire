@@ -20,7 +20,7 @@ jobs:
           test -n "$GPT_MODEL"
           test "$GPT_ENDPOINT" = https://ai.learnai.news/v1/responses
           base=244009e344e0c326495471a175959fada037cef3
-          head=4ae1e32a87da1f8d594a9257b6fff800815333b1
+          head=f784f2b093242f6e3820fa281ece97bf99bb99f6
           api=https://api.github.com/repos/daniel-to-the-moon/van-sticker-studio
           curl -fsS --max-time 20 -H 'Accept: application/vnd.github.diff' "$api/compare/$base...$head" -o candidate.diff
           test -s candidate.diff
@@ -36,4 +36,10 @@ jobs:
             --data-binary @review-request.json "$GPT_ENDPOINT")"
           echo "GPT review HTTP $status"
           test "$status" = 200
-          jq -er 'select(.status == "completed") | [.output[]? | select(.type == "message") | .content[]? | select(.type == "output_text") | .text] | join("\n") | select(length > 30)' review-response.json >> "$GITHUB_STEP_SUMMARY"
+          jq -er 'select(.status == "completed") | [.output[]? | select(.type == "message") | .content[]? | select(.type == "output_text") | .text] | join("\n") | select(length > 30)' review-response.json > review.md
+          cat review.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: van-sticker-gpt-review
+          path: review.md
+          if-no-files-found: error
