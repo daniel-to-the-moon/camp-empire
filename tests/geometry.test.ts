@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import raw from '../models.json';
+import { makeVehicle } from '../src/client/scene';
 import { ALL_VARIANTS, CATALOG } from '../src/data/models';
 import { computeLayout } from '../src/geometry/layout';
 import { buildPlaceholderVehicle, drawCallCount, triangleCount } from '../src/geometry/placeholder';
@@ -36,6 +37,14 @@ describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('占位几何 %s', (_
   it('性能预算：draw call ≤ 6，面数 ≤ 2600', () => {
     expect(drawCallCount(root)).toBeLessThanOrEqual(6);
     expect(triangleCount(root)).toBeLessThanOrEqual(2600);
+  });
+  it('车灯点亮且侧边帐展开时，整车仍在性能预算内', () => {
+    const vehicle = makeVehicle(v);
+    vehicle.setLights({ turnL: true, turnR: false, brake: true, reverse: false });
+    vehicle.setAwning(true);
+
+    expect(drawCallCount(vehicle.root)).toBeLessThanOrEqual(6);
+    expect(triangleCount(vehicle.root)).toBeLessThanOrEqual(2600);
   });
   it('车身三角面朝外（有向体积 > 0，防止镜像变换翻转绕序导致外表面被剔除）', () => {
     const body = root.getObjectByName('body') as THREE.Mesh;

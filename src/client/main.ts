@@ -6,7 +6,7 @@ import '../style.css';
 import { CATALOG, findVariant } from '../data/models';
 import { stallById, stallRect, staticShapes } from '../shared/camp';
 import { ECONOMY, FRAME_MAX_DT_S, NPC, PENDING, SIDE_AWNING } from '../shared/config';
-import { camFor, hoodMount, OrbitGesture, orbitBehind, VIEW_LABEL, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
+import { camFor, hoodMount, OrbitGesture, orbitBehind, smoothOrbit, VIEW_LABEL, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
 import { BlinkClock, lightsFor, manualBraking } from '../shared/lights';
 import { pointInPoly, type Shape } from '../shared/geom2d';
 import { resolveDrive, type Impact } from '../shared/collision';
@@ -134,6 +134,7 @@ let parkedDirty = false;
 // ---------- 视图（issue #44：俯瞰 / 跟随 / 环绕 / 引擎盖） ----------
 const views = new ViewChoice('follow');
 let orbit: Orbit = orbitBehind(drive.pose.yaw);
+let displayedOrbit: Orbit | null = null;
 let hood = hoodMount(currentVariant(state));
 const gesture = new OrbitGesture();
 /** 加速挡：Shift 按住，或底栏按钮切换（触屏用） */
@@ -146,7 +147,10 @@ function currentView(): View {
 
 function selectView(v: View) {
   // 进入环绕时从车后方起转，与跟随视图衔接
-  if (v === 'orbit' && currentView() !== 'orbit') orbit = orbitBehind(drive.pose.yaw);
+  if (v === 'orbit' && currentView() !== 'orbit') {
+    orbit = orbitBehind(drive.pose.yaw);
+    displayedOrbit = null;
+  }
   views.select(v, mode === 'parked');
   renderHud();
 }
@@ -753,7 +757,9 @@ function frame(t: number) {
   player.setLights({ turnL: bl.left, turnR: bl.right, brake: ls.brake, reverse: ls.reverse });
 
   const [cx, cy] = bodyCenter(spec, drive.pose);
-  view.setCamera(camFor(currentView(), { x: cx, y: cy, yaw: drive.pose.yaw, h: spec.lengthM / 4 }, orbit, hood));
+  const activeView = currentView();
+  displayedOrbit = activeView === 'orbit' ? smoothOrbit(displayedOrbit ?? orbit, orbit, dt) : null;
+  view.setCamera(camFor(activeView, { x: cx, y: cy, yaw: drive.pose.yaw, h: spec.lengthM / 4 }, displayedOrbit ?? orbit, hood));
   $('#bump').hidden = t > bumpUntil;
   const boosting = mode === 'driving' && boost;
   $('#speed').textContent = `${Math.abs(drive.speed * 3.6).toFixed(0)} km/h${drive.speed < -0.05 ? ' 倒车' : ''}${boosting ? ' · 加速挡' : ''}`;

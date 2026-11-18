@@ -19,6 +19,7 @@ import {
   OrbitGesture,
   orbitBehind,
   orbitCam,
+  smoothOrbit,
   VIEWS,
   ViewChoice,
   viewForKey,
@@ -258,6 +259,37 @@ describe('视图切换', () => {
 const t0: Target = { x: 5, y: -9, yaw: 0.3, h: 1.5 };
 
 describe('环绕相机', () => {
+  it('最近距离快速拖过半圈时，逐帧相机沿弧线移动并留在每款车的车身外', () => {
+    const start: Orbit = { azimuth: 0, pitch: ORBIT.minPitch, dist: ORBIT.minDist };
+    const g = new OrbitGesture();
+    g.down(1, 0, 0);
+    const goal = g.move(1, -Math.PI / ORBIT.radPerPx, 0, start)!;
+    for (const v of ALL_VARIANTS) {
+      // 以相机看向点为球心，包围盒最远的角限定了安全距离。
+      const bodyRadius = Math.hypot(v.lengthM / 2, v.widthM / 2, Math.max(1, v.heightM - 1));
+      let displayed = start;
+      for (let frame = 1; frame <= 60; frame++) {
+        const dt = 1 / 60;
+        displayed = smoothOrbit(displayed, goal, dt);
+        const c = orbitCam(t0, displayed);
+        // scene.ts 必须直接使用已平滑的轨道坐标，二次世界坐标平滑会沿弦穿过车身。
+        expect(c.rate).toBe(Infinity);
+        const actual = applyShake(c.pos, c.look, c.shake, frame * dt, 1);
+        expect(Math.hypot(...actual.pos.map((axis, i) => axis - c.look[i]))).toBeGreaterThan(bodyRadius + c.near);
+        if (frame === 1) expect(displayed.azimuth).toBeGreaterThan(0);
+        if (frame === 1) expect(displayed.azimuth).toBeLessThan(goal.azimuth);
+      }
+      expect(displayed.azimuth).toBeCloseTo(goal.azimuth, 3);
+    }
+  });
+  it('跨过 ±π 时取短弧，并平滑拉远与抬高镜头', () => {
+    const from: Orbit = { azimuth: Math.PI - 0.1, pitch: ORBIT.minPitch, dist: ORBIT.minDist };
+    const to: Orbit = { azimuth: -Math.PI + 0.1, pitch: ORBIT.maxPitch, dist: ORBIT.maxDist };
+    const mid = smoothOrbit(from, to, Math.log(2) / ORBIT.rate);
+    expect(Math.abs(mid.azimuth)).toBeCloseTo(Math.PI, 10);
+    expect(mid.pitch).toBeCloseTo((from.pitch + to.pitch) / 2, 10);
+    expect(mid.dist).toBeCloseTo((from.dist + to.dist) / 2, 10);
+  });
   it('任意方位角、俯仰、距离：看向车身中心，距离与俯仰在上下限内，相机始终在地面以上', () => {
     for (let i = 0; i < 2000; i++) {
       const o: Orbit = { azimuth: (uniform(i, 'a') - 0.5) * 40, pitch: (uniform(i, 'p') - 0.5) * 6, dist: uniform(i, 'd') * 200 - 50 };

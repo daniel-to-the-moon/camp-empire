@@ -8,9 +8,11 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import type { Variant } from '../data/models';
 import { computeLayout, PLACEHOLDER, type AnchorName } from './layout';
 
+const TRIM_COLOR = 0x2b2b2e;
+
 export const MATERIALS = {
   body: () => new THREE.MeshStandardMaterial({ color: 0xe9e4d8, flatShading: true, roughness: 0.7 }),
-  trim: () => new THREE.MeshStandardMaterial({ color: 0x2b2b2e, flatShading: true, roughness: 0.9 }),
+  trim: () => new THREE.MeshStandardMaterial({ color: TRIM_COLOR, flatShading: true, roughness: 0.9 }),
   glass: () =>
     new THREE.MeshStandardMaterial({
       color: 0x223344,
@@ -244,7 +246,7 @@ export function setLamps(root: THREE.Object3D, on: Record<LampRole, boolean>): v
   attr.needsUpdate = true;
 }
 
-/** 侧边帐（展开态）：挂在 anchor_side_awning，向车辆右侧（−x）展开。额外 2 个 draw call。 */
+/** 侧边帐（展开态）：挂在 anchor_side_awning，向车辆右侧（−x）展开。额外 1 个 draw call。 */
 export function buildSideAwning(v: Variant, depthM: number): THREE.Group {
   const lay = computeLayout(v);
   const len = lay.slidingDoor.zStart - lay.slidingDoor.zEnd;
@@ -261,12 +263,6 @@ export function buildSideAwning(v: Variant, depthM: number): THREE.Group {
   ]);
   fabric.setAttribute('position', new THREE.BufferAttribute(verts, 3));
   fabric.computeVertexNormals();
-  const fabricMesh = new THREE.Mesh(
-    fabric,
-    new THREE.MeshStandardMaterial({ color: 0xd9822b, side: THREE.DoubleSide, flatShading: true }),
-  );
-  fabricMesh.name = 'awning_fabric';
-  fabricMesh.castShadow = true;
 
   const poleH = mountY - dropY;
   const poles = merge([
@@ -274,9 +270,21 @@ export function buildSideAwning(v: Variant, depthM: number): THREE.Group {
     box(0.04, poleH, 0.04, -depthM, -dropY - poleH / 2, -len / 2 + 0.05),
     box(0.08, 0.08, len, 0, -0.04, 0), // 收纳盒
   ]);
-  const poleMesh = new THREE.Mesh(poles, MATERIALS.trim());
-  poleMesh.name = 'awning_frame';
-  g.add(fabricMesh, poleMesh);
+
+  // 同一材质用顶点色保留橙色帐布与深色框架，双面显示帐布。
+  poles.deleteAttribute('uv');
+  for (const [part, hex] of [[fabric, 0xd9822b], [poles, TRIM_COLOR]] as const) {
+    const color = new THREE.Color(hex);
+    const colors = new Float32Array(part.attributes.position.count * 3);
+    for (let i = 0; i < colors.length; i += 3) color.toArray(colors, i);
+    part.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+  const awning = new THREE.Mesh(
+    merge([fabric, poles]),
+    new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, flatShading: true }),
+  );
+  awning.castShadow = true;
+  g.add(awning);
   return g;
 }
 

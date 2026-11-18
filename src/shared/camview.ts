@@ -88,6 +88,18 @@ export function clampOrbit(o: Orbit): Orbit {
   return { azimuth: az, pitch, dist };
 }
 
+/** 沿短弧平滑方位角，同时平滑仰角和距离，避免世界坐标插值的弦穿过车身。 */
+export function smoothOrbit(current: Orbit, target: Orbit, dt: number): Orbit {
+  const weight = 1 - Math.exp(-dt * ORBIT.rate);
+  const delta = target.azimuth - current.azimuth;
+  const turn = Math.atan2(Math.sin(delta), Math.cos(delta));
+  return clampOrbit({
+    azimuth: current.azimuth + turn * weight,
+    pitch: current.pitch + (target.pitch - current.pitch) * weight,
+    dist: current.dist + (target.dist - current.dist) * weight,
+  });
+}
+
 /** 进入环绕时的初始角度：在车后方、与跟随视图相近 */
 export function orbitBehind(yaw: number): Orbit {
   return clampOrbit({ azimuth: yaw + Math.PI, pitch: (28 * Math.PI) / 180, dist: 16 });
@@ -111,7 +123,8 @@ export function orbitCam(t: Target, o: Orbit): CamWant {
   const px = t.x + horiz * Math.cos(c.azimuth);
   const py = t.y + horiz * Math.sin(c.azimuth);
   const ph = Math.max(ORBIT.minHeight, ORBIT_LOOK_H + c.dist * Math.sin(c.pitch));
-  return { pos: [px, ph, -py], look: [t.x, ORBIT_LOOK_H, -t.y], fov: BASE_FOV, rate: ORBIT.rate, near: 0.1, shake: 'pos' };
+  // 环绕参数已经平滑，渲染层直接使用这个位置。
+  return { pos: [px, ph, -py], look: [t.x, ORBIT_LOOK_H, -t.y], fov: BASE_FOV, rate: Infinity, near: 0.1, shake: 'pos' };
 }
 
 export function overviewCam(): CamWant {
