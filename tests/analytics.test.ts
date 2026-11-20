@@ -59,6 +59,24 @@ describe('T1 匿名统计：客户端规则', () => {
     expect(getOrCreateAid(s, () => '11111111-1111-4111-8111-111111111111')).not.toBe(UUID);
   });
 
+  it('关闭时存储写入失败（如已满）：仍删掉匿名 ID、报告未保存，本次会话按关闭处理', () => {
+    const s = new Mem();
+    getOrCreateAid(s, () => UUID);
+    const full: StorageLike = {
+      getItem: (k) => s.getItem(k),
+      setItem: () => {
+        throw new Error('QuotaExceededError');
+      },
+      removeItem: (k) => s.removeItem(k),
+    };
+    expect(setOptOut(full, true)).toBe(false);
+    expect(s.getItem(AID_KEY)).toBeNull();
+    const ctx = { dev: false, hostname: 'camp-empire.pages.dev', storage: full };
+    expect(shouldSend({ ...ctx, sessionOptOut: true })).toBe(false);
+    expect(setOptOut(s, true)).toBe(true);
+    expect(setOptOut(null, true)).toBe(false);
+  });
+
   it('调试入口与本机地址（开发、CI 冒烟）一律不发', () => {
     const s = new Mem();
     expect(shouldSend({ dev: true, hostname: 'camp-empire.pages.dev', storage: s })).toBe(false);

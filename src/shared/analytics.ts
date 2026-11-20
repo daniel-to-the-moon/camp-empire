@@ -56,18 +56,28 @@ export function isOptedOut(storage: StorageLike | null): boolean {
   }
 }
 
-/** 关闭统计时顺带删掉匿名 ID；重新打开时生成新的，不与之前的记录关联 */
-export function setOptOut(storage: StorageLike | null, out: boolean): void {
-  try {
-    if (out) {
-      storage?.setItem(OPT_OUT_KEY, '1');
-      storage?.removeItem(AID_KEY);
-    } else {
-      storage?.removeItem(OPT_OUT_KEY);
+/**
+ * 关闭统计时顺带删掉匿名 ID；重新打开时生成新的，不与之前的记录关联。
+ * 返回是否已写入存储；写入失败（如存储已满）时调用方仍须在本次会话内按“已关闭”处理（见 SendContext.sessionOptOut）。
+ */
+export function setOptOut(storage: StorageLike | null, out: boolean): boolean {
+  if (!storage) return false;
+  let ok = true;
+  const attempt = (f: () => void) => {
+    try {
+      f();
+    } catch {
+      ok = false;
     }
-  } catch {
-    /* 存储不可用：本次会话按默认处理 */
+  };
+  if (out) {
+    // 先删匿名 ID（删除不会因存储已满失败），再记关闭标记
+    attempt(() => storage.removeItem(AID_KEY));
+    attempt(() => storage.setItem(OPT_OUT_KEY, '1'));
+  } else {
+    attempt(() => storage.removeItem(OPT_OUT_KEY));
   }
+  return ok;
 }
 
 /** 取本地匿名 ID，没有或格式不对就新建；存储不可用时返回 null（不发送，不用临时 ID 充数） */
@@ -89,10 +99,12 @@ export interface SendContext {
   dev: boolean;
   hostname: string;
   storage: StorageLike | null;
+  /** 本次会话里玩家点了关闭（即使写入存储失败也生效） */
+  sessionOptOut?: boolean;
 }
 
 export function shouldSend(ctx: SendContext): boolean {
-  return !ctx.dev && !isLocalHost(ctx.hostname) && !isOptedOut(ctx.storage);
+  return !ctx.dev && !ctx.sessionOptOut && !isLocalHost(ctx.hostname) && !isOptedOut(ctx.storage);
 }
 
 /** 版本号只取字母数字点横线、最长 40，与接收端一致 */

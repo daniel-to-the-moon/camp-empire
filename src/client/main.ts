@@ -64,8 +64,10 @@ const prefs = (() => {
     return null;
   }
 })();
+/** 本次会话的关闭状态：存储写入失败（如已满）时也立即停止发送 */
+let sessionOptOut = isOptedOut(prefs);
 function track(ev: AnalyticsEvent) {
-  if (!shouldSend({ dev: DEV, hostname: location.hostname, storage: prefs })) return;
+  if (!shouldSend({ dev: DEV, hostname: location.hostname, storage: prefs, sessionOptOut })) return;
   const aid = getOrCreateAid(prefs, () => uuidV4(crypto.getRandomValues(new Uint8Array(16))));
   if (!aid) return;
   try {
@@ -76,7 +78,7 @@ function track(ev: AnalyticsEvent) {
   }
 }
 function renderPrivacy() {
-  const off = isOptedOut(prefs);
+  const off = sessionOptOut;
   $('#privacy-body').innerHTML = `${PRIVACY_TEXT.map((t) => `<p>${t}</p>`).join('')}
     <p class="fine">当前：<b>${off ? '已关闭' : '已开启'}</b>${DEV ? '（调试入口不发送）' : ''}</p>`;
   $('#privacy-toggle').textContent = off ? '开启匿名统计' : '关闭匿名统计';
@@ -484,9 +486,10 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     $('#privacy').hidden = false;
   },
   privacyToggle() {
-    setOptOut(prefs, !isOptedOut(prefs));
+    sessionOptOut = !sessionOptOut;
+    const saved = setOptOut(prefs, sessionOptOut);
     renderPrivacy();
-    toast(isOptedOut(prefs) ? '已关闭匿名统计' : '已开启匿名统计');
+    toast(`${sessionOptOut ? '已关闭匿名统计' : '已开启匿名统计'}${saved ? '' : '（浏览器存储不可用，只对本次打开有效）'}`);
   },
   privacyClose() {
     $('#privacy').hidden = true;
@@ -575,7 +578,10 @@ window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.code === 'KeyC') actions.overview('');
   if (e.code === 'KeyP') void actions.park('');
-  if (e.code === 'KeyO') void Promise.resolve(actions.out('')).finally(renderHud);
+  if (e.code === 'KeyO') {
+    void Promise.resolve(actions.out('')).finally(renderHud);
+    track(ACT_EVENTS.out); // 与点“开出去兜一圈”按钮同口径（Codex 审核 #66）
+  }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());

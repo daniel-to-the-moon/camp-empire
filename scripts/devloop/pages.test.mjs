@@ -98,9 +98,9 @@ function setup({ projects = [], createFails = false, latest = 'sha1', dist = tru
   mkdirSync(distDir);
   if (dist) writeFileSync(join(distDir, 'index.html'), '<html>');
   const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : '');
-  const run = (env = {}) =>
+  const run = (env = {}, script = 'pages.sh') =>
     new Promise((resolve) => {
-      const p = spawn('bash', [join(HERE, 'pages.sh')], {
+      const p = spawn('bash', [join(HERE, script)], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,
@@ -297,4 +297,40 @@ test('统计关闭（默认）：不碰 D1，只发布静态产物', async () =>
   assert.equal(r.code, 0, r.err);
   assert.ok(!state.calls.some((c) => c.includes('/d1/')));
   assert.equal(t.read('deployed.toml'), '');
+});
+
+test('保留期清理（d1-retention.sh，与发布解耦）：有库就删过期记录；无库、或统计未开且无权限时跳过', async () => {
+  const id = '1111aaaa-bbbb-4ccc-8ddd-eeeeffff0002';
+  const t = setup({ d1: { dbs: [{ name: 'camp-empire-analytics-x', uuid: '9999' }, { name: 'camp-empire-analytics', uuid: id }] } });
+  const r = await t.run({ RETENTION_DAYS: '30' }, 'd1-retention.sh');
+  assert.equal(r.code, 0, r.err);
+  assert.equal(state.d1.queries.length, 1);
+  assert.equal(state.d1.queries[0].db, id);
+  assert.equal(state.d1.queries[0].sql, 'DELETE FROM events WHERE ts < ?1');
+  assert.ok(Math.abs(state.d1.queries[0].params[0] - (Date.now() - 30 * 86400000)) < 120000);
+  assert.ok(!state.calls.some((c) => c.includes('/pages/')), '清理不碰 Pages');
+
+  const none = setup({ d1: { dbs: [{ name: 'camp-empire-analytics-x', uuid: '9999' }] } });
+  assert.equal((await none.run({}, 'd1-retention.sh')).code, 0);
+  assert.equal(state.d1.queries.length, 0);
+
+  const noPerm = setup({ d1: { listFails: true } });
+  assert.equal((await noPerm.run({}, 'd1-retention.sh')).code, 0);
+  const noPermOn = setup({ d1: { listFails: true } });
+  const r2 = await noPermOn.run({ ANALYTICS: 'on' }, 'd1-retention.sh');
+  assert.notEqual(r2.code, 0);
+  assert.match(r2.err, /D1 → Edit/);
+
+  const bad = setup({ d1: { dbs: [{ name: 'camp-empire-analytics', uuid: id }], queryFails: true } });
+  assert.notEqual((await bad.run({}, 'd1-retention.sh')).code, 0);
+  assert.notEqual((await bad.run({ RETENTION_DAYS: 'x' }, 'd1-retention.sh')).code, 0);
+});
+
+test('analytics-retention.yml：每天定时、只在 main 上运行、只读权限，调用 d1-retention.sh 且不依赖 ANALYTICS 开关', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/analytics-retention.yml'), 'utf8');
+  assert.match(yml, /schedule:\n\s+- cron: '17 19 \* \* \*'/);
+  assert.match(yml, /if: github\.ref == 'refs\/heads\/main'$/m);
+  assert.match(yml, /^permissions:\n {2}contents: read$/m);
+  assert.match(yml, /run: bash scripts\/devloop\/d1-retention\.sh/);
+  assert.ok(!/if: .*ANALYTICS/.test(yml), '统计关闭后也要继续清理');
 });
