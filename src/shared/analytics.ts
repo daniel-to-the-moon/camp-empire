@@ -13,14 +13,13 @@ import type { StorageLike } from './devgate';
 export const EVENTS = ['session_start', 'collect', 'buy_awning', 'card_export', 'dex_open', 'drive_out'] as const;
 export type AnalyticsEvent = (typeof EVENTS)[number];
 
-/** 界面按钮（data-act）→ 统计事件。只统计这些动作，其余按钮不发 */
+/** 界面按钮（data-act）→ 统计事件。只统计这些动作，其余按钮不发。drive_out 不在这里：只在真的起步时由 main.ts 发（Codex 审核 #66） */
 export const ACT_EVENTS: Readonly<Record<string, AnalyticsEvent>> = {
   collect: 'collect',
   buy: 'buy_awning',
   cardDownload: 'card_export',
   cardCopy: 'card_export',
   dex: 'dex_open',
-  out: 'drive_out',
 };
 
 export const AID_KEY = 'ce.analytics.aid';

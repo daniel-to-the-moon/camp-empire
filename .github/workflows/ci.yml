@@ -144,6 +144,8 @@ jobs:
           # 用户 2026-11-20 拍板：一周内公开上线（先用 Cloudflare 公开地址）、做 T1 匿名统计。两个开关都是仓库变量，由用户拨
           PUBLIC: ${{ vars.PAGES_PUBLIC }}
           ANALYTICS: ${{ vars.ANALYTICS }}
+          # 与 analytics-retention.yml 同一保留期，发布时顺带的清理不会比配置删得更早（Codex 审核 #66）
+          RETENTION_DAYS: ${{ vars.RETENTION_DAYS || '180' }}
           FUNCTIONS_DIR: ${{ github.workspace }}/_devloop/functions
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}

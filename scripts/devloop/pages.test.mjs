@@ -334,3 +334,12 @@ test('analytics-retention.yml：每天定时、只在 main 上运行、只读权
   assert.match(yml, /run: bash scripts\/devloop\/d1-retention\.sh/);
   assert.ok(!/if: .*ANALYTICS/.test(yml), '统计关闭后也要继续清理');
 });
+
+// Codex 审核 #66：发布时 pages.sh 也会清理一次，必须与每日清理用同一个保留期，否则 RETENTION_DAYS 调大时会多删
+test('ci.yml 与 analytics-retention.yml 传同一个 RETENTION_DAYS 给清理脚本', () => {
+  const expr = "RETENTION_DAYS: ${{ vars.RETENTION_DAYS || '180' }}";
+  const ci = readFileSync(join(HERE, '../../.github/workflows/ci.yml'), 'utf8');
+  const step = ci.slice(ci.indexOf('- name: 发布到 Cloudflare Pages'));
+  assert.ok(step.slice(0, step.indexOf('run: bash _devloop/scripts/devloop/pages.sh')).includes(expr), 'ci.yml 发布步骤没传 RETENTION_DAYS');
+  assert.ok(readFileSync(join(HERE, '../../.github/workflows/analytics-retention.yml'), 'utf8').includes(expr));
+});

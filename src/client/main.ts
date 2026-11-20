@@ -390,7 +390,10 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     if (!(await act((s) => setAwningWanted(s, now(), !s.awningWanted)))) return;
     player.setAwning(awningOut(state));
   },
-  out: () => homeActions.out(),
+  // 按钮与 O 键共用：只有真的起步才计 drive_out（开着车、提交等待中、长按 O 的重复按键都不算）
+  async out() {
+    if (await homeActions.out()) track('drive_out');
+  },
   park() {
     if (mode !== 'driving' || modeLock.busy) return;
     if (!writer) return toast(unsupported ?? READONLY_MSG);
@@ -580,7 +583,6 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyP') void actions.park('');
   if (e.code === 'KeyO') {
     void Promise.resolve(actions.out('')).finally(renderHud);
-    track(ACT_EVENTS.out); // 与点“开出去兜一圈”按钮同口径（Codex 审核 #66）
   }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
