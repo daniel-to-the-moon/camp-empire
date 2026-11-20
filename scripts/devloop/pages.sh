@@ -12,10 +12,15 @@
 #   WRANGLER   wrangler 调用前缀（默认 "npx -y wrangler@<固定版本>"）
 #   CF_API     Cloudflare API 基地址（默认官方；测试时指向假服务）
 #   SUMMARY    摘要输出文件（默认 $GITHUB_STEP_SUMMARY）
+#   PUBLIC     为 "true" 时公开发布：不再要求 Access 保护（用户 2026-11-20 拍板一周内对公众上线，先用 Cloudflare 公开地址）
+#   ANALYTICS  为 "on" 时启用 T1 匿名统计：确保 D1 数据库与表存在、清理超过保留期的记录，连同 functions/ 一起发布
+#   FUNCTIONS_DIR  Pages Functions 目录（取自 main 的 functions/，内含 api/ev.js；schema.sql 在其中）
+#   RETENTION_DAYS 统计记录保留天数（默认 180，提案值）
 set -euo pipefail
 : "${CF_API:=https://api.cloudflare.com/client/v4}"
 : "${WRANGLER:=npx -y wrangler@4.158.0}"
 : "${SUMMARY:=${GITHUB_STEP_SUMMARY:-/dev/null}}"
+: "${RETENTION_DAYS:=180}"
 
 [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || { echo "::error::缺少 secret CLOUDFLARE_API_TOKEN" >&2; exit 1; }
 [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || { echo "::error::缺少 secret CLOUDFLARE_ACCOUNT_ID" >&2; exit 1; }
@@ -77,12 +82,65 @@ protected() { # protected <主机名>
   loc=${r#* }
   case "$code" in 301 | 302 | 303 | 307 | 308) [[ "$loc" =~ $ACCESS_LOGIN_RE ]] ;; *) return 1 ;; esac
 }
-for host in "$subdomain" "devloop-access-check.$subdomain"; do
-  protected "$host" || {
-    echo "::error::$host 未确认受 Cloudflare Access 保护（未登录请求没有被重定向到 Access 登录页），拒绝上传。按 docs/DEVLOOP.md 第八节配置后重试。" >&2
-    exit 1
+if [ "${PUBLIC:-}" = "true" ]; then
+  echo "公开发布（PAGES_PUBLIC=true）：不检查 Access，任何人都能访问 https://$subdomain" | tee -a "$SUMMARY"
+else
+  for host in "$subdomain" "devloop-access-check.$subdomain"; do
+    protected "$host" || {
+      echo "::error::$host 未确认受 Cloudflare Access 保护（未登录请求没有被重定向到 Access 登录页），拒绝上传。按 docs/DEVLOOP.md 第八节配置后重试；若已决定公开上线，设仓库变量 PAGES_PUBLIC=true。" >&2
+      exit 1
+    }
+  done
+fi
+
+# 5. T1 匿名统计（ANALYTICS=on）：D1 数据库按名字精确查找或创建 → 建表 → 清理过期记录 → 连同 functions/ 与 D1 绑定一起发布。
+#    任何一步失败都整体失败、不上传（不会发布一个统计端点指向不存在的数据库的版本）。
+site="$DIST"
+workdir="$PWD"
+if [ "${ANALYTICS:-}" = "on" ]; then
+  [ -f "${FUNCTIONS_DIR:-}/api/ev.js" ] && [ -f "$FUNCTIONS_DIR/schema.sql" ] || { echo "::error::缺少 functions 目录（api/ev.js、schema.sql）：${FUNCTIONS_DIR:-未设置}" >&2; exit 1; }
+  dbname="$PROJECT-analytics"
+  list=$(cf GET "/d1/database?name=$dbname&per_page=100")
+  [ "$(jq -r '.success' <<< "$list" 2>/dev/null)" = "true" ] || { echo "::error::查询 D1 数据库失败（令牌需要 Account → D1 → Edit 权限）：$(jq -c '.errors // .' <<< "$list" 2>/dev/null || echo "$list")" >&2; exit 1; }
+  dbid=$(jq -r --arg n "$dbname" '[.result[]? | select(.name == $n)][0].uuid // empty' <<< "$list")
+  if [ -z "$dbid" ]; then
+    made=$(cf POST "/d1/database" "$(jq -nc --arg n "$dbname" '{name: $n}')")
+    dbid=$(jq -r --arg n "$dbname" 'select(.success == true and .result.name == $n) | .result.uuid // empty' <<< "$made" 2>/dev/null || true)
+    [ -n "$dbid" ] || { echo "::error::创建 D1 数据库 $dbname 失败：$(jq -c '.errors // .' <<< "$made" 2>/dev/null || echo "$made")" >&2; exit 1; }
+    echo "已创建 D1 数据库 $dbname" | tee -a "$SUMMARY"
+  fi
+  case "$dbid" in *[!0-9a-f-]*) echo "::error::D1 数据库 ID 格式异常：$dbid" >&2; exit 1 ;; esac
+  d1() { # d1 <JSON 正文>：执行一条语句，失败即退出
+    local r
+    r=$(cf POST "/d1/database/$dbid/query" "$1")
+    [ "$(jq -r '.success' <<< "$r" 2>/dev/null)" = "true" ] || { echo "::error::D1 执行失败：$(jq -c '.errors // .' <<< "$r" 2>/dev/null || echo "$r")" >&2; exit 1; }
   }
-done
-$WRANGLER pages deploy "$DIST" --project-name "$PROJECT" --branch main --commit-hash "$SHA" --commit-dirty=true
+  # schema.sql 按分号拆成单条语句逐条执行（均为 IF NOT EXISTS，可重复执行）
+  while IFS= read -r stmt; do
+    d1 "$(jq -nc --argjson s "$stmt" '{sql: $s}')"
+  done < <(jq -Rrs 'split(";") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | .[] | @json' "$FUNCTIONS_DIR/schema.sql")
+  case "$RETENTION_DAYS" in '' | *[!0-9]*) echo "::error::RETENTION_DAYS 必须是正整数：$RETENTION_DAYS" >&2; exit 1 ;; esac
+  cutoff=$(( ($(date +%s) - RETENTION_DAYS * 86400) * 1000 ))
+  d1 "$(jq -nc --argjson c "$cutoff" '{sql: "DELETE FROM events WHERE ts < ?1", params: [$c]}')"
+  echo "匿名统计：D1 $dbname 就绪，已清理 $RETENTION_DAYS 天前的记录" | tee -a "$SUMMARY"
+  # 组装发布目录：dist + functions + 只含 D1 绑定的 wrangler.toml
+  workdir="$tmp/site"
+  mkdir -p "$workdir"
+  cp -R "$DIST" "$workdir/dist"
+  cp -R "$FUNCTIONS_DIR" "$workdir/functions"
+  rm -f "$workdir/functions/schema.sql"
+  cat > "$workdir/wrangler.toml" <<TOML
+name = "$PROJECT"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "$dbname"
+database_id = "$dbid"
+TOML
+  site="dist"
+fi
+(cd "$workdir" && $WRANGLER pages deploy "$site" --project-name "$PROJECT" --branch main --commit-hash "$SHA" --commit-dirty=true)
 echo "已发布 ${SHA:0:8} → https://$subdomain" | tee -a "$SUMMARY"
 echo "deployed=$SHA"

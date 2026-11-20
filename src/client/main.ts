@@ -41,6 +41,7 @@ import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
+import { ACT_EVENTS, ENDPOINT, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
 const LEGACY_SAVE_KEY = 'camp-empire.save.v2';
@@ -54,6 +55,33 @@ const devClock = new DevClock(DEV ? localStorage : null, DEV_KEY, () => Date.now
 const now = () => devClock.now(state.sid);
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
+
+// ---------- T1 匿名统计（规则见 src/shared/analytics.ts，说明见 docs/ANALYTICS.md） ----------
+const prefs = (() => {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+})();
+function track(ev: AnalyticsEvent) {
+  if (!shouldSend({ dev: DEV, hostname: location.hostname, storage: prefs })) return;
+  const aid = getOrCreateAid(prefs, () => uuidV4(crypto.getRandomValues(new Uint8Array(16))));
+  if (!aid) return;
+  try {
+    // text/plain：同源简单请求，不触发预检；失败静默，不影响游戏
+    navigator.sendBeacon?.(ENDPOINT, new Blob([payload(aid, ev, __APP_VERSION__)], { type: 'text/plain' }));
+  } catch {
+    /* 统计失败不影响游戏 */
+  }
+}
+function renderPrivacy() {
+  const off = isOptedOut(prefs);
+  $('#privacy-body').innerHTML = `${PRIVACY_TEXT.map((t) => `<p>${t}</p>`).join('')}
+    <p class="fine">当前：<b>${off ? '已关闭' : '已开启'}</b>${DEV ? '（调试入口不发送）' : ''}</p>`;
+  $('#privacy-toggle').textContent = off ? '开启匿名统计' : '关闭匿名统计';
+}
+track('session_start');
 
 // ---------- 存档：IndexedDB 原子事务 + 单写者锁（见 src/shared/save.ts） ----------
 const locks = (navigator as unknown as { locks?: LocksLike }).locks;
@@ -450,6 +478,19 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   dexClose() {
     $('#dex').hidden = true;
   },
+  // T1 隐私与统计面板
+  privacy() {
+    renderPrivacy();
+    $('#privacy').hidden = false;
+  },
+  privacyToggle() {
+    setOptOut(prefs, !isOptedOut(prefs));
+    renderPrivacy();
+    toast(isOptedOut(prefs) ? '已关闭匿名统计' : '已开启匿名统计');
+  },
+  privacyClose() {
+    $('#privacy').hidden = true;
+  },
 };
 
 // ---------- 露营卡片 ----------
@@ -520,7 +561,10 @@ document.addEventListener('click', (e) => {
   const el = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
   if (!el || (el as HTMLButtonElement).disabled) return;
   renderHud();
-  void Promise.resolve(actions[el.dataset.act!]?.(el.dataset.arg ?? '')).finally(renderHud);
+  const act = el.dataset.act!;
+  void Promise.resolve(actions[act]?.(el.dataset.arg ?? '')).finally(renderHud);
+  const ev = ACT_EVENTS[act];
+  if (ev) track(ev);
 });
 
 // ---------- 键盘 ----------
