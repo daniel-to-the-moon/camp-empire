@@ -15,7 +15,7 @@
 #   PUBLIC     为 "true" 时公开发布：不再要求 Access 保护（用户 2026-11-20 拍板一周内对公众上线，先用 Cloudflare 公开地址）
 #   ANALYTICS  为 "on" 时启用 T1 匿名统计：确保 D1 数据库与表存在、清理超过保留期的记录，连同 functions/ 一起发布
 #   FUNCTIONS_DIR  Pages Functions 目录（取自 main 的 functions/，内含 api/ev.js；schema.sql 在其中）
-#   RETENTION_DAYS 统计记录保留天数（默认 180，提案值）
+#   RETENTION_DAYS 统计记录保留天数（默认 180，提案值；不得超过隐私说明承诺的 180）
 set -euo pipefail
 : "${CF_API:=https://api.cloudflare.com/client/v4}"
 : "${WRANGLER:=npx -y wrangler@4.158.0}"
@@ -119,7 +119,9 @@ if [ "${ANALYTICS:-}" = "on" ]; then
   while IFS= read -r stmt; do
     d1 "$(jq -nc --argjson s "$stmt" '{sql: $s}')"
   done < <(jq -Rrs 'split(";") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)) | .[] | @json' "$FUNCTIONS_DIR/schema.sql")
-  case "$RETENTION_DAYS" in '' | *[!0-9]*) echo "::error::RETENTION_DAYS 必须是正整数：$RETENTION_DAYS" >&2; exit 1 ;; esac
+  # 隐私说明向玩家承诺“满 180 天自动删除”（src/shared/analytics.ts PRIVACY_TEXT）：只能改短，不能改长（GPT 审核 #66）
+  case "$RETENTION_DAYS" in '' | *[!0-9]* | 0*) echo "::error::RETENTION_DAYS 必须是 1–180 的整数：$RETENTION_DAYS" >&2; exit 1 ;; esac
+  [ "$RETENTION_DAYS" -le 180 ] || { echo "::error::RETENTION_DAYS 不能超过隐私说明承诺的 180 天：$RETENTION_DAYS" >&2; exit 1; }
   cutoff=$(( ($(date +%s) - RETENTION_DAYS * 86400) * 1000 ))
   d1 "$(jq -nc --argjson c "$cutoff" '{sql: "DELETE FROM events WHERE ts < ?1", params: [$c]}')"
   echo "匿名统计：D1 $dbname 就绪，已清理 $RETENTION_DAYS 天前的记录" | tee -a "$SUMMARY"

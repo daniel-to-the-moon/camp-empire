@@ -33,13 +33,13 @@
 ## 保存与删除
 
 - 存在 Cloudflare D1 数据库 `<项目名>-analytics` 的 `events` 表（`functions/schema.sql`）。
-- 保留 180 天（**提案值**，仓库变量 `RETENTION_DAYS` 可改）：`.github/workflows/analytics-retention.yml` 每天上海时间 03:17 删除 `ts` 早于保留期的记录（`scripts/devloop/d1-retention.sh`），与发布解耦，站点停发或统计关闭后照样删除；每次发布时 `pages.sh` 也会顺带清理一次。
+- 保留 180 天（**提案值**，仓库变量 `RETENTION_DAYS` 只能改短，1–180；超过隐私说明承诺的 180 天时清理与发布都会直接失败）：`.github/workflows/analytics-retention.yml` 每天上海时间 03:17 删除 `ts` 早于保留期的记录（`scripts/devloop/d1-retention.sh`），与发布解耦，站点停发或统计关闭后照样删除，查不了 D1（如令牌丢了权限）就让定时任务失败而不是假装成功；每次发布时 `pages.sh` 也会顺带清理一次。
 
 ## 开启方式
 
 1. Cloudflare 令牌（secret `CLOUDFLARE_API_TOKEN`）在原有 Pages Edit 之外加 **Account → D1 → Edit** 权限。
 2. 仓库变量 `ANALYTICS=on`。下一次 main 发布时 `pages.sh` 会按名字查找或创建数据库、建表、清理过期记录，并把 `functions/` 与 D1 绑定一起发布。任何一步失败都整体失败、不上传。
-3. 关闭：删掉变量或改成别的值，下一次发布不再带统计端点（客户端请求会得到 404，静默失败）。
+3. 关闭：把变量改成 `off`（**不要删除变量**：每日清理靠“变量设置过”判断统计曾经开启，查不了 D1 时要报错而不是跳过）。下一次发布不再带统计端点（客户端请求会得到 404，静默失败），已存记录照样按期删除。
 
 ## 口径（T2 看板据此实现）
 

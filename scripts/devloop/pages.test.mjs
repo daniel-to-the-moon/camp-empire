@@ -281,6 +281,9 @@ test('匿名统计：缺 D1 权限、SQL 失败、缺 functions、保留天数�
     [{ d1: { queryFails: true } }, {}, /D1 执行失败/],
     [{}, { FUNCTIONS_DIR: '/nonexistent' }, /缺少 functions/],
     [{}, { RETENTION_DAYS: '1;rm' }, /RETENTION_DAYS/],
+    // 隐私说明承诺 180 天：只能改短（GPT 审核 #66）
+    [{}, { RETENTION_DAYS: '181' }, /180/],
+    [{}, { RETENTION_DAYS: '0' }, /RETENTION_DAYS/],
   ];
   for (const [opt, env, re] of cases) {
     const t = setup({ projects: ['camp-empire'], ...opt });
@@ -299,7 +302,7 @@ test('统计关闭（默认）：不碰 D1，只发布静态产物', async () =>
   assert.equal(t.read('deployed.toml'), '');
 });
 
-test('保留期清理（d1-retention.sh，与发布解耦）：有库就删过期记录；无库、或统计未开且无权限时跳过', async () => {
+test('保留期清理（d1-retention.sh，与发布解耦）：有库就删过期记录；无库跳过；查询失败只在统计从未开启时跳过', async () => {
   const id = '1111aaaa-bbbb-4ccc-8ddd-eeeeffff0002';
   const t = setup({ d1: { dbs: [{ name: 'camp-empire-analytics-x', uuid: '9999' }, { name: 'camp-empire-analytics', uuid: id }] } });
   const r = await t.run({ RETENTION_DAYS: '30' }, 'd1-retention.sh');
@@ -314,16 +317,40 @@ test('保留期清理（d1-retention.sh，与发布解耦）：有库就删过�
   assert.equal((await none.run({}, 'd1-retention.sh')).code, 0);
   assert.equal(state.d1.queries.length, 0);
 
+  // ANALYTICS 从未设置：统计从未开启，不可能有数据，查询失败可跳过
   const noPerm = setup({ d1: { listFails: true } });
   assert.equal((await noPerm.run({}, 'd1-retention.sh')).code, 0);
-  const noPermOn = setup({ d1: { listFails: true } });
-  const r2 = await noPermOn.run({ ANALYTICS: 'on' }, 'd1-retention.sh');
-  assert.notEqual(r2.code, 0);
-  assert.match(r2.err, /D1 → Edit/);
+  // 开着、或曾开启后关闭（off）：查询失败必须失败，不能显示成功（GPT 审核 #66）
+  for (const ANALYTICS of ['on', 'off']) {
+    const t2 = setup({ d1: { listFails: true } });
+    const r2 = await t2.run({ ANALYTICS }, 'd1-retention.sh');
+    assert.notEqual(r2.code, 0, ANALYTICS);
+    assert.match(r2.err, /D1 → Edit/);
+  }
+  // 关闭后查询成功、确认没有库：安全跳过
+  const offNone = setup({ d1: { dbs: [] } });
+  assert.equal((await offNone.run({ ANALYTICS: 'off' }, 'd1-retention.sh')).code, 0);
 
   const bad = setup({ d1: { dbs: [{ name: 'camp-empire-analytics', uuid: id }], queryFails: true } });
   assert.notEqual((await bad.run({}, 'd1-retention.sh')).code, 0);
   assert.notEqual((await bad.run({ RETENTION_DAYS: 'x' }, 'd1-retention.sh')).code, 0);
+  // 保留期上限：超过隐私说明的 180 天不删也不放过
+  const long = setup({ d1: { dbs: [{ name: 'camp-empire-analytics', uuid: id }] } });
+  const r3 = await long.run({ RETENTION_DAYS: '365' }, 'd1-retention.sh');
+  assert.notEqual(r3.code, 0);
+  assert.match(r3.err, /180/);
+  assert.equal(state.d1.queries.length, 0);
+  assert.equal((await long.run({ RETENTION_DAYS: '180' }, 'd1-retention.sh')).code, 0);
+});
+
+// 隐私说明里的天数与脚本上限必须是同一个数（GPT 审核 #66）
+test('保留期上限与隐私说明一致', () => {
+  const text = readFileSync(join(HERE, '../../src/shared/analytics.ts'), 'utf8');
+  const promised = /满 (\d+) 天自动删除/.exec(text)?.[1];
+  assert.equal(promised, '180');
+  for (const f of ['pages.sh', 'd1-retention.sh']) {
+    assert.match(readFileSync(join(HERE, f), 'utf8'), new RegExp(`\\[ "\\$RETENTION_DAYS" -le ${promised} \\]`), f);
+  }
 });
 
 test('analytics-retention.yml：每天定时、只在 main 上运行、只读权限，调用 d1-retention.sh 且不依赖 ANALYTICS 开关', () => {

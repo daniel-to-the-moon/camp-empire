@@ -4,7 +4,9 @@
 #
 # 输入：CLOUDFLARE_API_TOKEN、CLOUDFLARE_ACCOUNT_ID、PROJECT、RETENTION_DAYS（默认 180）、ANALYTICS、CF_API、SUMMARY
 # - 数据库不存在：没有可删的，成功退出。
-# - 查询失败（如令牌缺 D1 权限）：ANALYTICS=on 时失败（统计开着却删不了，须处理）；否则只提示并成功退出（统计从未开启过）。
+# - 查询失败（如令牌缺 D1 权限）：失败，不管统计现在开没开——曾经采集过的记录删不掉必须报出来（GPT 审核 #66）。
+#   唯一例外是仓库变量 ANALYTICS 从未设置过（统计从未开启，不可能有数据）：只提示并成功退出。
+#   所以关闭统计请把 ANALYTICS 改成 off，不要删除这个变量。
 set -euo pipefail
 : "${CF_API:=https://api.cloudflare.com/client/v4}"
 : "${SUMMARY:=${GITHUB_STEP_SUMMARY:-/dev/null}}"
@@ -12,7 +14,9 @@ set -euo pipefail
 [ -n "${CLOUDFLARE_API_TOKEN:-}" ] || { echo "::error::缺少 secret CLOUDFLARE_API_TOKEN" >&2; exit 1; }
 [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || { echo "::error::缺少 secret CLOUDFLARE_ACCOUNT_ID" >&2; exit 1; }
 case "$PROJECT" in '' | *[!a-z0-9-]*) echo "::error::项目名只能是小写字母、数字、连字符：$PROJECT" >&2; exit 1 ;; esac
-case "$RETENTION_DAYS" in '' | *[!0-9]*) echo "::error::RETENTION_DAYS 必须是正整数：$RETENTION_DAYS" >&2; exit 1 ;; esac
+# 隐私说明向玩家承诺“满 180 天自动删除”（src/shared/analytics.ts PRIVACY_TEXT）：只能改短，不能改长（GPT 审核 #66）
+case "$RETENTION_DAYS" in '' | *[!0-9]* | 0*) echo "::error::RETENTION_DAYS 必须是 1–180 的整数：$RETENTION_DAYS" >&2; exit 1 ;; esac
+[ "$RETENTION_DAYS" -le 180 ] || { echo "::error::RETENTION_DAYS 不能超过隐私说明承诺的 180 天：$RETENTION_DAYS" >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 cf() {
@@ -25,8 +29,8 @@ dbname="$PROJECT-analytics"
 list=$(cf GET "/d1/database?name=$dbname&per_page=100")
 if [ "$(jq -r '.success' <<< "$list" 2>/dev/null)" != "true" ]; then
   msg="查询 D1 数据库失败：$(jq -c '.errors // .' <<< "$list" 2>/dev/null || echo "$list")"
-  if [ "${ANALYTICS:-}" = "on" ]; then echo "::error::$msg（令牌需要 Account → D1 → Edit 权限）" >&2; exit 1; fi
-  echo "统计未开启且无法查询 D1，跳过：$msg" | tee -a "$SUMMARY"
+  if [ -n "${ANALYTICS:-}" ]; then echo "::error::$msg（令牌需要 Account → D1 → Edit 权限；ANALYTICS=${ANALYTICS} 说明统计开启过，旧记录必须能按期删除）" >&2; exit 1; fi
+  echo "仓库变量 ANALYTICS 从未设置（统计从未开启），无法查询 D1，跳过：$msg" | tee -a "$SUMMARY"
   exit 0
 fi
 dbid=$(jq -r --arg n "$dbname" '[.result[]? | select(.name == $n)][0].uuid // empty' <<< "$list")

@@ -1,5 +1,5 @@
 # T1 匿名统计的保留期清理（docs/ANALYTICS.md）：每天删除超过 RETENTION_DAYS（默认 180 天，提案值）的记录。
-# 与发布解耦：站点不再发布、或统计已关闭（ANALYTICS 不是 on），已存的记录照样按期删除（Codex 审核 #66）。
+# 与发布解耦：站点不再发布、或统计已关闭（ANALYTICS=off），已存的记录照样按期删除（Codex 审核 #66）；查询失败即失败（GPT 审核 #66）。
 # 只稀疏检出 main 的 scripts/devloop，不执行应用代码；逻辑在 scripts/devloop/d1-retention.sh（pages.test.mjs 覆盖）。
 name: analytics-retention
 
