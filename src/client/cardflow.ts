@@ -72,10 +72,12 @@ export function createCardFlow(env: CardFlowEnv) {
       a.remove();
       return true;
     },
-    /** 复制当前预览的 PNG；结果（含不支持 / 被拒时的下载引导）用提示告知 */
-    async copy(): Promise<void> {
-      if (!shown) return;
-      env.toast(copyMessage(await copyPng(shown.blob, env.clipboard())));
+    /** 复制当前预览的 PNG；结果（含不支持 / 被拒时的下载引导）用提示告知。返回是否真的复制成功（统计用） */
+    async copy(): Promise<boolean> {
+      if (!shown) return false;
+      const r = await copyPng(shown.blob, env.clipboard());
+      env.toast(copyMessage(r));
+      return r === 'copied';
     },
     close() {
       env.ui.box.hidden = true;

@@ -20,6 +20,7 @@
 - `docs/ECONOMY_M1.md`：M1 原型数值推演表（提案，待讨论）
 - `docs/SWEPT_PATH.md`：转弯半径与扫掠包络（游戏手感参数，非工程标准）
 - `docs/BUSINESS_PLAN.md`：商业目标与开发任务拆解（提案，待用户拍板）
+- `docs/ANALYTICS.md`：T1 匿名统计（记什么、不记什么、如何开启）
 
 ## M1 原型（讨论用，未经批准上线）
 

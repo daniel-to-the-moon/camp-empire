@@ -52,8 +52,9 @@ export function homeFlow(d: HomeFlowDeps) {
       if (d.viewVariantId() !== d.state().variantId) d.rebuildPlayer();
     },
 
-    async out(): Promise<void> {
-      if (d.mode() !== 'parked' || d.lock.busy) return;
+    /** 返回是否真的起步了（统计 drive_out 只算这种，Codex 审核 #66：开着车、自动出库中、提交等待中或长按 O 都不算） */
+    async out(): Promise<boolean> {
+      if (d.mode() !== 'parked' || d.lock.busy) return false;
       d.lock.busy = true;
       let r;
       try {
@@ -62,16 +63,20 @@ export function homeFlow(d: HomeFlowDeps) {
       } finally {
         d.lock.busy = false;
       }
-      if (!r) return; // 只读或写入失败：act 已提示
+      if (!r) return false; // 只读或写入失败：act 已提示
       // 车后被挡等：存档未变（仍停在家位），先把原因告诉玩家（GPT 审核 #14 第 2 条）
-      if (!r.ok) return d.toast(r.error!);
+      if (!r.ok) {
+        d.toast(r.error!);
+        return false;
+      }
       // 等待提交期间画面可能已按其他标签页的存档重建：只在画面仍停在家位、存档已离开家位时起步
-      if (d.mode() !== 'parked' || d.state().player.parkedHome) return;
+      if (d.mode() !== 'parked' || d.state().player.parkedHome) return false;
       // 换车的画面重建可能还没跑到：先按路线所用车型重建玩家车，起点就是新车型的家位位姿
       if (d.viewVariantId() !== r.variantId) d.rebuildPlayer();
       const end = r.path[r.path.length - 1];
       d.setAwning(false);
       d.startAuto(r.path, () => d.onDeparted(end));
+      return true;
     },
   };
 }

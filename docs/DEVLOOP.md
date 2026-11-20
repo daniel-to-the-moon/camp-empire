@@ -196,7 +196,14 @@ tail -f ../ce-devloop/watch.log                                 # 看日志
     7. 再设 `PAGES_DEPLOY=true`。另有兜底：`pages.sh` 每次上传前用未登录请求检查正式与预览地址，都必须重定向到 `https://<团队>.cloudflareaccess.com/cdn-cgi/access/login…`（协议、主机后缀、路径严格匹配），否则拒绝上传。普通 401/403 不算：Cloudflare 的 Browser Integrity Check 等反机器人机制也会对 CI 返回 403。
   - 绑定自定义域名时，需在 Zero Trust → Access → Applications 另建 Self-hosted 应用覆盖该域名；且已有 Access 策略的域名不能再添加为 Pages 自定义域名（官方已知问题）。
   - 不用 Vercel：Hobby 套餐条款限非商业用途。Cloudflare 免费套餐条款未见商用限制（禁止在免费服务上收集信用卡信息），官方条款原文**待核实**。
-- **对国内公众上线（待用户决定）**：Cloudflare 在中国大陆访问偏慢，`*.pages.dev` 常不可达。届时改用国内平台（如腾讯 EdgeOne Pages、阿里云 ESA Pages）+ ICP 备案域名；网络游戏商业运营还涉及版号、实名与防沉迷，具体要求**待核实**。构建产物是纯静态文件，更换平台只需改发布任务。
+- **公开上线（用户 2026-11-20 拍板：一周内上线，先用 Cloudflare 公开地址）**：仓库变量 `PAGES_PUBLIC=true` 后，`pages.sh` 不再要求 Access 保护，正式地址 `<项目>.pages.dev` 对所有人开放。顺序：
+  1. 合并带此开关的版本，确认 CI 发布正常。
+  2. 设仓库变量 `PAGES_PUBLIC=true`（不设时，只要 Access 一撤掉发布就会被拒绝，防止误公开）。
+  3. Cloudflare 后台 Zero Trust → Access → Applications，删除（或停用）覆盖**正式地址**的那条应用；预览地址 `*.<项目>.pages.dev` 的那条建议保留，未合并的预览版本仍只给自己看。
+  4. 无痕窗口打开正式地址，应直接进入游戏。
+  5. 匿名统计（`docs/ANALYTICS.md`）在公开前开启，才能从第一天起统计。
+  - 回退：删掉 `PAGES_PUBLIC` 并在 Access 恢复正式地址的应用。
+- **对国内公众上线（待用户决定，2026-11-20 选择先用 Cloudflare、以后再迁）**：Cloudflare 在中国大陆访问偏慢，`*.pages.dev` 常不可达。届时改用国内平台（如腾讯 EdgeOne Pages、阿里云 ESA Pages）+ ICP 备案域名；网络游戏商业运营还涉及版号、实名与防沉迷，具体要求**待核实**。构建产物是纯静态文件，更换平台只需改发布任务。
 
 ## 九、费用（待核实）
 
