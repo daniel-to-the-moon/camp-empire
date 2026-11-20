@@ -70,6 +70,25 @@ jobs:
         run: npm test
       - if: steps.app.outputs.yes == '1'
         run: npm run build
+      # 浏览器端到端冒烟验收（用户 2026-11-20 要求自动验收）：真实 Chromium 打开构建产物，走“进入 → 快进 → 收取 → 金币增加”。
+      # 失败即本任务失败：devloop 不合并、main 不发布。只用构建产物与本机 preview 服务，不接触任何凭据。
+      - name: 浏览器冒烟验收
+        id: e2e
+        if: steps.app.outputs.yes == '1' && hashFiles('scripts/e2e/smoke.mjs') != ''
+        run: |
+          set -euo pipefail
+          npx playwright install --with-deps chromium
+          npx vite preview --host 127.0.0.1 --port 4173 --strictPort > "$RUNNER_TEMP/preview.log" 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:4173/ > /dev/null && break; sleep 1; done
+          E2E_ARTIFACTS="$RUNNER_TEMP/e2e" node scripts/e2e/smoke.mjs http://127.0.0.1:4173/
+      - name: 上传冒烟截图
+        if: always() && steps.e2e.conclusion != 'skipped' && steps.e2e.conclusion != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e
+          retention-days: 7
+          if-no-files-found: ignore
       - name: 上传发布产物（main）
         if: (github.event_name == 'push' || inputs.deploy_main == 'true') && steps.app.outputs.yes == '1'
         uses: actions/upload-artifact@v4
