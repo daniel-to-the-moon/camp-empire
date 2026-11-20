@@ -100,11 +100,11 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 - **第二审核方 Claude**：云端审核（`gpt-review.yml` 的 `review` 任务）在 GPT 之后再让 Claude 独立审一遍，与 GPT 用同一份提示词（只改身份，另加“验收标准逐条有代码与测试对应”）和同一个 `review-schema.json`。
   - 合并规则（`scripts/devloop/combine-review.mjs`，`combine-review.test.mjs` 覆盖）：**任一方需修改即需修改**，两方都通过才通过；意见逐条保留并标 `[GPT]` / `[Claude]`。合并后的结论仍走原来的 `decide`、签名标记、轮次上限，PR 评论里的摘要两段并列。
   - Claude 结论缺失或不合法 → `review` 任务失败 → `decide` 按“审核未完成”处理，计入同一提交 3 次上限；不会只凭 GPT 一方放行。
-  - 权限：只给 `Read`、`Glob`、`Grep` 与只读 git 命令；`--setting-sources user`、`--strict-mcp-config` 不加载 PR 里的 `.claude/settings.json`（钩子、权限）和 `.mcp.json`。Claude Code 固定 2.1.318。
+  - 权限：只给 `Read`、`Glob`、`Grep`，不给任何 Bash（`Bash(git log:*)` 这类前缀白名单可经 `git log --output` 写文件，GPT 审核 #63 第 1 轮）；diff、统计、提交记录由工作流在启动 Claude 前生成到只读目录。`--setting-sources user`、`--strict-mcp-config` 不加载 PR 里的 `.claude/settings.json`（钩子、权限）和 `.mcp.json`。`combine-review.test.mjs` 读取工作流校验这些约束。Claude Code 固定 2.1.318。
   - 凭据与开关：沿用 secret `ANTHROPIC_API_KEY`、变量 `ANTHROPIC_BASE_URL`（与 `claude.yml` 相同）；变量 `CLAUDE_REVIEW_MODEL` 可换模型（默认 `claude-opus-5-5`）；变量 `SECOND_REVIEW=off` 关闭第二审核方。
   - 限制：本机审核方（`devloop.mjs`，处理改工作流的 PR）仍只有 GPT 一方。
   - 费用：每个提交多一次 Claude 审核的 API 用量，金额**待核实**（跑过几次后按账单补到 #2）。
-- **浏览器冒烟验收**：`ci.yml` 的 `test` 任务在构建后用 Playwright（固定 1.63.0）在真实 Chromium 里打开构建产物，走“?dev 进入 → 场景有渲染 → 快进 1 天 → 收取 → 金币增加 → 无页面错误”（`scripts/e2e/smoke.mjs`，本地 `npm run build && npx vite preview` 后 `npm run e2e`）。失败即 CI 失败：devloop 不合并、main 不发布；截图作为 Actions 产物保留 7 天。
+- **浏览器冒烟验收**：`ci.yml` 的 `test` 任务在构建后用 Playwright（固定 1.63.0）在真实 Chromium 里打开构建产物，走“?dev 进入 → 场景画布有渲染（截屏前隐藏全部界面层）→ 快进 1 天 → 关掉回访面板后读金币基线 → 收取 → 金币增加、待收取池清空、流水新增 → 无页面错误”（`scripts/e2e/smoke.mjs`，本地 `npm run build && npx vite preview` 后 `npm run e2e`）。失败即 CI 失败：devloop 不合并、main 不发布；截图作为 Actions 产物保留 7 天。
 
 ## 五、停止条件、标签与评论标记
 

@@ -9,18 +9,26 @@
  *   计入同一提交 3 次的停止上限；不会退化成只有 GPT 一方就放行。
  *
  * 用法：
- *   node combine-review.mjs prompt --in prompt.md --out claude-prompt.md
+ *   node combine-review.mjs prompt --in prompt.md --ctx <预生成 diff 的目录> --out claude-prompt.md
  *   node combine-review.mjs merge --gpt review.json --claude claude-result.json --out combined.json
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { validateReview } from './review-format.mjs';
 
-/** 把 GPT 的审核提示词改成第二审核方 Claude 的身份；必查项、严重度、输出格式完全相同。 */
-export function claudePrompt(gptPrompt) {
+/**
+ * 把 GPT 的审核提示词改成第二审核方 Claude 的身份；必查项、严重度、输出格式完全相同。
+ * Claude 没有 Bash（前缀白名单挡不住 `git log --output` 写文件，GPT 审核 #63 第 1 轮 blocker），
+ * 所以“用 git diff 查看”那一行换成工作流预先生成的只读文件路径。
+ */
+export function claudePrompt(gptPrompt, ctxDir) {
+  if (!ctxDir) throw new Error('缺少预生成 diff 的目录');
   const lines = gptPrompt.split('\n');
   const first = lines[0] ?? '';
   if (!first.includes('审核方 GPT')) throw new Error('审核提示词首行格式变了，找不到“审核方 GPT”');
   lines[0] = first.replace('审核方 GPT', '第二审核方 Claude（只读评审会话）');
+  const i = lines.findIndex((l) => l.startsWith('用 `git diff '));
+  if (i < 0) throw new Error('审核提示词里找不到“用 `git diff …` 查看完整改动”这一行');
+  lines[i] = `完整改动已预先生成：\`${ctxDir}/diff.patch\`（统计 \`${ctxDir}/stat.txt\`，提交记录 \`${ctxDir}/log.txt\`），用 Read / Grep 阅读；当前工作目录是 PR 头部提交的检出。测试与构建由 CI 在合并后的代码上另行执行，你只需审代码。`;
   return [
     lines.join('\n'),
     '',
@@ -28,7 +36,7 @@ export function claudePrompt(gptPrompt) {
     '',
     '- 你与第一审核方 GPT 并行、互不可见，结论会合并：任一方 request_changes 就不会合并。',
     '- 代码执行者也是 Claude，但是另一个会话；你与它独立，不要因为同属一家模型就放松标准。',
-    '- 你只能读文件和运行只读的 git 命令；不要尝试修改任何文件。',
+    '- 你只有 Read / Glob / Grep 三个工具，不能运行命令；不要尝试修改任何文件。',
     '- 额外核对“验收”：PR 描述与关联 issue 里的验收标准是否逐条有代码与测试对应；缺了就列为 major。',
     '- 只输出符合给定 JSON Schema 的结论。',
   ].join('\n');
@@ -81,7 +89,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const cmd = process.argv[2];
     if (cmd === 'prompt') {
-      writeFileSync(arg('out'), claudePrompt(readFileSync(arg('in'), 'utf8')));
+      writeFileSync(arg('out'), claudePrompt(readFileSync(arg('in'), 'utf8'), arg('ctx')));
     } else if (cmd === 'merge') {
       const gpt = JSON.parse(readFileSync(arg('gpt'), 'utf8'));
       const claude = extractClaude(readFileSync(arg('claude'), 'utf8'));

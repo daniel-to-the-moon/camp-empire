@@ -120,9 +120,12 @@ jobs:
           output-schema-file: _main/scripts/devloop/review-schema.json
           output-file: ${{ runner.temp }}/review.json
       # 第二审核方 Claude（用户 2026-11-20 要求多 agent 评审验收）。仓库变量 SECOND_REVIEW=off 可关闭，默认开启。
-      # 与 GPT 用同一份提示词（只改身份）和同一个 schema；只给读文件与只读 git 命令，不执行 PR 代码。
+      # 与 GPT 用同一份提示词（只改身份）和同一个 schema；不执行 PR 代码。
+      # 只给 Read / Glob / Grep，不给任何 Bash（GPT 审核 #63 第 1 轮 blocker：`git log --output` 之类的前缀白名单仍能写文件，
+      # 可覆盖 _main 下随后执行的脚本或篡改 GPT 结论）。diff、提交记录由本步骤在启动 Claude 之前生成到 $RUNNER_TEMP/claude-ctx，Claude 只读。
       # --setting-sources user + --strict-mcp-config：不加载 PR 里的 .claude/settings.json（钩子、权限）与 .mcp.json，
       # 否则 PR 可借钩子在持有 API key 的环境里执行命令（2026-11-20 用 2.1.318 实测：带钩子与 MCP 的仓库下均未触发，越权 Bash 被拒）。
+      # 工具与设置来源的约束由 scripts/devloop/combine-review.test.mjs 读取本文件校验。
       # 结论缺失或不合法时本任务失败，decide 按“审核未完成”处理（计入同一提交 3 次上限），不会只凭 GPT 一方放行。
       - name: 安装 Claude Code（固定版本）
         if: vars.SECOND_REVIEW != 'off'
@@ -134,17 +137,24 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
           MODEL: ${{ vars.CLAUDE_REVIEW_MODEL || 'claude-opus-5-5' }}
+          BASE_SHA: ${{ needs.select.outputs.base }}
         run: |
           set -euo pipefail
           [ -n "$ANTHROPIC_BASE_URL" ] || unset ANTHROPIC_BASE_URL
-          node ../_main/scripts/devloop/combine-review.mjs prompt --in "$RUNNER_TEMP/prompt.md" --out "$RUNNER_TEMP/claude-prompt.md"
+          CTX="$RUNNER_TEMP/claude-ctx"
+          mkdir -p "$CTX"
+          git diff --stat "$BASE_SHA...HEAD" > "$CTX/stat.txt"
+          git diff "$BASE_SHA...HEAD" > "$CTX/diff.patch"
+          git log --no-color "$BASE_SHA..HEAD" > "$CTX/log.txt"
+          node ../_main/scripts/devloop/combine-review.mjs prompt --in "$RUNNER_TEMP/prompt.md" --ctx "$CTX" --out "$RUNNER_TEMP/claude-prompt.md"
           claude -p "$(cat "$RUNNER_TEMP/claude-prompt.md")" \
             --model "$MODEL" \
             --max-turns 80 \
             --output-format json \
             --json-schema "$(cat ../_main/scripts/devloop/review-schema.json)" \
-            --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*)" \
-            --disallowedTools "Edit,Write,NotebookEdit,WebFetch,WebSearch" \
+            --add-dir "$CTX" \
+            --allowedTools "Read,Glob,Grep" \
+            --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task" \
             --setting-sources user \
             --strict-mcp-config \
             < /dev/null > "$RUNNER_TEMP/claude-result.json"

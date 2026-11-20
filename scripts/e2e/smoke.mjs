@@ -46,9 +46,12 @@ try {
 
   await step('场景画布渲染出非空像素', async () => {
     await page.waitForTimeout(1500);
-    // WebGL 画布没开 preserveDrawingBuffer，直接回读是空的；改为截屏后在 2D 画布里看像素是否有变化
-    const png = (await page.locator('#stage').screenshot()).toString('base64');
-    const painted = await page.evaluate(async (b64) => {
+    // WebGL 画布没开 preserveDrawingBuffer，直接回读是空的；改为截屏。
+    // 截屏前隐藏全部界面层（顶栏、面板、弹窗、底栏等），只留画布，避免界面颜色让空白场景蒙混过关（GPT 审核 #63 第 1 轮）。
+    await page.addStyleTag({ content: 'body > *:not(#stage), #stage > *:not(canvas) { visibility: hidden !important; }', }).then((h) => h.evaluate((el) => el.setAttribute('data-smoke', 'hide')));
+    const png = (await page.locator('#stage canvas').first().screenshot()).toString('base64');
+    await page.evaluate(() => document.querySelector('style[data-smoke="hide"]')?.remove());
+    const colors = await page.evaluate(async (b64) => {
       const img = new Image();
       img.src = `data:image/png;base64,${b64}`;
       await img.decode();
@@ -57,41 +60,54 @@ try {
       const g = c.getContext('2d');
       g.drawImage(img, 0, 0, 64, 64);
       const d = g.getImageData(0, 0, 64, 64).data;
-      const colors = new Set();
-      for (let i = 0; i < d.length; i += 4) colors.add(((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4));
-      return colors.size >= 8;
+      const set = new Set();
+      for (let i = 0; i < d.length; i += 4) set.add(((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4));
+      return set.size;
     }, png);
-    if (!painted) throw new Error('场景截图颜色少于 8 种，疑似没有渲染');
+    if (colors < 8) throw new Error(`场景画布只有 ${colors} 种颜色，疑似没有渲染`);
   });
 
-  // 首次进入可能弹出回访面板（每日礼物），先关掉
   const welcome = page.locator('#welcome');
-  if (await welcome.isVisible()) await welcome.locator('[data-act="closeWelcome"]').click();
+  /** 回访面板（每日礼物、离线汇总）只关掉、不在里面收取：收取一律走待收取区，才能单独核对收取入账 */
+  async function closeWelcome() {
+    if (await welcome.isVisible()) {
+      await welcome.locator('[data-act="closeWelcome"]').click();
+      await welcome.waitFor({ state: 'hidden', timeout: 5_000 });
+    }
+  }
+  await closeWelcome();
 
-  let before = 0;
-  await step('金币显示为数字', async () => { before = await coins(); });
+  await step('金币显示为数字', async () => { await coins(); });
 
   await step('开发快进 +1 天', async () => {
     await page.locator('#dev').waitFor({ state: 'visible', timeout: 5_000 });
     await page.locator('#dev [data-act="dev"][data-arg="86400000"]').click();
+    await page.waitForTimeout(500);
+    await closeWelcome();
   });
 
-  await step('待收取池有钱并收取', async () => {
-    if (await welcome.isVisible()) {
-      const c = welcome.locator('[data-act="collect"]');
-      if (await c.count()) { await c.click(); return; }
-      await welcome.locator('[data-act="closeWelcome"]').click();
-    }
-    const btn = page.locator('#pending [data-act="collect"]');
+  const btn = page.locator('#pending [data-act="collect"]');
+  await step('待收取池有钱', async () => {
     await btn.waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => !document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 10_000 });
-    await btn.click();
   });
 
-  await step('收取后金币增加', async () => {
-    await page.waitForTimeout(500);
+  // 基线在快进、每日礼物都处理完之后、点收取之前读（GPT 审核 #63 第 1 轮：快进本身会发每日礼物，不能当作收取入账）
+  let before = 0;
+  let logBefore = '';
+  await step('收取：金币增加、待收取池清空、流水新增', async () => {
+    await page.waitForTimeout(300);
+    before = await coins();
+    // 流水只显示最近 6 条、最新在前：比较第一条的内容
+    logBefore = (await page.locator('#log li').first().textContent().catch(() => '')) ?? '';
+    // 面板每帧重绘、按钮节点不稳定；点击处理挂在 document 上，直接对当前节点派发点击
+    await page.evaluate(() => document.querySelector('#pending [data-act="collect"]')?.click());
+    await page.waitForFunction(() => document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 5_000 })
+      .catch(() => { throw new Error('收取后待收取池没有清空（收取按钮仍可点）'); });
     const after = await coins();
-    if (!(after > before)) throw new Error(`金币没有增加：${before} → ${after}`);
+    if (!(after > before)) throw new Error(`收取后金币没有增加：${before} → ${after}`);
+    const logAfter = (await page.locator('#log li').first().textContent()) ?? '';
+    if (logAfter === logBefore) throw new Error(`收取后流水没有新增（最新一条仍是：${logBefore}）`);
   });
 
   if (errors.length) throw new Error(`页面出现错误：\n${errors.join('\n')}`);
