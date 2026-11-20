@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ACT_EVENTS,
   AID_KEY,
   cleanVersion,
   EVENTS,
@@ -13,9 +12,13 @@ import {
   PRIVACY_TEXT,
   setOptOut,
   shouldSend,
+  successEvent,
   uuidV4,
 } from '../src/shared/analytics';
 import type { StorageLike } from '../src/shared/devgate';
+import mainSrc from '../src/client/main.ts?raw';
+import { dayKey } from '../src/shared/ledger';
+import { buyAwning, claimDailyGift, collectPending, newGame } from '../src/shared/state';
 
 class Mem implements StorageLike {
   m = new Map<string, string>();
@@ -102,11 +105,58 @@ describe('T1 匿名统计：客户端规则', () => {
     expect(cleanVersion('x'.repeat(60))).toHaveLength(40);
   });
 
-  it('按钮映射只指向白名单事件；白名单里的每个事件在隐私说明里都有写', () => {
-    for (const ev of Object.values(ACT_EVENTS)) expect(EVENTS).toContain(ev);
+  it('白名单里的每个事件在隐私说明里都有写', () => {
     const text = PRIVACY_TEXT.join('');
     for (const word of ['打开游戏', '收取停车费', '购买侧边帐', '导出露营卡片', '打开车型图鉴', '开车出门']) expect(text).toContain(word);
     expect(EVENTS).toHaveLength(6);
     expect(isValidAid(UUID)).toBe(true);
+  });
+});
+
+// GPT 审核 #66 第 2 轮：点了按钮不算，操作确认成功才上报
+describe('统计只在操作成功后上报', () => {
+  const nov = (d: number, hour = 10) => Date.UTC(2026, 10, d, hour - 8);
+
+  it('收取：有停车费且提交成功才算；池空（重复点击的第二次）、只读或提交失败（null）都不算', () => {
+    const s = newGame(nov(5, 8), 17);
+    claimDailyGift(s, nov(5, 8));
+    claimDailyGift(s, nov(5, 20)); // 回放 12 小时，停车费进池
+    expect(s.ledger.pending.gross).toBeGreaterThan(0);
+    const first = collectPending(s, nov(5, 20));
+    const second = collectPending(s, nov(5, 20));
+    expect([first, second].map(successEvent.collect)).toEqual(['collect', null]);
+    expect(successEvent.collect(null)).toBeNull();
+    expect(successEvent.collect(undefined)).toBeNull();
+  });
+
+  it('购买侧边帐：买成功才算；钱不够、已经买过（重复点击）、只读或提交失败都不算', () => {
+    const poor = newGame(nov(1, 8), 9);
+    poor.ledger.balance = 0;
+    expect(successEvent.buy(buyAwning(poor, nov(1, 9)))).toBeNull(); // 金币不足
+    const s = newGame(nov(1, 8), 9);
+    s.ledger.balance += 1_000_000;
+    s.ledger.entries.push({ key: 't', atMs: nov(1, 9), day: dayKey(nov(1, 9)), kind: 'start', gross: 1_000_000, amount: 1_000_000, note: 't' });
+    expect(successEvent.buy(buyAwning(s, nov(1, 10)))).toBe('buy_awning');
+    expect(successEvent.buy(buyAwning(s, nov(1, 11)))).toBeNull(); // 已拥有
+    expect(successEvent.buy(null)).toBeNull();
+  });
+
+  it('卡片导出、图鉴、出门：只认真正发生的那次', () => {
+    expect(successEvent.cardExport(true)).toBe('card_export');
+    expect(successEvent.cardExport(false)).toBeNull();
+    expect(successEvent.dexOpen(true)).toBe('dex_open');
+    expect(successEvent.dexOpen(false)).toBeNull(); // 已经开着
+    expect(successEvent.driveOut(true)).toBe('drive_out');
+    expect(successEvent.driveOut(false)).toBeNull();
+  });
+
+  it('main.ts：点击处理器不直接上报；每个事件都经 successEvent 判定', () => {
+    const src = mainSrc;
+    const click = src.slice(src.indexOf("document.addEventListener('click'"), src.indexOf('// ---------- 键盘'));
+    expect(click).not.toMatch(/track\(/);
+    const calls = [...src.matchAll(/track\(([^;]*)\);/g)].map((m) => m[1]);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) expect(c === "'session_start'" || c.startsWith('successEvent.')).toBe(true);
+    for (const k of ['collect', 'buy', 'cardExport', 'dexOpen', 'driveOut']) expect(src).toContain(`successEvent.${k}(`);
   });
 });

@@ -41,7 +41,7 @@ import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
-import { ACT_EVENTS, ENDPOINT, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
+import { ENDPOINT, successEvent, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
 const LEGACY_SAVE_KEY = 'camp-empire.save.v2';
@@ -66,7 +66,9 @@ const prefs = (() => {
 })();
 /** 本次会话的关闭状态：存储写入失败（如已满）时也立即停止发送 */
 let sessionOptOut = isOptedOut(prefs);
-function track(ev: AnalyticsEvent) {
+/** ev 为 null（操作没成功）时不发 */
+function track(ev: AnalyticsEvent | null) {
+  if (!ev) return;
   if (!shouldSend({ dev: DEV, hostname: location.hostname, storage: prefs, sessionOptOut })) return;
   const aid = getOrCreateAid(prefs, () => uuidV4(crypto.getRandomValues(new Uint8Array(16))));
   if (!aid) return;
@@ -381,6 +383,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   variant: (id) => homeActions.variant(id),
   async buy() {
     const r = await act((s) => buyAwning(s, now()));
+    track(successEvent.buy(r));
     if (!r) return;
     if (!r.ok) return toast(r.error!);
     player.setAwning(awningOut(state));
@@ -392,7 +395,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   // 按钮与 O 键共用：只有真的起步才计 drive_out（开着车、提交等待中、长按 O 的重复按键都不算）
   async out() {
-    if (await homeActions.out()) track('drive_out');
+    track(successEvent.driveOut(await homeActions.out()));
   },
   park() {
     if (mode !== 'driving' || modeLock.busy) return;
@@ -454,6 +457,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   async collect(arg) {
     const r = await act((s) => collectPending(s, now()));
+    track(successEvent.collect(r));
     if (!r) return;
     if (closeWelcomeAfterCollect(arg === 'close', !!r.collected)) $('#welcome').hidden = true;
     if (!r.collected) return toast(r.error!);
@@ -468,16 +472,17 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     await cardFlow.generate();
   },
   cardDownload() {
-    cardFlow.download();
+    track(successEvent.cardExport(cardFlow.download()));
   },
   async cardCopy() {
-    await cardFlow.copy();
+    track(successEvent.cardExport(await cardFlow.copy()));
   },
   cardClose() {
     cardFlow.close();
   },
   // 车型图鉴（#31）：只读面板，打开期间随 renderHud 刷新
   dex() {
+    track(successEvent.dexOpen($('#dex').hidden));
     $('#dex').hidden = false;
   },
   dexClose() {
@@ -568,9 +573,8 @@ document.addEventListener('click', (e) => {
   if (!el || (el as HTMLButtonElement).disabled) return;
   renderHud();
   const act = el.dataset.act!;
+  // 统计不在这里发：点击不等于成功，各操作确认成功后自己上报（GPT 审核 #66 第 2 轮）
   void Promise.resolve(actions[act]?.(el.dataset.arg ?? '')).finally(renderHud);
-  const ev = ACT_EVENTS[act];
-  if (ev) track(ev);
 });
 
 // ---------- 键盘 ----------

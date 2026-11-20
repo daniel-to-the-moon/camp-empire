@@ -13,14 +13,20 @@ import type { StorageLike } from './devgate';
 export const EVENTS = ['session_start', 'collect', 'buy_awning', 'card_export', 'dex_open', 'drive_out'] as const;
 export type AnalyticsEvent = (typeof EVENTS)[number];
 
-/** 界面按钮（data-act）→ 统计事件。只统计这些动作，其余按钮不发。drive_out 不在这里：只在真的起步时由 main.ts 发（Codex 审核 #66） */
-export const ACT_EVENTS: Readonly<Record<string, AnalyticsEvent>> = {
-  collect: 'collect',
-  buy: 'buy_awning',
-  cardDownload: 'card_export',
-  cardCopy: 'card_export',
-  dex: 'dex_open',
-};
+/**
+ * 各操作“确认成功”才上报（GPT 审核 #66 第 2 轮）：点了按钮不算，存档提交成功、真的有结果才算。
+ * 只读标签页、提交失败（act 返回 null）、重复点击（第二次已无可收 / 已买过）、剪贴板不支持或被拒都返回 null。
+ * drive_out 由 homeflow.out() 的返回值决定（真的起步才算）。
+ */
+export const successEvent = {
+  collect: (r: { collected?: unknown } | null | undefined): AnalyticsEvent | null => (r?.collected ? 'collect' : null),
+  buy: (r: { ok: boolean } | null | undefined): AnalyticsEvent | null => (r?.ok ? 'buy_awning' : null),
+  /** 下载已触发 / 复制返回 copied */
+  cardExport: (done: boolean): AnalyticsEvent | null => (done ? 'card_export' : null),
+  /** 图鉴从关着变为打开才算一次 */
+  dexOpen: (wasHidden: boolean): AnalyticsEvent | null => (wasHidden ? 'dex_open' : null),
+  driveOut: (started: boolean): AnalyticsEvent | null => (started ? 'drive_out' : null),
+} as const;
 
 export const AID_KEY = 'ce.analytics.aid';
 export const OPT_OUT_KEY = 'ce.analytics.optout';
