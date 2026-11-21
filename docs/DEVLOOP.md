@@ -142,7 +142,7 @@ M1 暴露的缺口：没有视觉验收、合并到 main 就是对公众发布�
 |---|---|
 | `awaiting-acceptance` | 改画面的 PR 已过审核、测试与视觉评分，等用户看预览；云端审核不再处理它，直到出现 `accepted` |
 | `accepted` | 用户确认画面（只认仓库所有者、晚于最新提交）；下一轮云端审核合并 |
-| `needs-user` | 自动循环停下等用户：同一 PR 连续 5 轮未通过（`ROUND_LIMIT_MODE=needs-user`，默认）；auto 模式下出现 blocker 或意见数回升；或 Claude 判断命中下列条件 |
+| `needs-user` | 自动循环停下等用户：同一 PR 连续 5 轮未通过（`ROUND_LIMIT_MODE=needs-user`，默认）；auto 模式下出现 blocker 或意见数回升；或 Claude 判断命中下列条件。加这个标签的评论会 @ 仓库所有者（GitHub 才会发通知 / 邮件；环境变量 `DEVLOOP_NOTIFY` 可改成别人，设为空则不 @）；等视觉验收的结果评论同样会 @ |
 | `hold` | 用户手动暂停某个 PR 的自动审核与合并 |
 
 Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`：
