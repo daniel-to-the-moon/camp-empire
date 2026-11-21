@@ -113,7 +113,7 @@ M1 暴露的缺口：没有视觉验收、合并到 main 就是对公众发布�
 | 角色 | 谁来做 | 怎么判定 | 不通过时 |
 |---|---|---|---|
 | 性能验收 | `ci.yml` → `scripts/e2e/gates.mjs` | 页面脚本运行前给 WebGL `draw*` 计数（不依赖游戏里的调试钩子），按帧统计“营地俯瞰”“开出去行驶”两个固定场景的 draw call 与三角形，与 `budgets.json` 比较 | CI 失败 → 交 Claude 修，不合并、不发布 |
-| 视觉验收 | `accept.yml` judge → `visual-judge.mjs` | 固定机位截图（营地、行驶、车辆三视图）+ main 上一版截图 + `docs/visual/reference.png` + `docs/visual/STYLE.md` 交给多模态模型，配色 / 造型 / 光照 / 可读性 / 不退步各 1–10 分；先做多模态自检（四色方块图） | 未达标 → 评论意见并触发 Claude 修，最多 3 轮后 `needs-user`；评分没完成（含自检失败）→ 不自动通过，交人工 |
+| 视觉验收 | `accept.yml` judge → `visual-judge.mjs` | 固定机位截图（必需：营地、行驶、手机竖屏，缺一张评分即报错；可选：车辆三视角特写，CI 产出后自动纳入）+ main 上一版截图 + `docs/visual/reference.png` + `docs/visual/STYLE.md` 交给多模态模型，配色 / 造型 / 光照 / 可读性 / 不退步各 1–10 分；先做多模态自检（四色方块图） | 未达标 → 评论意见并触发 Claude 修，最多 3 轮后 `needs-user`；评分没完成（含自检失败）→ 不自动通过，交人工 |
 | 发布把关 | `cloud.mjs decide` + `accept.yml` preview + `rollback.yml` | 只对改画面的 PR（`gates.json` visual.paths）：代码审核与合并后测试通过后**不合并**，发预览 `https://pr-<编号>.<子域>`（必须受 Access 保护），评分达标后加 `awaiting-acceptance`；用户加 `accepted` 才合并 | `accepted` 必须由仓库所有者打、且晚于最新提交，否则失效；正式站出问题：Actions → rollback → Run workflow，切回上一版 |
 | 合并排期 | `cloud.mjs select`（`accept.mjs queueBlocker`） | 与编号更小、仍在途的 PR 改了同一文件 → 排队，等前面的合完再审 | 前面的 PR 在等人（`needs-user` / `hold` / 等视觉验收）时不挡队，免得整条队伍卡在人身上 |
 | 真机试玩 | 手机竖屏模拟截图（`gates.mjs`，Playwright iPhone 13，**不是真机**）+ 用户每个里程碑在自己手机上玩一次（`.github/ISSUE_TEMPLATE/playtest.md`） | 人工 | 开 issue |
