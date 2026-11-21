@@ -36,7 +36,7 @@ npm run economy:table  # 重算 docs/ECONOMY_M1.md 的数字
 npm run swept:table    # 重算 docs/SWEPT_PATH.md 的数字
 ```
 
-操作：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 或方向键驾驶，空格刹车，<kbd>P</kbd> 自动泊回家位，<kbd>O</kbd> 从家位开出，<kbd>C</kbd> 俯瞰。
+操作：<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 或方向键驾驶，空格刹车，<kbd>P</kbd> 自动泊回家位，<kbd>O</kbd> 从家位开出，按住 <kbd>Shift</kbd>（或点底栏“加速挡”）加速；视图 <kbd>1</kbd> 俯瞰 / <kbd>2</kbd> 跟随 / <kbd>3</kbd> 环绕 / <kbd>4</kbd> 引擎盖，<kbd>V</kbd> 轮换，<kbd>C</kbd> 俯瞰 ↔ 跟随；环绕视图下拖拽画面旋转、滚轮或双指缩放。规则与数值见 `docs/DRIVING_VIEW.md`。
 
 目录：
 - `src/shared/`：玩法纯逻辑（账本、NPC 停车、运动学、Dubins 路径、营地布局、泊车规划、存档状态），不依赖渲染，可原样迁到服务端
