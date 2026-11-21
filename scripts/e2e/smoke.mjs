@@ -1,9 +1,9 @@
 // 浏览器端到端冒烟验收：在真实 Chromium 里打开构建产物（vite preview），走一遍核心循环。
 // 用法：node scripts/e2e/smoke.mjs [地址]，默认 http://127.0.0.1:4173/
-// 流程：?dev 入口 → 画布渲染出非空像素 → 金币显示 → 快进 1 天 → 待收取池有钱 → 收取 → 金币增加 → 无页面错误。
-// 失败时退出码非 0，并把截图写到 E2E_ARTIFACTS（默认 e2e-artifacts/）供 CI 上传。
+// 流程：?dev 入口 → 画布渲染出非空像素 → 金币显示 → 快进 1 天 → 待收取池有钱 → 收取 → 金币增加 → 车辆截图 → 无页面错误。
+// 截图写到 E2E_ARTIFACTS（默认 e2e-artifacts/）供 CI 上传，失败时退出码非 0。
 import { chromium } from 'playwright';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const base = process.argv[2] || 'http://127.0.0.1:4173/';
@@ -108,6 +108,31 @@ try {
     if (!(after > before)) throw new Error(`收取后金币没有增加：${before} → ${after}`);
     const logAfter = (await page.locator('#log li').first().textContent()) ?? '';
     if (logAfter === logBefore) throw new Error(`收取后流水没有新增（最新一条仍是：${logBefore}）`);
+  });
+
+  await step('保存眉檐款三个机位和无眉檐款右前方的 PNG 截图', async () => {
+    const prefix = 'data:image/png;base64,';
+    const saveShot = async (angle, filename) => {
+      const dataUrl = await page.evaluate((a) => window.__campDebug.vehicleShot(a), angle);
+      if (!dataUrl.startsWith(prefix)) throw new Error(`${angle} 未返回 PNG data URL`);
+      const png = Buffer.from(dataUrl.slice(prefix.length), 'base64');
+      if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error(`${angle} 的 PNG 文件头无效`);
+      writeFileSync(join(outDir, filename), png);
+    };
+    const selectVariant = async (id) => {
+      const chip = `#garage [data-act="variant"][data-arg="${id}"]`;
+      // 车库随 HUD 重绘，直接对当前按钮派发点击。
+      await page.evaluate((selector) => {
+        const button = document.querySelector(selector);
+        if (button && !button.classList.contains('on')) button.click();
+      }, chip);
+      await page.locator(`${chip}.on`).waitFor({ state: 'attached', timeout: 10_000 });
+    };
+
+    await selectVariant('SH5043XLJH9DB-C_3116');
+    for (const angle of ['front34', 'side', 'rear34']) await saveShot(angle, `vehicle-${angle}.png`);
+    await selectVariant('SH6591H4DB_2735');
+    await saveShot('front34', 'vehicle-no-brow-front34.png');
   });
 
   if (errors.length) throw new Error(`页面出现错误：\n${errors.join('\n')}`);

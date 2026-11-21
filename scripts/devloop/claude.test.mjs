@@ -84,7 +84,7 @@ function publishSetup({ outcome = 'pr', branch = 'claude/x', withBundle = true }
       env: { ...process.env, PATH: gh.path, OUT: out, REPO: 'o/r', N: '4', START: start, BRANCH: branch, PUSH_URL: remote, RUN_URL: 'https://run', ...env },
       encoding: 'utf8',
     });
-  return { run, gh, remote, start, newSha, ref: (r) => execFileSync('git', ['rev-parse', r], { cwd: remote, encoding: 'utf8' }).trim() };
+  return { run, gh, out, remote, start, newSha, ref: (r) => execFileSync('git', ['rev-parse', r], { cwd: remote, encoding: 'utf8' }).trim() };
 }
 
 test('publish：fix 推送到分支并评论；评论触发不动标签', () => {
@@ -148,6 +148,17 @@ test('publish：outcome 为 needs-user 或产物缺失 → 评论 + 加 needs-us
     assert.equal(r.status, 0, r.stderr);
     assert.match(t.gh.log(), /^issue edit 4 -R o\/r --add-label needs-user$/m);
     assert.equal(t.ref('refs/heads/claude/x'), t.start);
+  }
+});
+
+test('publish：停下等人时 @ 仓库所有者（GitHub 才会通知）；DEVLOOP_NOTIFY 为空则不 @，非法登录名不 @', () => {
+  for (const [env, want] of [[{ GITHUB_REPOSITORY_OWNER: 'alice' }, '@alice'], [{ GITHUB_REPOSITORY_OWNER: 'alice', DEVLOOP_NOTIFY: 'bob' }, '@bob'], [{ GITHUB_REPOSITORY_OWNER: 'alice', DEVLOOP_NOTIFY: '' }, null], [{ GITHUB_REPOSITORY_OWNER: 'a b;x' }, null]]) {
+    const t = publishSetup({ outcome: 'needs-user', withBundle: false });
+    const r = t.run({ MODE: 'fix', EVENT: 'issue_comment', DEVLOOP_NOTIFY: undefined, ...env });
+    assert.equal(r.status, 0, r.stderr);
+    const body = readFileSync(join(t.out, 'body.md'), 'utf8');
+    if (want) assert.match(body, new RegExp(`${want} 自动循环已停下`));
+    else assert.doesNotMatch(body, /@/);
   }
 });
 
@@ -311,4 +322,38 @@ test('claude.yml：只在手动触发（云端审核用 GITHUB_TOKEN 发起）�
   const yml = readFileSync(join(HERE, '../../.github/workflows/claude.yml'), 'utf8');
   assert.match(yml, /\n {10}allowed_bots: \$\{\{ github\.event_name == 'workflow_dispatch' && 'github-actions' \|\| '' \}\}\n/);
   assert.doesNotMatch(yml, /allowed_bots: ['"]?\*/);
+});
+
+test('ctx / publish：GPT 执行者（PREFIX=codex）只动 codex/* 分支，按 issue 触发要求 gpt-design 标签；未知前缀拒绝', () => {
+  assert.deepEqual(runCtx({ EVENT: 'issues', N: '9', PREFIX: 'codex' }).kv, { mode: 'implement', branch: 'codex/issue-9', number: '9' });
+  assert.deepEqual(runCtx({ EVENT: 'workflow_dispatch', N: '4', PREFIX: 'codex', FAKE_HEAD_REF: 'codex/m2-dash' }).kv, { mode: 'fix', branch: 'codex/m2-dash', number: '4' });
+  assert.notEqual(runCtx({ EVENT: 'workflow_dispatch', N: '4', PREFIX: 'codex', FAKE_HEAD_REF: 'claude/x' }).code, 0, 'GPT 不修 Claude 的分支');
+  assert.notEqual(runCtx({ EVENT: 'workflow_dispatch', N: '4', FAKE_HEAD_REF: 'codex/x' }).code, 0, 'Claude 不修 GPT 的分支');
+  const issue = (labels) => JSON.stringify({ state: 'OPEN', url: 'https://github.com/o/r/issues/9', labels: labels.map((name) => ({ name })) });
+  const disp = (labels) => runCtx({ EVENT: 'workflow_dispatch', KIND: 'issue', N: '9', PREFIX: 'codex', LABEL: 'gpt-design', FAKE_ISSUE_JSON: issue(labels) });
+  assert.equal(disp(['gpt-design']).kv.branch, 'codex/issue-9');
+  assert.notEqual(disp(['devloop']).code, 0, '没有 gpt-design 不接');
+  assert.notEqual(runCtx({ EVENT: 'issues', N: '9', PREFIX: 'x' }).code, 0);
+  assert.notEqual(runCtx({ EVENT: 'issues', N: '9', LABEL: 'any' }).code, 0);
+  const t = publishSetup();
+  const r = t.run({ MODE: 'fix', EVENT: 'workflow_dispatch', PREFIX: 'codex' });
+  assert.notEqual(r.status, 0, 'PREFIX=codex 时拒绝推 claude/* 分支');
+  assert.match(r.stderr, /拒绝推送到非 codex\/\* 分支/);
+});
+
+test('codex.yml：执行代码的任务只读、Codex 用 :workspace（无网络）且依赖先装好、固定 runner 镜像；发布任务不运行模型', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/codex.yml'), 'utf8');
+  const work = yml.slice(yml.indexOf('\n  work:'), yml.indexOf('\n  publish:'));
+  const pub = yml.slice(yml.indexOf('\n  publish:'));
+  assert.match(work, /permissions:\n {6}contents: read\n {6}issues: read\n {6}pull-requests: read\n {6}actions: read\n/);
+  assert.doesNotMatch(work, /: write/);
+  assert.match(work, /runs-on: ubuntu-24\.04/);
+  assert.match(work, /permission-profile: ':workspace'/);
+  assert.ok(work.indexOf('npm ci') < work.indexOf('openai/codex-action'), '依赖在 Codex 之前装好');
+  assert.ok(work.indexOf('openai/codex-action') < work.indexOf('npm test && npm run build'), 'Codex 之后由工作流再跑测试把关');
+  assert.match(work, /\^\\\.github\/workflows\//, '改了工作流的结果不发布');
+  assert.match(work, /PREFIX: codex\n {10}LABEL: gpt-design/);
+  assert.doesNotMatch(pub, /codex-action|claude-code-action|npm /);
+  assert.match(pub, /PREFIX: codex/);
+  assert.match(yml, /github\.event\.label\.name == 'gpt-design'/);
 });

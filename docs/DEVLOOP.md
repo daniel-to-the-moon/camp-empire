@@ -47,10 +47,27 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 | 角色 | 做什么 | 不做什么 |
 |---|---|---|
 | Claude（云端，`claude-opus-5-5`） | 认领 `devloop` issue、写代码与测试、开 PR、按审核意见修复 | 不审核、不合并自己的 PR |
-| GPT（Codex CLI，`gpt-6-astra`） | 每个新提交独立审核：只读检出、自己读代码、按必查项给 approve / request_changes | 不改代码 |
+| GPT（Codex CLI，`gpt-6-astra`） | 每个 Claude 写的新提交独立审核：只读检出、自己读代码、按必查项给 approve / request_changes | 不改 Claude 的 PR |
+| GPT 主设（`codex.yml`，openai/codex-action） | 认领 `gpt-design` issue（视觉 / 造型 / 设计类，用户 2026-11-21 比稿后选定 GPT 主设）、写代码与测试、开 `codex/*` PR、按审核意见修复 | 不审、不合并自己的 PR；GPT 写的 PR 由 Claude 独立审核 |
 | 流水线 | CI 测试合并后的代码；GPT 通过且测试通过、main 未变、无暂停标签才合并；合入的就是测试过的那个组合 | 不在本机执行 PR 代码 |
 | Muse | 验收，按第四节格式提 issue | 不打 `devloop` 标签 |
 | 用户 | 给 issue 打 `devloop`（拍板实现）；收费 / 广告 / 商家投放开关、对公众上线、托管位置、裁决 `needs-user` | — |
+
+### 执行者与派活通道（用户 2026-11-21 规则）
+
+**Agent 之间只通过 GitHub 协作，不转告。** 不用浏览器、桌面客户端或任何电脑操作（computer use）在 agent 之间传话、派活或取结果：这既耗 token、又依赖用户的电脑和登录状态在线，结果也不留痕。派活、交付、退回、验收一律落在 issue / PR / 评论 / 标签 / `workflow_dispatch` 上，由工作流自动接力。
+
+| 要做的事 | 通道 | 谁接 |
+|---|---|---|
+| Claude 实现 | issue 打 `devloop`（或 `gh workflow run claude.yml -f issue=N`） | `claude.yml` → `claude/issue-N` PR |
+| GPT 主设实现 | issue 打 `gpt-design`（或 `gh workflow run codex.yml -f issue=N`） | `codex.yml` → `codex/issue-N` PR |
+| 会话里临时请 Codex 云端动手 | 以用户账号在 issue / PR 下评论 `@codex …`（Codex GitHub 集成） | Codex 云端开 `codex/*` PR |
+| 审核 | 定时 / 手动 `gpt-review.yml` | 作者是 Claude → GPT 审 + Claude 复核；作者是 GPT（`codex/*`）→ 只由 Claude 审 |
+| 需修改 | 审核评论带 `state=changes` | 交回作者：`claude.yml` 或 `codex.yml`（`-f pr=N`） |
+| 视觉验收、等用户确认 | `accept.yml` 评论 + `awaiting-acceptance` / `accepted` 标签 | 用户在 PR 上看预览与截图、加标签 |
+| 停下等人 | `needs-user` + 评论里 @ 仓库所有者 | 用户 |
+
+谁写的谁不审：Claude 不审 Claude 写的 PR 的视觉（视觉评分默认 GPT），GPT 不审 GPT 写的代码。`codex.yml` 用 `OPENAI_API_KEY`（同 `gpt-discuss` / `gpt-review`），模型取仓库变量 `GPT_DESIGN_MODEL`，未设则用 `GPT_MODEL`。改 `.github/workflows/` 的 GPT 改动不发布（令牌推不上去），转 `needs-user`。
 
 ## 四、给 Muse 的 issue 格式
 
@@ -106,6 +123,24 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
   - 费用：每个提交多一次 Claude 审核的 API 用量，金额**待核实**（跑过几次后按账单补到 #2）。
 - **浏览器冒烟验收**：`ci.yml` 的 `test` 任务在构建后用 Playwright（固定 1.63.0）在真实 Chromium 里打开构建产物，走“?dev 进入 → 场景画布有渲染（截屏前隐藏全部界面层）→ 快进 1 天 → 关掉回访面板后读金币基线 → 收取 → 金币增加、待收取池清空、流水新增 → 无页面错误”（`scripts/e2e/smoke.mjs`，本地 `npm run build && npx vite preview` 后 `npm run e2e`）。失败即 CI 失败：devloop 不合并、main 不发布；截图作为 Actions 产物保留 7 天。
 
+## 验收与发布角色（用户 2026-11-21 要求补齐；M1 #69 试用）
+
+M1 暴露的缺口：没有视觉验收、合并到 main 就是对公众发布、没有性能实测、改同一文件的 PR 互相冲突、没有真机试玩。补成五个角色，前四个全自动，最后拍板留给用户。配置在 `scripts/devloop/gates.json`、`scripts/e2e/budgets.json`，数值都是提案值。
+
+| 角色 | 谁来做 | 怎么判定 | 不通过时 |
+|---|---|---|---|
+| 性能验收 | `ci.yml` → `scripts/e2e/gates.mjs` | 页面脚本运行前给 WebGL `draw*` 计数（不依赖游戏里的调试钩子），按帧统计“营地俯瞰”“开出去行驶”两个固定场景的 draw call 与三角形，与 `budgets.json` 比较 | CI 失败 → 交 Claude 修，不合并、不发布 |
+| 视觉验收 | `accept.yml` judge → `visual-judge.mjs` | 固定机位截图（必需：营地、行驶、手机竖屏，缺一张评分即报错；可选：车辆三视角特写，CI 产出后自动纳入）+ main 上一版截图 + `docs/visual/reference.png` + `docs/visual/STYLE.md` 交给多模态模型，配色 / 造型 / 光照 / 可读性 / 不退步各 1–10 分；先做多模态自检（四色方块图） | 未达标 → 评论意见并触发 Claude 修，最多 3 轮后 `needs-user`；评分没完成（含自检失败）→ 不自动通过，交人工 |
+| 发布把关 | `cloud.mjs decide` + `accept.yml` preview + `rollback.yml` | 只对改画面的 PR（`gates.json` visual.paths）：代码审核与合并后测试通过后**不合并**，发预览 `https://pr-<编号>.<子域>`（必须受 Access 保护），评分达标后加 `awaiting-acceptance`；用户加 `accepted` 才合并 | `accepted` 必须由仓库所有者打、且晚于最新提交，否则失效；正式站出问题：Actions → rollback → Run workflow，切回上一版 |
+| 合并排期 | `cloud.mjs select`（`accept.mjs queueBlocker`） | 与编号更小、仍在途的 PR 改了同一文件 → 排队，等前面的合完再审 | 前面的 PR 在等人（`needs-user` / `hold` / 等视觉验收）时不挡队，免得整条队伍卡在人身上 |
+| 真机试玩 | 手机竖屏模拟截图（`gates.mjs`，Playwright iPhone 13，**不是真机**）+ 用户每个里程碑在自己手机上玩一次（`.github/ISSUE_TEMPLATE/playtest.md`） | 人工 | 开 issue |
+
+- **视觉评分方**：写代码的是 Claude，默认不让它自评（用户 2026-11-21）。仓库变量 `VISUAL_PROVIDER`（`openai` 默认 / `anthropic`）+ `VISUAL_MODEL` 选择；`openai` 走与 GPT 审核相同的网关（`OPENAI_API_KEY`、`GPT_RESPONSES_ENDPOINT`，模型缺省用 `GPT_MODEL`）。手动触发 `accept.yml` 可用 `provider` / `model` 临时覆盖，`report=false` 只评分不评论。
+- **用户的操作**：看预览，满意给 PR 加 `accepted`；不满意在 PR 下写意见并告诉协调对话（之后可改成标签触发）。
+- **成本**：视觉评分每轮 2 次模型调用（自检 + 评分，约 5–8 张图）；用户确认后下一轮会再做一次代码审核（同一提交），金额**待核实**。性能验收与截图在 CI 里多跑约 1 分钟（待核实）。
+- **残余风险**：截图由 PR 代码渲染，PR 可以故意画出好看的截图或在图里写字诱导评分——评分只是初筛，最后仍由用户看预览；draw call 计数在页面脚本前注入，PR 代码理论上可以改写 WebGL 原型绕过，靠代码审核发现。SwiftShader 下的帧时间与真机无关，不判定。
+- **云真机**（BrowserStack 等）：私有仓库没有免费额度，需付费、会计入每月 1000 元现金上限，**待用户决定**。
+
 ## 五、停止条件、标签与评论标记
 
 审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；同一提交因基础设施问题——CI 未完成或 GPT 审核本身失败——累计 3 次即转为 `stopped`）。CI 任务超时（`timed_out`）按测试失败处理，交执行者修。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
@@ -122,7 +157,9 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 | 标签 | 含义 |
 |---|---|
-| `needs-user` | 自动循环停下等用户：同一 PR 连续 5 轮未通过（`ROUND_LIMIT_MODE=needs-user`，默认）；auto 模式下出现 blocker 或意见数回升；或 Claude 判断命中下列条件 |
+| `awaiting-acceptance` | 改画面的 PR 已过审核、测试与视觉评分，等用户看预览；云端审核不再处理它，直到出现 `accepted` |
+| `accepted` | 用户确认画面（只认仓库所有者、晚于最新提交）；下一轮云端审核合并 |
+| `needs-user` | 自动循环停下等用户：同一 PR 连续 5 轮未通过（`ROUND_LIMIT_MODE=needs-user`，默认）；auto 模式下出现 blocker 或意见数回升；或 Claude 判断命中下列条件。加这个标签的评论会 @ 仓库所有者（GitHub 才会发通知 / 邮件；环境变量 `DEVLOOP_NOTIFY` 可改成别人，设为空则不 @）；等视觉验收的结果评论同样会 @ |
 | `hold` | 用户手动暂停某个 PR 的自动审核与合并 |
 
 Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`：
@@ -145,6 +182,7 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
 
 ## 模型网关与手动重跑
 
+- **优先用订阅令牌**：仓库 secret `CLAUDE_CODE_OAUTH_TOKEN`（用户本机 `claude setup-token` 生成，由用户自己 `gh secret set`）存在时，`claude.yml` 与 `gpt-review.yml` 的 Claude 审核都用它，并且不走 `ANTHROPIC_BASE_URL` 网关；不存在才回退到 `ANTHROPIC_API_KEY` + 网关（2026-11-21 网关账号返回 403 停用后改用）。视觉评分选 `anthropic` 时仍需 `ANTHROPIC_API_KEY`（直接调 Messages API，订阅令牌不适用）。
 - 云端 Claude 通过仓库变量 `ANTHROPIC_BASE_URL` 指定的网关调用模型（用户的 key 来自第三方网关 `api.toolpai.com`，不是 Anthropic 官方 API；2026-11-07 用户本机实测该网关可用）。变量为空时走官方地址。代码会经过该网关，与用户桌面端 Claude 的现有路径相同。
 - 云端修复失败、PR 被加上 `needs-user` 后的恢复步骤：
   1. 先看 PR 下的失败说明和 Actions 日志，确认停下的原因（key、网关、额度等）已经排除；
