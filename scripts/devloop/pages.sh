@@ -36,6 +36,18 @@ cf() { # cf <METHOD> <路径> [JSON 正文] → 输出响应正文；HTTP 状态
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# D1 调用失败时的排查信息（2026-11-21：令牌页显示有 D1 Edit，接口仍回 10000）。只打印状态与 Cloudflare 的错误，不打印令牌。
+d1_diagnose() {
+  local v
+  v=$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" "$CF_API/user/tokens/verify" 2>/dev/null || true)
+  echo "排查：令牌校验 /user/tokens/verify → $(jq -c '{success, status: .result.status, expires_on: .result.expires_on, errors}' <<< "$v" 2>/dev/null || echo "无法解析")"
+  echo "排查：账户 ID 末 4 位 …${CLOUDFLARE_ACCOUNT_ID: -4}（同一账户的 Pages 项目查询已成功）"
+  local plain
+  plain=$(cf GET "/d1/database")
+  echo "排查：不带参数列 D1 → HTTP $(cat "$tmp/status")，$(jq -c '{success, errors, count: (.result | length? // null)}' <<< "$plain" 2>/dev/null || echo "无法解析")"
+  echo "排查：若令牌有效且确有 Account → D1 → Edit，仍回 10000，请在 Cloudflare 控制台打开 Workers 和 Pages → D1，确认账户已能使用 D1。"
+}
+
 # 1. 按名字精确查询项目；不存在才创建；拿不到项目就失败并保留 Cloudflare 的错误信息
 info=$(cf GET "/pages/projects/$PROJECT")
 if [ "$(cat "$tmp/status")" = "404" ]; then
@@ -101,7 +113,11 @@ if [ "${ANALYTICS:-}" = "on" ]; then
   [ -f "${FUNCTIONS_DIR:-}/api/ev.js" ] && [ -f "$FUNCTIONS_DIR/schema.sql" ] || { echo "::error::缺少 functions 目录（api/ev.js、schema.sql）：${FUNCTIONS_DIR:-未设置}" >&2; exit 1; }
   dbname="$PROJECT-analytics"
   list=$(cf GET "/d1/database?name=$dbname&per_page=100")
-  [ "$(jq -r '.success' <<< "$list" 2>/dev/null)" = "true" ] || { echo "::error::查询 D1 数据库失败（令牌需要 Account → D1 → Edit 权限）：$(jq -c '.errors // .' <<< "$list" 2>/dev/null || echo "$list")" >&2; exit 1; }
+  if [ "$(jq -r '.success' <<< "$list" 2>/dev/null)" != "true" ]; then
+    echo "::error::查询 D1 数据库失败（HTTP $(cat "$tmp/status")；令牌需要 Account → D1 → Edit 权限）：$(jq -c '.errors // .' <<< "$list" 2>/dev/null || echo "$list")" >&2
+    d1_diagnose >&2
+    exit 1
+  fi
   dbid=$(jq -r --arg n "$dbname" '[.result[]? | select(.name == $n)][0].uuid // empty' <<< "$list")
   if [ -z "$dbid" ]; then
     made=$(cf POST "/d1/database" "$(jq -nc --arg n "$dbname" '{name: $n}')")

@@ -277,7 +277,7 @@ test('匿名统计：已有同名库直接复用，不重复创建', async () =>
 
 test('匿名统计：缺 D1 权限、SQL 失败、缺 functions、保留天数非法，都失败且不上传', async () => {
   const cases = [
-    [{ d1: { listFails: true } }, {}, /D1 → Edit/],
+    [{ d1: { listFails: true } }, {}, /D1 → Edit[\s\S]*排查：令牌校验[\s\S]*排查：不带参数列 D1/],
     [{ d1: { queryFails: true } }, {}, /D1 执行失败/],
     [{}, { FUNCTIONS_DIR: '/nonexistent' }, /缺少 functions/],
     [{}, { RETENTION_DAYS: '1;rm' }, /RETENTION_DAYS/],
