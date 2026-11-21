@@ -8,15 +8,20 @@ mkdir -p "$OUT"
 if [ ! -f "$OUT/outcome" ]; then
   # 连产物都没有（work 任务整体失败 / 超时被取消）
   echo needs-user > "$OUT/outcome"
-  printf '执行者：Claude（devloop）\n\n云端执行任务失败或超时，没有产物，自动循环在此停下，请用户查看：%s\n' "$RUN_URL" > "$OUT/body.md"
+  printf '执行者：%s\n\n云端执行任务失败或超时，没有产物，自动循环在此停下，请用户查看：%s\n' "${WHO:-Claude（devloop）}" "$RUN_URL" > "$OUT/body.md"
 fi
 if [ "$(tr -d '[:space:]' < "$OUT/outcome")" != "pr" ]; then
+  # 停下等人：@ 负责人，GitHub 才会发通知（只加标签没人知道，见 review-format.mjs notifyLine）
+  who="${DEVLOOP_NOTIFY-${GITHUB_REPOSITORY_OWNER:-}}"
+  if [[ "$who" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then printf '\n@%s 自动循环已停下，需要你处理。\n' "$who" >> "$OUT/body.md"; fi
   gh issue comment "$N" -R "$REPO" --body-file "$OUT/body.md"
   gh issue edit "$N" -R "$REPO" --add-label needs-user
   echo "published=needs-user"
   exit 0
 fi
-case "$BRANCH" in claude/*) ;; *) echo "::error::拒绝推送到非 claude/* 分支：$BRANCH" >&2; exit 1 ;; esac
+PREFIX="${PREFIX:-claude}"
+case "$PREFIX" in claude | codex) ;; *) echo "::error::未知执行者前缀：$PREFIX" >&2; exit 1 ;; esac
+case "$BRANCH" in "$PREFIX"/*) ;; *) echo "::error::拒绝推送到非 $PREFIX/* 分支：$BRANCH" >&2; exit 1 ;; esac
 work=$(mktemp -d)
 git init -q "$work"
 cd "$work"
