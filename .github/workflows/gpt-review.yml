@@ -110,6 +110,32 @@ jobs:
           REPO: ${{ github.repository }}
           DEVLOOP_MARKER_KEY: ${{ secrets.DEVLOOP_MARKER_KEY }}
         run: node _main/scripts/devloop/cloud.mjs prompt --pr "${{ needs.select.outputs.pr }}" --head "${{ needs.select.outputs.head }}" --base "${{ needs.select.outputs.base }}" --dir pr --out "$RUNNER_TEMP/prompt.md"
+      # 探测网关：Codex 失败时只报 “high demand / Reconnecting”，看不出是网关不通、key 无效还是模型不可用（2026-11-21 #67 连续失败）。
+      # 只打印 HTTP 状态与错误信息前 300 字，不打印 key。一次短调用，输出 token 上限设为 16；实际用量与费用待核实。失败不挡后面的步骤。
+      - name: 探测 GPT 网关
+        if: needs.select.outputs.author != 'gpt'
+        continue-on-error: true
+        env:
+          KEY: ${{ secrets.OPENAI_API_KEY }}
+          EP: ${{ vars.GPT_RESPONSES_ENDPOINT }}
+          MODEL: ${{ vars.GPT_MODEL }}
+        run: |
+          set -uo pipefail
+          url="${EP:-https://api.openai.com/v1/responses}"
+          # 默认 shell 带 -e：显式接住 curl 的退出码，DNS / TLS / 连接失败 / 超时也要把原因打出来（GPT 审核 #74 第 1 轮 major）
+          rc=0
+          code=$(curl -sS -m 60 -o "$RUNNER_TEMP/probe.json" -w '%{http_code}' -H "Authorization: Bearer $KEY" -H 'content-type: application/json' \
+            -d "$(jq -n --arg m "$MODEL" '{model: $m, input: "reply OK", max_output_tokens: 16}')" "$url" 2> "$RUNNER_TEMP/probe.err") || rc=$?
+          err=$(head -c 300 "$RUNNER_TEMP/probe.err" | tr '\n' ' ')
+          if [ "$rc" != 0 ]; then
+            echo "::warning::GPT 网关连不上（${url%%\?*}，curl 退出码 $rc）：$err"
+            exit 1
+          fi
+          echo "POST ${url%%\?*}（模型 $MODEL）→ HTTP $code"
+          if [ "$code" != 200 ]; then
+            echo "::warning::GPT 网关探测失败 HTTP $code：$(jq -rc '.error.message // .error // .' "$RUNNER_TEMP/probe.json" 2>/dev/null | head -c 300)"
+            exit 1
+          fi
       # 作者是 GPT 的 PR 不让 GPT 审（谁写的谁不审），只由下面的 Claude 审
       - name: GPT 审核
         if: needs.select.outputs.author != 'gpt'

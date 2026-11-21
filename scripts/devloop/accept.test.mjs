@@ -107,7 +107,7 @@ test('评分：默认 GPT（Responses API），可配置为 Claude；先过多�
   const CANARY = '{"tl":"red","tr":"green","bl":"blue","br":"yellow"}';
   const rig = (provider, answers) => {
     const calls = [];
-    const reply = (text) => ({ ok: true, status: 200, json: async () => (provider === 'openai' ? { output: [{ content: [{ type: 'output_text', text }] }] } : { content: [{ type: 'text', text }] }) });
+    const reply = (text) => ({ ok: true, status: 200, text: async () => JSON.stringify(provider === 'openai' ? { output: [{ content: [{ type: 'output_text', text }] }] } : { content: [{ type: 'text', text }] }) });
     const fetchImpl = async (url, init) => { calls.push({ url, body: JSON.parse(init.body), headers: init.headers }); return reply(answers[calls.length - 1]); };
     return { calls, fetchImpl };
   };
@@ -128,8 +128,52 @@ test('评分：默认 GPT（Responses API），可配置为 Claude；先过多�
   assert.equal(rb.verdict, 'error');
   assert.match(rb.reason, /多模态自检失败/);
   assert.equal(blind.calls.length, 1, '自检失败就不再评分');
-  const down = await run({ shotsDir: '/d', stylePath: '/style', env, cfg, fs, fetchImpl: async () => ({ ok: false, status: 502, json: async () => ({ error: 'bad gateway' }) }) });
+  const waits = [];
+  const sleep = async (ms) => { waits.push(ms); };
+  let n502 = 0;
+  const down = await run({ shotsDir: '/d', stylePath: '/style', env, cfg, fs, sleep, fetchImpl: async () => { n502++; return { ok: false, status: 502, text: async () => JSON.stringify({ error: 'bad gateway' }) }; } });
   assert.equal(down.verdict, 'error');
+  assert.equal(n502, 3, '5xx 退避重试到上限');
+  assert.match(down.reason, /HTTP 502.*已重试 3 次/);
+  // 网络错误：报出 cause 里的真实原因与主机名，并重试；恢复后照常评分
+  const netErr = Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo ENOTFOUND gw.example'), { code: 'ENOTFOUND' }) });
+  const flaky = rig('openai', [CANARY, SCORE]);
+  let failed = 0;
+  const rec = await run({ shotsDir: '/d', stylePath: '/style', env, cfg, fs, sleep, fetchImpl: async (u, i) => { if (failed++ < 1) throw netErr; return flaky.fetchImpl(u, i); } });
+  assert.equal(rec.verdict, 'pass', JSON.stringify(rec));
+  assert.deepEqual(waits.slice(0, 2), [15000, 30000], '退避递增');
+  const dead = await run({ shotsDir: '/d', stylePath: '/style', env, cfg: { ...cfg, retries: 2 }, fs, sleep, fetchImpl: async () => { throw netErr; } });
+  assert.match(dead.reason, /连不上评分服务 .*ENOTFOUND.*已重试 2 次/);
+  // 响应头已到、读响应体时超时或连接中断：同样重试，并报出原因（GPT 审核 #74 第 1 轮 major）
+  for (const err of [Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }), Object.assign(new TypeError('terminated'), { cause: Object.assign(new Error('other side closed'), { code: 'ECONNRESET' }) })]) {
+    const ok = rig('openai', [CANARY, SCORE]);
+    let broken = 0;
+    const rb2 = await run({ shotsDir: '/d', stylePath: '/style', env, cfg, fs, sleep, fetchImpl: async (u, i) => (broken++ < 1 ? { ok: true, status: 200, text: async () => { throw err; } } : ok.fetchImpl(u, i)) });
+    assert.equal(rb2.verdict, 'pass', JSON.stringify(rb2));
+    const dead2 = await run({ shotsDir: '/d', stylePath: '/style', env, cfg: { ...cfg, retries: 2 }, fs, sleep, fetchImpl: async () => ({ ok: true, status: 200, text: async () => { throw err; } }) });
+    assert.match(dead2.reason, /读取评分服务响应失败 .*(超时|ECONNRESET).*已重试 2 次/);
+  }
+  // 总时限：自检重试后恢复、正式评分又一直超时，到截止时间就停下返回 error（不被任务超时取消）
+  let clock = 0;
+  const tick = async (ms) => { clock += ms; };
+  const slow = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+  const seen = [];
+  let k = 0;
+  const late = await run({ shotsDir: '/d', stylePath: '/style', env, cfg: { ...cfg, deadlineMs: 600_000, timeoutMs: 300_000 }, fs, sleep: tick, now: () => clock,
+    fetchImpl: async (u, i) => { k++; seen.push(i.signal); clock += 300_000; if (k === 2) return rig('openai', [CANARY]).fetchImpl(u, i); throw slow; } });
+  assert.equal(late.verdict, 'error');
+  assert.match(late.reason, /已到总时限|超出总时限/);
+  assert.ok(clock <= 600_000 + 300_000, `不超过截止时间太多：${clock}`);
+  assert.ok(k <= 3, `到时限就不再发请求：${k}`);
+  // 200 但不是 JSON：格式错误，不重试
+  let nj = 0;
+  const bad = await run({ shotsDir: '/d', stylePath: '/style', env, cfg, fs, sleep, fetchImpl: async () => { nj++; return { ok: true, status: 200, text: async () => '<html>' }; } });
+  assert.equal(nj, 1);
+  assert.match(bad.reason, /不是 JSON/);
+  // 4xx（例如 key 无效）不重试
+  let n401 = 0;
+  await run({ shotsDir: '/d', stylePath: '/style', env, cfg, fs, sleep, fetchImpl: async () => { n401++; return { ok: false, status: 401, text: async () => '{}' }; } });
+  assert.equal(n401, 1);
   const nomodel = await run({ shotsDir: '/d', stylePath: '/style', env: { OPENAI_API_KEY: 'k' }, cfg: { ...cfg, model: '' }, fs, fetchImpl: g.fetchImpl });
   assert.match(nomodel.reason, /没有配置评分模型/);
   assert.equal((await run({ provider: 'x', shotsDir: '/d', stylePath: '/style', env, cfg, fs })).verdict, 'error');
