@@ -95,6 +95,17 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 - **结论校验**：GPT 结论按 `review-schema.json` 校验（`validateReview`，云端与本机共用）；不合法（如 `findings` 不是数组、`verdict` 非法）按 GPT 审核失败处理，计入同一提交 3 次的停止上限。
 - **费用**：每次审核消耗 AI 网关的共享额度（金额待核实）；网关限速见上文“GPT 云端参与讨论”。
 
+## 双评审与浏览器验收（用户 2026-11-20 要求“GPT 和其他 agent 评审和验收”）
+
+- **第二审核方 Claude**：云端审核（`gpt-review.yml` 的 `review` 任务）在 GPT 之后再让 Claude 独立审一遍，与 GPT 用同一份提示词（只改身份，另加“验收标准逐条有代码与测试对应”）和同一个 `review-schema.json`。
+  - 合并规则（`scripts/devloop/combine-review.mjs`，`combine-review.test.mjs` 覆盖）：**任一方需修改即需修改**，两方都通过才通过；意见逐条保留并标 `[GPT]` / `[Claude]`。合并后的结论仍走原来的 `decide`、签名标记、轮次上限，PR 评论里的摘要两段并列。
+  - Claude 结论缺失或不合法 → `review` 任务失败 → `decide` 按“审核未完成”处理，计入同一提交 3 次上限；不会只凭 GPT 一方放行。
+  - 权限：只给 `Read`、`Glob`、`Grep`，不给任何 Bash（`Bash(git log:*)` 这类前缀白名单可经 `git log --output` 写文件，GPT 审核 #63 第 1 轮）；diff、统计、提交记录由工作流在启动 Claude 前生成到只读目录。`--setting-sources user`、`--strict-mcp-config` 不加载 PR 里的 `.claude/settings.json`（钩子、权限）和 `.mcp.json`。`combine-review.test.mjs` 读取工作流校验这些约束。Claude Code 固定 2.1.318。
+  - 凭据与开关：沿用 secret `ANTHROPIC_API_KEY`、变量 `ANTHROPIC_BASE_URL`（与 `claude.yml` 相同）；变量 `CLAUDE_REVIEW_MODEL` 可换模型（默认 `claude-opus-5-5`）；变量 `SECOND_REVIEW=off` 关闭第二审核方。
+  - 限制：本机审核方（`devloop.mjs`，处理改工作流的 PR）仍只有 GPT 一方。
+  - 费用：每个提交多一次 Claude 审核的 API 用量，金额**待核实**（跑过几次后按账单补到 #2）。
+- **浏览器冒烟验收**：`ci.yml` 的 `test` 任务在构建后用 Playwright（固定 1.63.0）在真实 Chromium 里打开构建产物，走“?dev 进入 → 场景画布有渲染（截屏前隐藏全部界面层）→ 快进 1 天 → 关掉回访面板后读金币基线 → 收取 → 金币增加、待收取池清空、流水新增 → 无页面错误”（`scripts/e2e/smoke.mjs`，本地 `npm run build && npx vite preview` 后 `npm run e2e`）。失败即 CI 失败：devloop 不合并、main 不发布；截图作为 Actions 产物保留 7 天。
+
 ## 五、停止条件、标签与评论标记
 
 审核评论末尾的标记：`changes`（触发 Claude 修复，该提交不再审）、`merged`、`stopped`（加 `needs-user`）、`retry`（main 变化、合并失败、CI 出错、暂停标签等，下一轮重试同一提交；同一提交因基础设施问题——CI 未完成或 GPT 审核本身失败——累计 3 次即转为 `stopped`）。CI 任务超时（`timed_out`）按测试失败处理，交执行者修。GPT 结论按“提交 + main 基准”缓存，main 变了就重新审核。
@@ -185,7 +196,14 @@ tail -f ../ce-devloop/watch.log                                 # 看日志
     7. 再设 `PAGES_DEPLOY=true`。另有兜底：`pages.sh` 每次上传前用未登录请求检查正式与预览地址，都必须重定向到 `https://<团队>.cloudflareaccess.com/cdn-cgi/access/login…`（协议、主机后缀、路径严格匹配），否则拒绝上传。普通 401/403 不算：Cloudflare 的 Browser Integrity Check 等反机器人机制也会对 CI 返回 403。
   - 绑定自定义域名时，需在 Zero Trust → Access → Applications 另建 Self-hosted 应用覆盖该域名；且已有 Access 策略的域名不能再添加为 Pages 自定义域名（官方已知问题）。
   - 不用 Vercel：Hobby 套餐条款限非商业用途。Cloudflare 免费套餐条款未见商用限制（禁止在免费服务上收集信用卡信息），官方条款原文**待核实**。
-- **对国内公众上线（待用户决定）**：Cloudflare 在中国大陆访问偏慢，`*.pages.dev` 常不可达。届时改用国内平台（如腾讯 EdgeOne Pages、阿里云 ESA Pages）+ ICP 备案域名；网络游戏商业运营还涉及版号、实名与防沉迷，具体要求**待核实**。构建产物是纯静态文件，更换平台只需改发布任务。
+- **公开上线（用户 2026-11-20 拍板：一周内上线，先用 Cloudflare 公开地址）**：仓库变量 `PAGES_PUBLIC=true` 后，`pages.sh` 不再要求 Access 保护，正式地址 `<项目>.pages.dev` 对所有人开放。顺序：
+  1. 合并带此开关的版本，确认 CI 发布正常。
+  2. 设仓库变量 `PAGES_PUBLIC=true`（不设时，只要 Access 一撤掉发布就会被拒绝，防止误公开）。
+  3. Cloudflare 后台 Zero Trust → Access → Applications，删除（或停用）覆盖**正式地址**的那条应用；预览地址 `*.<项目>.pages.dev` 的那条建议保留，未合并的预览版本仍只给自己看。
+  4. 无痕窗口打开正式地址，应直接进入游戏。
+  5. 匿名统计（`docs/ANALYTICS.md`）在公开前开启，才能从第一天起统计。
+  - 回退：删掉 `PAGES_PUBLIC` 并在 Access 恢复正式地址的应用。
+- **对国内公众上线（待用户决定，2026-11-20 选择先用 Cloudflare、以后再迁）**：Cloudflare 在中国大陆访问偏慢，`*.pages.dev` 常不可达。届时改用国内平台（如腾讯 EdgeOne Pages、阿里云 ESA Pages）+ ICP 备案域名；网络游戏商业运营还涉及版号、实名与防沉迷，具体要求**待核实**。构建产物是纯静态文件，更换平台只需改发布任务。
 
 ## 九、费用（待核实）
 

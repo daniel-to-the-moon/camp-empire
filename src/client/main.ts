@@ -43,6 +43,7 @@ import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
+import { ENDPOINT, successEvent, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
 const LEGACY_SAVE_KEY = 'camp-empire.save.v2';
@@ -56,6 +57,37 @@ const devClock = new DevClock(DEV ? localStorage : null, DEV_KEY, () => Date.now
 const now = () => devClock.now(state.sid);
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
+
+// ---------- T1 匿名统计（规则见 src/shared/analytics.ts，说明见 docs/ANALYTICS.md） ----------
+const prefs = (() => {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+})();
+/** 本次会话的关闭状态：存储写入失败（如已满）时也立即停止发送 */
+let sessionOptOut = isOptedOut(prefs);
+/** ev 为 null（操作没成功）时不发 */
+function track(ev: AnalyticsEvent | null) {
+  if (!ev) return;
+  if (!shouldSend({ dev: DEV, hostname: location.hostname, storage: prefs, sessionOptOut })) return;
+  const aid = getOrCreateAid(prefs, () => uuidV4(crypto.getRandomValues(new Uint8Array(16))));
+  if (!aid) return;
+  try {
+    // text/plain：同源简单请求，不触发预检；失败静默，不影响游戏
+    navigator.sendBeacon?.(ENDPOINT, new Blob([payload(aid, ev, __APP_VERSION__)], { type: 'text/plain' }));
+  } catch {
+    /* 统计失败不影响游戏 */
+  }
+}
+function renderPrivacy() {
+  const off = sessionOptOut;
+  $('#privacy-body').innerHTML = `${PRIVACY_TEXT.map((t) => `<p>${t}</p>`).join('')}
+    <p class="fine">当前：<b>${off ? '已关闭' : '已开启'}</b>${DEV ? '（调试入口不发送）' : ''}</p>`;
+  $('#privacy-toggle').textContent = off ? '开启匿名统计' : '关闭匿名统计';
+}
+track('session_start');
 
 // ---------- 存档：IndexedDB 原子事务 + 单写者锁（见 src/shared/save.ts） ----------
 const locks = (navigator as unknown as { locks?: LocksLike }).locks;
@@ -379,6 +411,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   variant: (id) => homeActions.variant(id),
   async buy() {
     const r = await act((s) => buyAwning(s, now()));
+    track(successEvent.buy(r));
     if (!r) return;
     if (!r.ok) return toast(r.error!);
     player.setAwning(awningOut(state));
@@ -388,7 +421,10 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     if (!(await act((s) => setAwningWanted(s, now(), !s.awningWanted)))) return;
     player.setAwning(awningOut(state));
   },
-  out: () => homeActions.out(),
+  // 按钮与 O 键共用：只有真的起步才计 drive_out（开着车、提交等待中、长按 O 的重复按键都不算）
+  async out() {
+    track(successEvent.driveOut(await homeActions.out()));
+  },
   park() {
     if (mode !== 'driving' || modeLock.busy) return;
     if (!writer) return toast(unsupported ?? READONLY_MSG);
@@ -452,6 +488,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   async collect(arg) {
     const r = await act((s) => collectPending(s, now()));
+    track(successEvent.collect(r));
     if (!r) return;
     if (closeWelcomeAfterCollect(arg === 'close', !!r.collected)) $('#welcome').hidden = true;
     if (!r.collected) return toast(r.error!);
@@ -466,20 +503,35 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     await cardFlow.generate();
   },
   cardDownload() {
-    cardFlow.download();
+    track(successEvent.cardExport(cardFlow.download()));
   },
   async cardCopy() {
-    await cardFlow.copy();
+    track(successEvent.cardExport(await cardFlow.copy()));
   },
   cardClose() {
     cardFlow.close();
   },
   // 车型图鉴（#31）：只读面板，打开期间随 renderHud 刷新
   dex() {
+    track(successEvent.dexOpen($('#dex').hidden));
     $('#dex').hidden = false;
   },
   dexClose() {
     $('#dex').hidden = true;
+  },
+  // T1 隐私与统计面板
+  privacy() {
+    renderPrivacy();
+    $('#privacy').hidden = false;
+  },
+  privacyToggle() {
+    sessionOptOut = !sessionOptOut;
+    const saved = setOptOut(prefs, sessionOptOut);
+    renderPrivacy();
+    toast(`${sessionOptOut ? '已关闭匿名统计' : '已开启匿名统计'}${saved ? '' : '（浏览器存储不可用，只对本次打开有效）'}`);
+  },
+  privacyClose() {
+    $('#privacy').hidden = true;
   },
 };
 
@@ -553,7 +605,9 @@ document.addEventListener('click', (e) => {
   const el = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
   if (!el || (el as HTMLButtonElement).disabled) return;
   renderHud();
-  void Promise.resolve(actions[el.dataset.act!]?.(el.dataset.arg ?? '')).finally(renderHud);
+  const act = el.dataset.act!;
+  // 统计不在这里发：点击不等于成功，各操作确认成功后自己上报（GPT 审核 #66 第 2 轮）
+  void Promise.resolve(actions[act]?.(el.dataset.arg ?? '')).finally(renderHud);
 });
 
 // ---------- 键盘 ----------
@@ -566,7 +620,9 @@ window.addEventListener('keydown', (e) => {
   const v = viewForKey(e.code, currentView());
   if (v) selectView(v === 'next' ? views.next(mode === 'parked') : v);
   if (e.code === 'KeyP') void actions.park('');
-  if (e.code === 'KeyO') void Promise.resolve(actions.out('')).finally(renderHud);
+  if (e.code === 'KeyO') {
+    void Promise.resolve(actions.out('')).finally(renderHud);
+  }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());

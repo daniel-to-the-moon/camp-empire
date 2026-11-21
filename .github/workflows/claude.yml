@@ -74,6 +74,9 @@ jobs:
         run: |
           [ -z "$BOTH" ] || { echo "::error::pr 与 issue 只能填一个" >&2; exit 1; }
           bash _devloop/scripts/devloop/ctx.sh
+      # 下一步检出到工作区根目录时会清空根目录（包括 _devloop），所以先把要用的 main 上的可信脚本复制到 RUNNER_TEMP
+      - name: 保存 main 上的安装脚本
+        run: cp _devloop/scripts/devloop/install-bun.sh "$RUNNER_TEMP/install-bun.sh"
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.ctx.outputs.mode == 'fix' && steps.ctx.outputs.branch || 'main' }}
@@ -89,6 +92,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      # 自己装 Bun（带重试），再把路径交给 claude-code-action，跳过它内置的 setup-bun：
+      # 2026-11-08 内置 setup-bun 从 GitHub 下载 Bun 连续返回 HTTP 504，整个任务失败、issue 被加 needs-user。
+      # 这里改从 npm 安装同一版本（与 action 内置版本一致：1.4.4），失败按 15/30 秒退避重试 3 次。
+      - name: 安装 Bun（带重试）
+        id: bun
+        # 脚本是检出前从 main（_devloop）复制出来的版本，不用 PR 分支里的；逻辑与测试见 scripts/devloop/install-bun.sh / claude.test.mjs
+        run: bash "$RUNNER_TEMP/install-bun.sh"
       - uses: anthropics/claude-code-action@v1
         id: claude
         # 比任务超时短：Claude 超时只让这一步失败，后面的打包与发布照常运行（GPT 审核 #6 第七轮 major）
@@ -99,6 +109,11 @@ jobs:
           # 模型网关（仓库变量）：用户的 key 来自第三方网关而非 Anthropic 官方 API。为空时走官方地址
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
         with:
+          path_to_bun_executable: ${{ steps.bun.outputs.path }}
+          # 云端审核（gpt-review.yml，GITHUB_TOKEN）需修改时直接 workflow_dispatch 本工作流，发起者是 github-actions 机器人；
+          # action 默认拒绝非人类发起（2026-11-08 #48 首次云端退回时被拒）。只对手动触发事件放行 github-actions，
+          # 其他事件（issue 打标签、评论）仍只认人类，不扩大触发面。
+          allowed_bots: ${{ github.event_name == 'workflow_dispatch' && 'github-actions' || '' }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ github.token }}
           # 完整输出：失败时能在日志里看到 Claude 的实际报错（用户 2026-11-07 同意开启）。
