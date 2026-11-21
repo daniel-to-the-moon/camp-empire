@@ -935,8 +935,19 @@ function renderHud() {
 
 if (DEV) {
   $('#dev').hidden = false;
-  // 调试入口（仅 ?dev）：在车头前方模拟一次撞击，用于检查烟尘 / 震屏 / 提示
+  // 调试入口（仅 ?dev），用于车辆截图和撞击效果检查
   (window as unknown as { __campDebug: unknown }).__campDebug = {
+    vehicleShot(angle: 'front34' | 'side' | 'rear34'): string {
+      const [forward, left] = { front34: [7, -5.5], side: [0, 9], rear34: [-7, 5.5] }[angle];
+      const [cx, cy] = bodyCenter(spec, drive.pose);
+      const cos = Math.cos(drive.pose.yaw);
+      const sin = Math.sin(drive.pose.yaw);
+      return view.snapshot(
+        toThree(cx + forward * cos - left * sin, cy + forward * sin + left * cos, 2.6),
+        toThree(cx, cy, 1.2),
+        1280, 800, { fog: false, labels: false },
+      ).toDataURL('image/png');
+    },
     setTimeScale(v: number) {
       timeScale = v;
     },
