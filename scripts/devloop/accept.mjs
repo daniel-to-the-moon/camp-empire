@@ -10,14 +10,15 @@
  *   node accept.mjs report --pr N --head H --judge judge.json --preview URL --run-url URL   （accept.yml report 任务：发评论、改标签、需要时触发修复）
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { eligible, hasSkipLabel } from './policy.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const loadGates = (read = (f) => readFileSync(f, 'utf8')) => JSON.parse(read(join(HERE, 'gates.json')));
+/** gates.json 不存在 → null（验收与排期模块未安装，云端审核照旧） */
+export const loadGates = (read = (f) => readFileSync(f, 'utf8'), exists = existsSync) => (exists(join(HERE, 'gates.json')) ? JSON.parse(read(join(HERE, 'gates.json'))) : null);
 export const VISUAL_PREFIX = '执行者：devloop（视觉验收）';
 
 /** 路径规则：以 / 结尾为目录前缀，否则为精确文件 */
