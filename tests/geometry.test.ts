@@ -48,6 +48,73 @@ it('车身使用两段顶点色，tint 只替换下半部主色', () => {
   expect(recolored.paint).toEqual(base.paint.map((color) => color === cream ? cream : tint));
 });
 
+function hasSolidSection(mesh: THREE.Mesh, start: THREE.Vector3, end: THREE.Vector3): boolean {
+  const direction = end.clone().sub(start);
+  const length = direction.length();
+  direction.normalize();
+  const approach = 2;
+  const far = approach + length;
+  const ray = new THREE.Raycaster(start.clone().addScaledVector(direction, -approach), direction, 0, far);
+  let solidCount = 0;
+  let previous = approach;
+  for (const hit of ray.intersectObject(mesh)) {
+    if (solidCount <= 0 && hit.distance - Math.max(previous, approach) > 0.001) return false;
+    // Each front-facing hit enters a solid and each back-facing hit exits it.
+    solidCount -= Math.sign(hit.face!.normal.dot(direction));
+    previous = hit.distance;
+  }
+  return solidCount > 0 || far - Math.max(previous, approach) <= 0.001;
+}
+
+const cabinVariants = [ALL_VARIANTS[0], ALL_VARIANTS.find((v) => v.model === 'SH6601A4DB')!];
+describe.each(cabinVariants.map((v) => [v.id, v] as const))('驾驶室 %s', (_id, v) => {
+  const { root } = buildPlaceholderVehicle(v);
+  const trim = root.getObjectByName('trim') as THREE.Mesh;
+  const section = new THREE.Mesh(trim.geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+  const glass = root.getObjectByName('glass') as THREE.Mesh;
+  const positions = glass.geometry.getAttribute('position');
+  const normals = glass.geometry.getAttribute('normal');
+  const halfWidth = v.widthM / 2;
+  const down = new THREE.Vector3(0, -1, 0);
+  const glassBase = new THREE.Vector3(0, 0, -Infinity);
+  for (let index = 0; index < positions.count; index++) {
+    if (normals.getZ(index) > 0.5 && positions.getZ(index) > glassBase.z) {
+      glassBase.fromBufferAttribute(positions, index);
+    }
+  }
+
+  it('仪表台从风挡后方覆盖驾驶室左右两端', () => {
+    const ray = new THREE.Raycaster();
+    const z = glassBase.z - 0.17;
+    for (const fraction of [-0.88, -0.44, 0, 0.44, 0.88]) {
+      ray.set(new THREE.Vector3(fraction * halfWidth, glassBase.y + 0.24, z), down);
+      const top = ray.intersectObject(trim)[0]?.point.y ?? -Infinity;
+      expect(top, `x / 半车宽 = ${fraction}`).toBeGreaterThan(glassBase.y + 0.02);
+    }
+  });
+
+  it('方向盘轮毂沿斜置转向柱与仪表台连为一体', () => {
+    const x = halfWidth * 0.47 + 0.008;
+    // Probe into the hub and dash beyond the ends of the column itself.
+    const wheelHub = new THREE.Vector3(x, 1.592, glassBase.z - 0.691);
+    const dash = new THREE.Vector3(x, 1.285, glassBase.z - 0.343);
+    expect(hasSolidSection(section, wheelHub, dash)).toBe(true);
+  });
+
+  it('左右座椅通过底座与驾驶室地板相接', () => {
+    const z = glassBase.z - 0.75;
+    const floorRay = new THREE.Raycaster(new THREE.Vector3(0, 0.7, z), down);
+    const floorTop = floorRay.intersectObject(trim)[0]?.point.y ?? -Infinity;
+    expect(floorTop).toBeGreaterThan(0.36);
+    for (const side of [-1, 1]) {
+      const x = side * (halfWidth * 0.47 + 0.135);
+      const deck = new THREE.Vector3(x, floorTop - 0.015, z);
+      const cushion = new THREE.Vector3(x, 0.825, z);
+      expect(hasSolidSection(section, deck, cushion), side > 0 ? '左侧座椅' : '右侧座椅').toBe(true);
+    }
+  });
+});
+
 describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('占位几何 %s', (_id, v) => {
   const { root, anchors } = buildPlaceholderVehicle(v);
   const layout = computeLayout(v);

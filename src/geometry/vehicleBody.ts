@@ -291,28 +291,78 @@ function sideDetails(
   rect(trim, SEAL, tail, -0.64, 0.651, 0.64, 0.663);
 }
 
-function cabin(trim: Facets, half: number, windBaseZ: number, driverEnd: number): void {
+function dashboard(trim: Facets, half: number, windBaseZ: number, steeringX: number): void {
+  // The dash meets the inner wall at the beltline and clears the shell above it.
+  const lower = ring(1.16, half - 0.012, windBaseZ - 0.065, windBaseZ - 0.49, 0.09, 0.07);
+  const shoulder = ring(1.315, half - 0.018, windBaseZ - 0.07, windBaseZ - 0.58, 0.09, 0.06);
+  const top = ring(1.485, half - 0.096, windBaseZ - 0.175, windBaseZ - 0.55, 0.07, 0.04);
+  band(trim, 0x524d46, lower, shoulder);
+  band(trim, 0x997c5f, shoulder, top);
+  for (let i = 1; i < top.length - 1; i++) {
+    trim.triangle(0x826b55, top[0], top[i], top[i + 1]);
+    trim.triangle(0x524d46, lower[0], lower[i + 1], lower[i]);
+  }
+
+  const instrumentZ = windBaseZ - 0.409;
+  const instrumentY = 1.567;
+  const panelAngle = Math.atan2(0.021, 0.225);
+  const panelHeight = 0.113;
+  trim.solid(SEAL, new THREE.BoxGeometry(0.405, panelHeight, 0.225)
+    .rotateX(-panelAngle).translate(steeringX, instrumentY - panelHeight / (2 * Math.cos(panelAngle)), instrumentZ));
+  trim.solid(RUBBER, block(0.425, 0.039, 0.042, steeringX, 1.578, instrumentZ + 0.092));
+  for (const offset of [-0.098, 0.098]) {
+    const x = steeringX + offset;
+    trim.solid(0xd5c9a9, new THREE.RingGeometry(0.031, 0.045, 10)
+      .rotateX(-Math.PI / 2 - panelAngle).translate(x, instrumentY + 0.001, instrumentZ));
+    trim.solid(0xd99464, new THREE.BoxGeometry(0.009, 0.004, 0.035)
+      .rotateY(Math.sign(offset) * 0.52).rotateX(-panelAngle).translate(x, instrumentY + 0.002, instrumentZ));
+  }
+}
+
+function steering(trim: Facets, x: number, windBaseZ: number): void {
+  const mount = new THREE.Vector3(x, 1.305, windBaseZ - 0.435);
+  const center = new THREE.Vector3(x, 1.575, windBaseZ - 0.74);
+  const offset = center.clone().sub(mount);
+  const axis = offset.clone().normalize();
+  const midpoint = mount.clone().lerp(center, 0.5);
+  const columnRotation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
+  trim.solid(0x686c63, new THREE.CylinderGeometry(0.049, 0.084, offset.length(), 8)
+    .applyQuaternion(columnRotation).translate(midpoint.x, midpoint.y, midpoint.z));
+
+  // The wheel, spokes and hub all share the plane perpendicular to the column.
+  const wheelRotation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), axis);
+  const atWheel = (geometry: THREE.BufferGeometry) =>
+    geometry.applyQuaternion(wheelRotation).translate(center.x, center.y, center.z);
+  trim.solid(SEAL, atWheel(new THREE.TorusGeometry(0.185, 0.028, 5, 14)));
+  trim.solid(0x565b59, atWheel(new THREE.BoxGeometry(0.35, 0.042, 0.040)));
+  trim.solid(0x565b59, atWheel(block(0.043, 0.145, 0.040, 0, -0.102, 0)));
+  trim.solid(RUBBER, atWheel(new THREE.BoxGeometry(0.108, 0.09, 0.075)));
+}
+
+function cabin(trim: Facets, half: number, windBaseZ: number, driverEnd: number, floorY: number): void {
   const saddle = 0xbb794d;
   const cushion = 0xeabc88;
-  const dashZ = windBaseZ - 0.22;
-  const seatZ = driverEnd + 0.28;
-  trim.solid(0x42484a, block(half * 1.69, 0.18, 0.42, 0, 1.18, dashZ));
-  trim.solid(0x6d6257, block(half * 1.64, 0.045, 0.38, 0, 1.29, dashZ));
+  const seatX = half * 0.47;
+  const seatZ = driverEnd + 0.21;
+  const deckHeight = 0.073;
+  const deckTop = floorY + 0.07;
+  const pedestalBottom = deckTop + 0.026;
+  const pedestalTop = 0.81;
+  trim.solid(0x303637, block(half * 1.74, deckHeight, 1.34, 0, deckTop - deckHeight / 2, seatZ + 0.18));
   for (const side of SIDES) {
-    const x = side * half * 0.47;
-    trim.solid(SEAL, block(0.43, 0.34, 0.43, x, 0.65, seatZ));
+    const x = side * seatX;
+    for (const rail of SIDES) {
+      trim.solid(0x6d6257, block(0.055, 0.047, 0.54, x + rail * 0.135, deckTop + 0.018, seatZ + 0.025));
+    }
+    trim.solid(SEAL, block(0.39, pedestalTop - pedestalBottom, 0.405, x, (pedestalTop + pedestalBottom) / 2, seatZ));
     trim.solid(saddle, block(0.51, 0.15, 0.53, x, 0.87, seatZ + 0.07));
     trim.solid(cushion, block(0.39, 0.05, 0.41, x, 0.963, seatZ + 0.085));
     trim.solid(saddle, new THREE.BoxGeometry(0.52, 0.57, 0.16).rotateX(-0.14).translate(x, 1.20, seatZ - 0.17));
     trim.solid(cushion, new THREE.BoxGeometry(0.37, 0.44, 0.045).rotateX(-0.14).translate(x, 1.21, seatZ - 0.085));
     trim.solid(cushion, block(0.26, 0.18, 0.14, x, 1.56, seatZ - 0.21));
   }
-  const steeringX = half * 0.47;
-  const steeringZ = dashZ - 0.28;
-  trim.solid(SEAL, new THREE.TorusGeometry(0.185, 0.029, 5, 14).rotateX(0.64).translate(steeringX, 1.42, steeringZ));
-  trim.solid(0x565b59, block(0.31, 0.043, 0.043, steeringX, 1.42, steeringZ));
-  trim.solid(RUBBER, block(0.10, 0.09, 0.065, steeringX, 1.42, steeringZ));
-  trim.solid(0x303637, block(half * 1.74, 0.045, 1.34, 0, 0.45, seatZ + 0.18));
+  dashboard(trim, half, windBaseZ, seatX);
+  steering(trim, seatX, windBaseZ);
 }
 
 export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
@@ -379,6 +429,6 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   trim.solid(RUBBER, block(v.widthM - 0.073, 0.245, 0.145, 0, 0.478, rear + 0.0725));
   fascia(trim, half, front, rear);
   sideDetails(trim, half, beltY, headerY, windBaseZ, driverEnd, lay.rearAxleZ + radius + 0.16, front, rear);
-  cabin(trim, half, windBaseZ, driverEnd);
+  cabin(trim, half, windBaseZ, driverEnd, floorY);
   return { body: body.geometry(), trim: trim.geometry(), glass: glass.geometry(), hub: hub.geometry() };
 }
