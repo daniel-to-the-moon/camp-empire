@@ -1,0 +1,33 @@
+{
+  "_说明": "验收与发布角色的配置（docs/DEVLOOP.md “验收与发布角色”）。数值均为提案值，待 M1 试用后调整。",
+  "visual": {
+    "paths": [
+      "src/geometry/",
+      "src/client/scene.ts",
+      "src/client/card.ts",
+      "src/style.css",
+      "index.html",
+      "models.json"
+    ],
+    "waitLabel": "awaiting-acceptance",
+    "acceptLabel": "accepted"
+  },
+  "judge": {
+    "_说明": "评分方由仓库变量 VISUAL_PROVIDER（openai | anthropic，默认 openai）与 VISUAL_MODEL 指定；写代码的是 Claude，默认不让它自评（用户 2026-11-21）。",
+    "provider": "openai",
+    "model": "",
+    "effort": "low",
+    "reference": "docs/visual/reference.png",
+    "minEach": 4,
+    "minOverall": 6,
+    "maxRounds": 3,
+    "shots": [
+      "shot-camp.png",
+      "shot-driving.png",
+      "vehicle-front34.png",
+      "vehicle-side.png",
+      "vehicle-rear34.png"
+    ],
+    "maxBytes": 3000000
+  }
+}
