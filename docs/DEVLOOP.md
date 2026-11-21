@@ -182,6 +182,7 @@ Claude 遇到以下情况不写代码，在 issue 里说明并加 `needs-user`�
 
 ## 模型网关与手动重跑
 
+- **优先用订阅令牌**：仓库 secret `CLAUDE_CODE_OAUTH_TOKEN`（用户本机 `claude setup-token` 生成，由用户自己 `gh secret set`）存在时，`claude.yml` 与 `gpt-review.yml` 的 Claude 审核都用它，并且不走 `ANTHROPIC_BASE_URL` 网关；不存在才回退到 `ANTHROPIC_API_KEY` + 网关（2026-11-21 网关账号返回 403 停用后改用）。视觉评分选 `anthropic` 时仍需 `ANTHROPIC_API_KEY`（直接调 Messages API，订阅令牌不适用）。
 - 云端 Claude 通过仓库变量 `ANTHROPIC_BASE_URL` 指定的网关调用模型（用户的 key 来自第三方网关 `api.toolpai.com`，不是 Anthropic 官方 API；2026-11-07 用户本机实测该网关可用）。变量为空时走官方地址。代码会经过该网关，与用户桌面端 Claude 的现有路径相同。
 - 云端修复失败、PR 被加上 `needs-user` 后的恢复步骤：
   1. 先看 PR 下的失败说明和 Actions 日志，确认停下的原因（key、网关、额度等）已经排除；

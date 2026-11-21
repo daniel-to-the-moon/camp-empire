@@ -61,3 +61,14 @@ test('视觉验收未达标的修复同样交回作者（accept.mjs report 按 P
   assert.match(src, /gh\(\['workflow', 'run', wf, '-f', `pr=\$\{pr\}`\]\)/);
   assert.doesNotMatch(src, /'run', 'claude\.yml'/);
 });
+
+test('Claude 鉴权：有 CLAUDE_CODE_OAUTH_TOKEN 就用它并且不走网关，没有才用 ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL', () => {
+  const claude = readFileSync(join(HERE, '../../.github/workflows/claude.yml'), 'utf8');
+  assert.match(claude, /claude_code_oauth_token: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN \}\}/);
+  assert.match(claude, /anthropic_api_key: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets\.ANTHROPIC_API_KEY \|\| '' \}\}/);
+  assert.match(claude, /ANTHROPIC_BASE_URL: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN == '' && vars\.ANTHROPIC_BASE_URL \|\| '' \}\}/);
+  const review = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
+  assert.match(review, /CLAUDE_CODE_OAUTH_TOKEN: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN \}\}/);
+  assert.match(review, /ANTHROPIC_API_KEY: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets\.ANTHROPIC_API_KEY \|\| '' \}\}/);
+  assert.match(review, /\[ -n "\$CLAUDE_CODE_OAUTH_TOKEN" \] \|\| unset CLAUDE_CODE_OAUTH_TOKEN/);
+});
