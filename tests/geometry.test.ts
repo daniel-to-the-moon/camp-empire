@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import raw from '../models.json';
+import { makeVehicle } from '../src/client/scene';
 import { ALL_VARIANTS, CATALOG } from '../src/data/models';
 import { computeLayout, PLACEHOLDER } from '../src/geometry/layout';
 import { buildPlaceholderVehicle, clipPolygonY, drawCallCount, PAINT, setBodyTint, triangleCount, TRIM_COLORS } from '../src/geometry/placeholder';
@@ -37,6 +38,14 @@ describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('占位几何 %s', (_
     expect(drawCallCount(root)).toBeLessThanOrEqual(6);
     expect(triangleCount(root)).toBeLessThanOrEqual(2600);
   });
+  it('车灯点亮且侧边帐展开时，整车仍在性能预算内', () => {
+    const vehicle = makeVehicle(v);
+    vehicle.setLights({ turnL: true, turnR: false, brake: true, reverse: false });
+    vehicle.setAwning(true);
+
+    expect(drawCallCount(vehicle.root)).toBeLessThanOrEqual(6);
+    expect(triangleCount(vehicle.root)).toBeLessThanOrEqual(2600);
+  });
   it('车身三角面朝外（有向体积 > 0，防止镜像变换翻转绕序导致外表面被剔除）', () => {
     const body = root.getObjectByName('body') as THREE.Mesh;
     const pos = body.geometry.attributes.position;
@@ -68,8 +77,8 @@ describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('造型精修（#69�
   const trim = root.getObjectByName('trim') as THREE.Mesh;
   const hex = (attr: THREE.BufferAttribute, i: number) => new THREE.Color(attr.getX(i), attr.getY(i), attr.getZ(i)).getHex();
 
-  it('车辆基础网格仍为 4 个（body / trim / glass / hub），不新增 draw call', () => {
-    expect(root.children.filter((c) => (c as THREE.Mesh).isMesh).map((c) => c.name).sort()).toEqual(['body', 'glass', 'hub', 'trim']);
+  it('车辆网格仍为 5 个（body / trim / glass / hub + #44 的 lamps），造型精修不新增 draw call', () => {
+    expect(root.children.filter((c) => (c as THREE.Mesh).isMesh).map((c) => c.name).sort()).toEqual(['body', 'glass', 'hub', 'lamps', 'trim']);
   });
 
   it('车身两段式涂装：同时有主色与奶白顶点色；换主色只改下段，奶白不变', () => {

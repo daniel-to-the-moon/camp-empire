@@ -126,6 +126,13 @@ export interface DriveInput {
   throttle: number;
   /** −1..1：正为左打方向 */
   steer: number;
+  /** 加速挡（issue #44）：前进最高速改为 DRIVING.boostMaxForwardSpeed；松开后按滑行减速回落到巡航上限，不瞬间掉速 */
+  boost?: boolean;
+}
+
+/** 当前挡位的前进最高速 m/s */
+export function forwardCap(boost: boolean | undefined): number {
+  return boost ? DRIVING.boostMaxForwardSpeed : DRIVING.maxForwardSpeed;
 }
 
 /** 积分一步（精确圆弧积分，dt 任意大小都不会让转弯半径小于最小半径） */
@@ -165,7 +172,10 @@ export function stepDrive(s: VehicleSpec, st: DriveState, input: DriveInput, dt:
   } else {
     speed = approach(speed, 0, D.brakeDecel * Math.abs(t) * dt);
   }
-  speed = clamp(speed, -D.maxReverseSpeed, D.maxForwardSpeed);
+  const cap = forwardCap(input.boost);
+  // 超过当前挡位上限（刚松开加速挡）：不再加速，按滑行减速回落到上限
+  if (speed > cap) speed = Math.max(cap, Math.min(speed, st.speed - D.coastDecel * dt));
+  speed = clamp(speed, -D.maxReverseSpeed, D.boostMaxForwardSpeed);
   return { pose: integrate(st.pose, speed, curvature, dt), speed, curvature };
 }
 
