@@ -8,11 +8,15 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "lab": "vite --config vite.lab.config.ts --host 127.0.0.1",
+    "lab:build": "vite build --config vite.lab.config.ts",
+    "lab:bench": "node scripts/lab-splat-bench.mjs",
     "economy:table": "tsx scripts/economy-table.ts",
     "swept:table": "tsx scripts/swept-table.ts",
     "lap:table": "tsx scripts/lap-table.ts"
   },
   "dependencies": {
+    "@sparkjsdev/spark": "2.4.0",
     "three": "0.187.0"
   },
   "devDependencies": {
