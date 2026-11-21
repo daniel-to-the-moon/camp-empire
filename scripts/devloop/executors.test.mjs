@@ -1,6 +1,8 @@
 // 执行者与审核方的分工：谁写的谁不审，需修改交回作者（用户 2026-11-21：不自审；agent 之间只经 GitHub 协作）
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -71,4 +73,30 @@ test('Claude 鉴权：有 CLAUDE_CODE_OAUTH_TOKEN 就用它并且不走网关，
   assert.match(review, /CLAUDE_CODE_OAUTH_TOKEN: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN \}\}/);
   assert.match(review, /ANTHROPIC_API_KEY: \$\{\{ secrets\.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets\.ANTHROPIC_API_KEY \|\| '' \}\}/);
   assert.match(review, /\[ -n "\$CLAUDE_CODE_OAUTH_TOKEN" \] \|\| unset CLAUDE_CODE_OAUTH_TOKEN/);
+});
+
+test('gpt-review.yml 网关探测：在默认 bash -e 下，连不上与 HTTP 错误都打出原因并失败，200 通过', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
+  const step = yml.slice(yml.indexOf('- name: 探测 GPT 网关'));
+  const body = step.slice(step.indexOf('run: |') + 'run: |'.length).split('\n').slice(1);
+  const lines = [];
+  for (const l of body) { if (l.trim() && !l.startsWith('          ')) break; lines.push(l.slice(10)); }
+  const script = lines.join('\n');
+  const probe = (curl) => {
+    const dir = mkdtempSync(join(tmpdir(), 'probe-'));
+    writeFileSync(join(dir, 'curl'), `#!/bin/bash\n${curl}\n`);
+    chmodSync(join(dir, 'curl'), 0o755);
+    // 与 Actions 默认 shell 相同：bash --noprofile --norc -e -o pipefail
+    return spawnSync('bash', ['--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', script], { env: { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, KEY: 'sk-test', EP: 'https://gw.example/v1/responses', MODEL: 'gpt-x' }, encoding: 'utf8' });
+  };
+  const outFile = 'for i in "$@"; do [ "$prev" = -o ] && f="$i"; prev="$i"; done';
+  const dns = probe('echo "curl: (6) Could not resolve host: gw.example" >&2; exit 6');
+  assert.notEqual(dns.status, 0);
+  assert.match(dns.stdout, /连不上.*退出码 6.*Could not resolve host/);
+  const http = probe(`${outFile}; echo '{"error":{"message":"model not found"}}' > "$f"; printf 503`);
+  assert.notEqual(http.status, 0);
+  assert.match(http.stdout, /HTTP 503.*model not found/);
+  const ok = probe(`${outFile}; echo '{}' > "$f"; printf 200`);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.ok(![dns, http, ok].some((r) => (r.stdout + r.stderr).includes('sk-test')), '不打印 key');
 });
