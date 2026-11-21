@@ -9,7 +9,7 @@ import type { Variant } from '../data/models';
 import { GATE, ROAD, STALLS, TREES, WORLD, type Stall } from '../shared/camp';
 import { SIDE_AWNING } from '../shared/config';
 import { bodyCenter, type Pose, type VehicleSpec } from '../shared/kinematics';
-import { buildPlaceholderVehicle, buildSideAwning } from '../geometry/placeholder';
+import { buildPlaceholderVehicle, buildSideAwning, setBodyTint } from '../geometry/placeholder';
 import { SNAPSHOT_FOV_DEG } from '../shared/cardcam';
 import { takeSnapshot } from './snapshot';
 
@@ -32,10 +32,7 @@ export interface VehicleView {
 
 export function makeVehicle(v: Variant, tint?: number): VehicleView {
   const { root, anchors } = buildPlaceholderVehicle(v);
-  if (tint !== undefined) {
-    const body = root.getObjectByName('body') as THREE.Mesh;
-    (body.material as THREE.MeshStandardMaterial).color.setHex(tint);
-  }
+  if (tint !== undefined) setBodyTint(root, tint);
   let awning: THREE.Group | null = null;
   return {
     root,

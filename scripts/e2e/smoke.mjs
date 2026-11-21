@@ -1,6 +1,6 @@
 // 浏览器端到端冒烟验收：在真实 Chromium 里打开构建产物（vite preview），走一遍核心循环。
 // 用法：node scripts/e2e/smoke.mjs [地址]，默认 http://127.0.0.1:4173/
-// 流程：?dev 入口 → 画布渲染出非空像素 → 金币显示 → 快进 1 天 → 待收取池有钱 → 收取 → 金币增加 → 无页面错误。
+// 流程：?dev 入口 → 画布渲染出非空像素 → 金币显示 → 快进 1 天 → 待收取池有钱 → 收取 → 金币增加 → 车辆三机位特写截图 → 无页面错误。
 // 失败时退出码非 0，并把截图写到 E2E_ARTIFACTS（默认 e2e-artifacts/）供 CI 上传。
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
@@ -108,6 +108,16 @@ try {
     if (!(after > before)) throw new Error(`收取后金币没有增加：${before} → ${after}`);
     const logAfter = (await page.locator('#log li').first().textContent()) ?? '';
     if (logAfter === logBefore) throw new Error(`收取后流水没有新增（最新一条仍是：${logBefore}）`);
+  });
+
+  // 视觉验收素材（#69）：玩家车三个固定机位特写，写进产物目录，供人工 / 评分对照参考图
+  await step('车辆特写截图（front34 / side / rear34）', async () => {
+    const { writeFileSync } = await import('node:fs');
+    for (const angle of ['front34', 'side', 'rear34']) {
+      const url = await page.evaluate((a) => window.__campDebug.vehicleShot(a), angle);
+      if (!url?.startsWith('data:image/png;base64,')) throw new Error(`vehicleShot(${angle}) 没有返回 PNG`);
+      writeFileSync(join(outDir, `vehicle-${angle}.png`), Buffer.from(url.split(',')[1], 'base64'));
+    }
   });
 
   if (errors.length) throw new Error(`页面出现错误：\n${errors.join('\n')}`);

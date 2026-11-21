@@ -184,7 +184,8 @@ interface NpcCar extends Agent {
 }
 const npcs = new Map<string, NpcCar>();
 const leaving: NpcCar[] = [];
-const TINTS = [0xe9e4d8, 0xc9d6df, 0xe8d3b0, 0xb7c9a8, 0xd9c2c2, 0xbfc4cf];
+/** NPC 车主色（腰线以下；腰线以上统一奶白，#69 提案值） */
+const TINTS = [0x7fa37a, 0xc9785a, 0xd9a93f, 0xb85c5c, 0x4f9a94, 0x8c7fb0];
 
 function npcCar(parkingId: string, variantId: string): NpcCar {
   const v = findVariant(variantId)!;
@@ -859,6 +860,24 @@ if (DEV) {
         if (sp.isSprite && sp.visible && sp.material.map && sp.material.opacity > 0.05 && sp.material.depthTest) n++; // 标牌精灵 depthTest = false，不计入
       });
       return n;
+    },
+    /**
+     * 玩家车固定机位特写（#69 视觉验收）：返回 PNG data URL。机位相对车身：front34 = 右前 3/4，side = 左正侧，rear34 = 左后 3/4。
+     * 不加雾、隐藏车位标牌，免得挡车。
+     */
+    vehicleShot(angle: 'front34' | 'side' | 'rear34', w = 960, h = 600): string {
+      const r = player.root;
+      const th = r.rotation.y;
+      // 车头朝车身局部 +z：前向 = (sin θ, cos θ)，车辆左侧（局部 +x）= (cos θ, −sin θ)
+      const [fx, fz, lx, lz] = [Math.sin(th), Math.cos(th), Math.cos(th), -Math.sin(th)];
+      const [a, b] = angle === 'front34' ? [7, -5.5] : angle === 'side' ? [0, 9] : [-7, 5.5];
+      const pos = r.position.clone();
+      pos.x += fx * a + lx * b;
+      pos.z += fz * a + lz * b;
+      pos.y += 2.6;
+      const look = r.position.clone();
+      look.y += 1.2;
+      return view.snapshot(pos, look, w, h, { fog: false, labels: false }).toDataURL('image/png');
     },
     impact(strength: number, tag = 'island', at: 'front' | 'rear' = 'front') {
       const p = drive.pose;
