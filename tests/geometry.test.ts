@@ -4,7 +4,7 @@ import raw from '../models.json';
 import { makeVehicle } from '../src/client/scene';
 import { ALL_VARIANTS, CATALOG } from '../src/data/models';
 import { computeLayout, PLACEHOLDER } from '../src/geometry/layout';
-import { buildPlaceholderVehicle, clipPolygonY, drawCallCount, PAINT, setBodyTint, triangleCount, TRIM_COLORS } from '../src/geometry/placeholder';
+import { buildPlaceholderVehicle, cabWindow, clipPolygonY, drawCallCount, PAINT, setBodyTint, triangleCount, TRIM_COLORS } from '../src/geometry/placeholder';
 
 describe('车型数据', () => {
   it('9 款基础车型、25 个高度变体（与 models.json variant_count 一致）', () => {
@@ -137,6 +137,31 @@ describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('造型精修（#69�
     }
     expect(head).toBeGreaterThan(0);
     expect(tail).toBeGreaterThan(0);
+  });
+});
+
+describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('驾驶室透视（#69 用户反馈）%s', (_id, v) => {
+  it('驾驶室窗区内没有车身：从风挡和侧窗能看进去', () => {
+    const { root } = buildPlaceholderVehicle(v);
+    const body = root.getObjectByName('body') as THREE.Mesh;
+    const pos = body.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const cab = cabWindow(v);
+    const inside = (z: number, y: number) => {
+      let c = false;
+      for (let i = 0, j = cab.length - 1; i < cab.length; j = i++) {
+        const [zi, yi] = cab[i];
+        const [zj, yj] = cab[j];
+        if (yi > y !== yj > y && z < ((zj - zi) * (y - yi)) / (yj - yi) + zi) c = !c;
+      }
+      return c;
+    };
+    // 窗区内缩 6 cm 的核心区域里不应有车身三角面的重心
+    const [[z0, y0], [z1], , [, y1]] = cab;
+    for (let i = 0; i < pos.count; i += 3) {
+      const cz = (pos.getZ(i) + pos.getZ(i + 1) + pos.getZ(i + 2)) / 3;
+      const cy = (pos.getY(i) + pos.getY(i + 1) + pos.getY(i + 2)) / 3;
+      if (cz > z0 + 0.06 && cz < z1 - 0.06 && cy > y0 + 0.06 && cy < y1 - 0.06) expect(inside(cz, cy)).toBe(false);
+    }
   });
 });
 

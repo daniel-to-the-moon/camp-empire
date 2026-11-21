@@ -31,6 +31,9 @@ export const TRIM_COLORS = {
   bar: 0x9aa0a8,
   /** 窗框衬板：深蓝灰，半透明玻璃叠在上面读作车窗 */
   window: 0x2c3742,
+  /** 驾驶室内饰 */
+  seat: 0xb9774a,
+  dash: 0x4a4440,
 } as const;
 
 /** 腰线高度 = 机盖高度（占位）：车头面、侧围下段为主色，风挡及以上为奶白 */
@@ -120,8 +123,10 @@ function archedProfile(
  * 车身一段：轮廓沿 x 挤出并倒切角。切角用 bevelOffset = −bevelSize：侧壁正好落在原轮廓上，
  * 两端盖面内缩，所以长、高不超出轮廓，宽 = depth + 2×bevelThickness。
  */
-function bodySlab(profile: Array<[number, number]>, width: number): THREE.BufferGeometry {
+function bodySlab(profile: Array<[number, number]>, width: number, holes: Array<Array<[number, number]>> = []): THREE.BufferGeometry {
   const shape = new THREE.Shape(profile.map(([z, y]) => new THREE.Vector2(z, y)));
+  // 轮廓上的孔沿挤出方向（x）贯穿车身两侧：驾驶室窗洞就是这样从左窗通到右窗，能看进驾驶室
+  for (const h of holes) shape.holes.push(new THREE.Path(h.map(([z, y]) => new THREE.Vector2(z, y))));
   const t = CHAMFER.depth;
   const depth = width - 2 * t;
   const g = new THREE.ExtrudeGeometry(shape, {
@@ -166,6 +171,37 @@ export function setBodyTint(root: THREE.Object3D, hex: number): void {
   attr.needsUpdate = true;
 }
 
+/**
+ * 驾驶室窗区（z, y 梯形）：前缘落在前风挡斜线上，后缘竖直（CLEANROOM_SPEC 第五节“驾驶窗梯形”）。
+ * 车身轮廓在这里挖掉一块（前风挡与两侧驾驶窗之间是空的），透过风挡和侧窗都能看到里面的座椅和方向盘；
+ * A 柱、B 柱另用深色件补上。
+ */
+export function cabWindow(v: Variant): Array<[number, number]> {
+  const lay = computeLayout(v);
+  const [wbz, wby] = lay.windshield.bottom;
+  const [wtz, wty] = lay.windshield.top;
+  const yb = PLACEHOLDER.hoodTopM + 0.18;
+  const yt = Math.min(lay.cabRoofY, v.heightM) - 0.22;
+  const zAt = (y: number) => wbz + ((wtz - wbz) * (y - wby)) / (wty - wby);
+  const zRear = wbz - 0.08 - CAB_WINDOW_LEN;
+  // 逆时针：后下 → 前下 → 前上 → 后上
+  return [
+    [zRear, yb],
+    [zAt(yb), yb],
+    [zAt(yt), yt],
+    [zRear, yt],
+  ];
+}
+/** 在轮廓的前风挡边上挖出驾驶室：wsBottom 之后插入 前下 → 后下 → 后上 → 前上 */
+function carveCab(profile: Array<[number, number]>, wsBottom: [number, number], cab: Array<[number, number]>): Array<[number, number]> {
+  const i = profile.findIndex(([z, y]) => Math.abs(z - wsBottom[0]) < 1e-9 && Math.abs(y - wsBottom[1]) < 1e-9);
+  if (i < 0) throw new Error('profile 中找不到前风挡下沿');
+  const [rb, fb, ft, rt] = cab;
+  return [...profile.slice(0, i + 1), fb, rb, rt, ft, ...profile.slice(i + 1)];
+}
+/** 驾驶窗下沿长度（占位） */
+const CAB_WINDOW_LEN = 0.95;
+
 export interface VehicleBuild {
   root: THREE.Group;
   anchors: Record<AnchorName, THREE.Object3D>;
@@ -197,7 +233,8 @@ export function buildPlaceholderVehicle(v: Variant): VehicleBuild {
   const profile = archedProfile(baseProfile, axles, axleY, archR, P.bodyBottomM, zFrontBody);
   const slabW = W - 2 * SIDE_INSET;
   const lower = paint(bodySlab(clipPolygonY(profile, beltY(), true), slabW), PAINT.main);
-  const upper = paint(bodySlab(clipPolygonY(profile, beltY(), false), slabW), PAINT.cream);
+  const cab = cabWindow(v);
+  const upper = paint(bodySlab(clipPolygonY(carveCab(profile, lay.windshield.bottom, cab), beltY(), false), slabW), PAINT.cream);
   // 前风挡所在的斜面刷深色：风挡玻璃是半透明的，底下要深色才读得出是玻璃
   {
     const pos = upper.attributes.position;
@@ -280,6 +317,36 @@ export function buildPlaceholderVehicle(v: Variant): VehicleBuild {
   tinted(box(grilleW - 0.1, 0.03, FACE_INSET, 0, 0.74, fz), TRIM_COLORS.bar);
   for (const sx of [-1, 1]) tinted(box(0.42, 0.09, FACE_INSET, sx * (W / 2 - 0.27), 1.0, fz), TRIM_COLORS.headlight);
 
+  // 驾驶室内饰（从侧窗看进去）：仪表台、两张座椅靠背 + 头枕、左侧方向盘（左舵）
+  {
+    const [[cz0, cy0], [czF]] = cab;
+    const inner = W - 2 * SIDE_INSET - 2 * CHAMFER.depth - 0.1; // 车内可用宽度
+    tinted(box(inner, 0.16, 0.32, 0, cy0 + 0.08, czF - 0.2), TRIM_COLORS.dash);
+    // A 柱（沿前风挡斜边）、B 柱（窗区后缘），车身色以外用深色，读作窗框
+    const [, , [ztz, zty], [zrz, zry]] = cab;
+    const aLen = Math.hypot(czF - ztz, zty - cy0);
+    const aAng = -Math.atan2(czF - ztz, zty - cy0);
+    const px = W / 2 - SIDE_INSET - 0.05;
+    for (const sx of [-1, 1]) {
+      dark(
+        new THREE.BoxGeometry(0.1, aLen + 0.08, 0.1)
+          .rotateX(aAng)
+          .translate(sx * px, (cy0 + zty) / 2, (czF + ztz) / 2 - 0.03)
+          .toNonIndexed(),
+      );
+      dark(box(0.1, zry - cy0, 0.1, sx * px, (cy0 + zry) / 2, zrz + 0.05));
+    }
+    for (const sx of [-1, 1]) {
+      const x = sx * inner * 0.25;
+      tinted(box(inner * 0.32, 0.5, 0.12, x, cy0 + 0.25, cz0 + 0.22), TRIM_COLORS.seat);
+      tinted(box(inner * 0.18, 0.16, 0.1, x, cy0 + 0.6, cz0 + 0.2), TRIM_COLORS.seat);
+    }
+    const wheel = new THREE.TorusGeometry(0.17, 0.025, 4, 10)
+      .rotateX(-0.5) // 方向盘略向后仰
+      .translate(inner * 0.25, cy0 + 0.28, czF - 0.3);
+    dark(wheel.toNonIndexed());
+  }
+
   // 车尾面（z ∈ [−L/2, −L/2 + FACE_INSET]）：两侧竖直尾灯 + 牌照位
   const rz = lay.zRear + FACE_INSET / 2;
   for (const sx of [-1, 1]) tinted(box(0.11, 0.55, FACE_INSET, sx * (W / 2 - 0.1), 1.25, rz), TRIM_COLORS.taillight);
@@ -304,13 +371,20 @@ export function buildPlaceholderVehicle(v: Variant): VehicleBuild {
   );
   const winBottom = P.hoodTopM + 0.18;
   const winTop = Math.min(lay.cabRoofY, v.heightM) - 0.22;
-  const drvLen = 0.7;
-  const drvZ = wbz - 0.08 - drvLen / 2;
-  const paxStart = lay.slidingDoor.zStart - 0.1;
+  // 生活区窗从驾驶室 B 柱之后开始，不与驾驶窗重叠
+  const paxStart = Math.min(lay.slidingDoor.zStart - 0.1, cab[0][0] - 0.16);
   const paxEnd = lay.zRear + 0.35;
   const paxMid = (paxStart + paxEnd) / 2;
   for (const sx of [-1, 1]) {
-    glassParts.push(box(glassT, winTop - winBottom, drvLen, sx * glassX, (winTop + winBottom) / 2, drvZ));
+    // 驾驶窗玻璃：与窗洞同形的梯形薄片，前缘随 A 柱
+    {
+      const sh = new THREE.Shape(cab.map(([z, y]) => new THREE.Vector2(z, y)));
+      const g = new THREE.ExtrudeGeometry(sh, { depth: glassT, bevelEnabled: false }).rotateY(-Math.PI / 2);
+      // 旋转后挤出沿 −x，范围 [−glassT, 0]；平移到 sx 一侧外沿
+      g.translate(sx > 0 ? W / 2 : -W / 2 + glassT, 0, 0);
+      g.clearGroups();
+      glassParts.push(g.toNonIndexed());
+    }
     glassParts.push(box(glassT, winTop - winBottom, paxStart - paxMid - 0.08, sx * glassX, (winTop + winBottom) / 2, (paxStart + paxMid) / 2));
     glassParts.push(box(glassT, winTop - winBottom, paxMid - paxEnd - 0.08, sx * glassX, (winTop + winBottom) / 2, (paxMid + paxEnd) / 2));
   }
@@ -323,7 +397,6 @@ export function buildPlaceholderVehicle(v: Variant): VehicleBuild {
   for (const sx of [-1, 1]) {
     // 每块侧窗一个窗框，窗与窗之间露出车身色窗柱
     const pane = (len: number, z: number) => tinted(box(frameT, winH - 0.03, len + 0.03, sx * frameX, winY, z), TRIM_COLORS.window);
-    pane(drvLen, drvZ);
     pane(paxStart - paxMid - 0.08, (paxStart + paxMid) / 2);
     pane(paxMid - paxEnd - 0.08, (paxMid + paxEnd) / 2);
     // 滑门缝线：滑门段前后两条竖线
