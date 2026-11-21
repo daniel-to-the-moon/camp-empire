@@ -34,11 +34,7 @@ export interface VehicleView {
 }
 
 export function makeVehicle(v: Variant, tint?: number): VehicleView {
-  const { root, anchors } = buildPlaceholderVehicle(v);
-  if (tint !== undefined) {
-    const body = root.getObjectByName('body') as THREE.Mesh;
-    (body.material as THREE.MeshStandardMaterial).color.setHex(tint);
-  }
+  const { root, anchors } = buildPlaceholderVehicle(v, tint);
   let awning: THREE.Group | null = null;
   let lit = '';
   return {
