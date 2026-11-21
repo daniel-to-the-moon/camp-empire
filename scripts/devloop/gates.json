@@ -2,15 +2,16 @@
   "_说明": "验收与发布角色的配置（docs/DEVLOOP.md “验收与发布角色”）。数值均为提案值，待 M1 试用后调整。",
   "visual": {
     "paths": [
+      "src/client/",
       "src/geometry/",
-      "src/client/scene.ts",
-      "src/client/card.ts",
+      "src/data/",
       "src/style.css",
       "index.html",
       "models.json"
     ],
     "waitLabel": "awaiting-acceptance",
-    "acceptLabel": "accepted"
+    "acceptLabel": "accepted",
+    "_说明": "改到这些路径的 PR 合并前要发预览、视觉评分、等用户加 accepted。以 / 结尾为目录前缀。src/client/ 整个目录都算：界面标记（main.ts、dex.ts 等）也是画面（Codex 审核 #70）。"
   },
   "judge": {
     "_说明": "评分方由仓库变量 VISUAL_PROVIDER（openai | anthropic，默认 openai）与 VISUAL_MODEL 指定；写代码的是 Claude，默认不让它自评（用户 2026-11-21）。",
