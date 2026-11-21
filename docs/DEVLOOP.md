@@ -47,10 +47,27 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 | 角色 | 做什么 | 不做什么 |
 |---|---|---|
 | Claude（云端，`claude-opus-5-5`） | 认领 `devloop` issue、写代码与测试、开 PR、按审核意见修复 | 不审核、不合并自己的 PR |
-| GPT（Codex CLI，`gpt-6-astra`） | 每个新提交独立审核：只读检出、自己读代码、按必查项给 approve / request_changes | 不改代码 |
+| GPT（Codex CLI，`gpt-6-astra`） | 每个 Claude 写的新提交独立审核：只读检出、自己读代码、按必查项给 approve / request_changes | 不改 Claude 的 PR |
+| GPT 主设（`codex.yml`，openai/codex-action） | 认领 `gpt-design` issue（视觉 / 造型 / 设计类，用户 2026-11-21 比稿后选定 GPT 主设）、写代码与测试、开 `codex/*` PR、按审核意见修复 | 不审、不合并自己的 PR；GPT 写的 PR 由 Claude 独立审核 |
 | 流水线 | CI 测试合并后的代码；GPT 通过且测试通过、main 未变、无暂停标签才合并；合入的就是测试过的那个组合 | 不在本机执行 PR 代码 |
 | Muse | 验收，按第四节格式提 issue | 不打 `devloop` 标签 |
 | 用户 | 给 issue 打 `devloop`（拍板实现）；收费 / 广告 / 商家投放开关、对公众上线、托管位置、裁决 `needs-user` | — |
+
+### 执行者与派活通道（用户 2026-11-21 规则）
+
+**Agent 之间只通过 GitHub 协作，不转告。** 不用浏览器、桌面客户端或任何电脑操作（computer use）在 agent 之间传话、派活或取结果：这既耗 token、又依赖用户的电脑和登录状态在线，结果也不留痕。派活、交付、退回、验收一律落在 issue / PR / 评论 / 标签 / `workflow_dispatch` 上，由工作流自动接力。
+
+| 要做的事 | 通道 | 谁接 |
+|---|---|---|
+| Claude 实现 | issue 打 `devloop`（或 `gh workflow run claude.yml -f issue=N`） | `claude.yml` → `claude/issue-N` PR |
+| GPT 主设实现 | issue 打 `gpt-design`（或 `gh workflow run codex.yml -f issue=N`） | `codex.yml` → `codex/issue-N` PR |
+| 会话里临时请 Codex 云端动手 | 以用户账号在 issue / PR 下评论 `@codex …`（Codex GitHub 集成） | Codex 云端开 `codex/*` PR |
+| 审核 | 定时 / 手动 `gpt-review.yml` | 作者是 Claude → GPT 审 + Claude 复核；作者是 GPT（`codex/*`）→ 只由 Claude 审 |
+| 需修改 | 审核评论带 `state=changes` | 交回作者：`claude.yml` 或 `codex.yml`（`-f pr=N`） |
+| 视觉验收、等用户确认 | `accept.yml` 评论 + `awaiting-acceptance` / `accepted` 标签 | 用户在 PR 上看预览与截图、加标签 |
+| 停下等人 | `needs-user` + 评论里 @ 仓库所有者 | 用户 |
+
+谁写的谁不审：Claude 不审 Claude 写的 PR 的视觉（视觉评分默认 GPT），GPT 不审 GPT 写的代码。`codex.yml` 用 `OPENAI_API_KEY`（同 `gpt-discuss` / `gpt-review`），模型取仓库变量 `GPT_DESIGN_MODEL`，未设则用 `GPT_MODEL`。改 `.github/workflows/` 的 GPT 改动不发布（令牌推不上去），转 `needs-user`。
 
 ## 四、给 Muse 的 issue 格式
 
