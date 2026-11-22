@@ -1,0 +1,16 @@
+# camp-empire 本机主设 runner 专用（CODEX_HOME）。key 不写在这里，运行时从 secrets/learnai_key 读入 LEARNAI_API_KEY。
+# 经 learnai-shim（127.0.0.1:46290）转到 LearnAI 网关 127.0.0.1:46215：垫片删掉网关不支持的字段。
+model = "gpt-6.2-astra"
+model_provider = "learnai"
+model_reasoning_effort = "high"
+web_search = "disabled"
+
+[model_providers.learnai]
+name = "LearnAI (本机)"
+base_url = "http://127.0.0.1:46290/v1"
+env_key = "LEARNAI_API_KEY"
+wire_api = "responses"
+
+[shell_environment_policy]
+inherit = "core"
+exclude = ["*KEY*", "*TOKEN*", "*SECRET*", "GH_*", "GITHUB_*", "ACTIONS_*"]
