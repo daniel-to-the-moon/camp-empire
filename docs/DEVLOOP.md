@@ -67,7 +67,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 | 视觉验收、等用户确认 | `accept.yml` 评论 + `awaiting-acceptance` / `accepted` 标签 | 用户在 PR 上看预览与截图、加标签 |
 | 停下等人 | `needs-user` + 评论里 @ 仓库所有者 | 用户 |
 
-谁写的谁不审：Claude 不审 Claude 写的 PR 的视觉（视觉评分默认 GPT），GPT 不审 GPT 写的代码。`codex.yml` 用 `OPENAI_API_KEY`（同 `gpt-discuss` / `gpt-review`），模型取仓库变量 `GPT_DESIGN_MODEL`，未设则用 `GPT_MODEL`。改 `.github/workflows/` 的 GPT 改动不发布（令牌推不上去），转 `needs-user`。
+谁写的谁不审：Claude 不审 Claude 写的 PR 的视觉（视觉评分默认 GPT），GPT 不审 GPT 写的代码。`codex.yml` 用 `OPENAI_API_KEY`（同 `gpt-discuss` / `gpt-review`），模型取仓库变量 `GPT_DESIGN_MODEL`，未设则用 `GPT_MODEL`。改 `.github/workflows/` 的 GPT 改动不发布（令牌推不上去），转 `needs-user`。`codex.yml` 分三个 job：`work`（持有 key，只跑模型并当场消费结论、提交，不运行任何仓库代码）、`gate`（没有 key，取出提交后安装依赖、跑测试与构建）、`publish`（把关没通过就转 `needs-user`）。仓库代码因此改不了模型的结论，也拿不到 key。
 
 ## 四、给 Muse 的 issue 格式
 
