@@ -48,7 +48,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 |---|---|---|
 | Claude（云端，`claude-opus-5-5`） | 认领 `devloop` issue、写代码与测试、开 PR、按审核意见修复 | 不审核、不合并自己的 PR |
 | GPT（Codex CLI，`gpt-6-astra`） | 每个 Claude 写的新提交独立审核：只读检出、自己读代码、按必查项给 approve / request_changes | 不改 Claude 的 PR |
-| GPT 主设（`codex.yml`，openai/codex-action） | 认领 `gpt-design` issue（视觉 / 造型 / 设计类，用户 2026-11-21 比稿后选定 GPT 主设）、写代码与测试、开 `codex/*` PR、按审核意见修复 | 不审、不合并自己的 PR；GPT 写的 PR 由 Claude 独立审核 |
+| GPT 主设（`codex.yml`，`scripts/devloop/gpt-agent.mjs` 直接调 Responses API，模型 `GPT_DESIGN_MODEL`） | 认领 `gpt-design` issue（视觉 / 造型 / 设计类，用户 2026-11-21 比稿后选定 GPT 主设）、写代码与测试、开 `codex/*` PR、按审核意见修复 | 不审、不合并自己的 PR；GPT 写的 PR 由 Claude 独立审核 |
 | 流水线 | CI 测试合并后的代码；GPT 通过且测试通过、main 未变、无暂停标签才合并；合入的就是测试过的那个组合 | 不在本机执行 PR 代码 |
 | Muse | 验收，按第四节格式提 issue | 不打 `devloop` 标签 |
 | 用户 | 给 issue 打 `devloop`（拍板实现）；收费 / 广告 / 商家投放开关、对公众上线、托管位置、裁决 `needs-user` | — |
@@ -67,7 +67,7 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 | 视觉验收、等用户确认 | `accept.yml` 评论 + `awaiting-acceptance` / `accepted` 标签 | 用户在 PR 上看预览与截图、加标签 |
 | 停下等人 | `needs-user` + 评论里 @ 仓库所有者 | 用户 |
 
-谁写的谁不审：Claude 不审 Claude 写的 PR 的视觉（视觉评分默认 GPT），GPT 不审 GPT 写的代码。`codex.yml` 用 `OPENAI_API_KEY`（同 `gpt-discuss` / `gpt-review`），模型取仓库变量 `GPT_DESIGN_MODEL`，未设则用 `GPT_MODEL`。改 `.github/workflows/` 的 GPT 改动不发布（令牌推不上去），转 `needs-user`。
+谁写的谁不审：Claude 不审 Claude 写的 PR 的视觉（视觉评分默认 GPT），GPT 不审 GPT 写的代码。`codex.yml` 用 `OPENAI_API_KEY`（同 `gpt-discuss` / `gpt-review`），模型取仓库变量 `GPT_DESIGN_MODEL`，未设则用 `GPT_MODEL`。改 `.github/workflows/` 的 GPT 改动不发布（令牌推不上去），转 `needs-user`。`codex.yml` 分三个 job：`work`（持有 key，只跑模型并当场消费结论、提交，不运行任何仓库代码）、`gate`（没有 key，取出提交后安装依赖、跑测试与构建）、`publish`（把关没通过就转 `needs-user`）。仓库代码因此改不了模型的结论，也拿不到 key。
 
 ## 四、给 Muse 的 issue 格式
 
@@ -103,7 +103,8 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 
 - **开关**：仓库变量 `CLOUD_REVIEW=on` 才自动运行（每 10 分钟扫描；GitHub 定时任务可能延后）；手动 `gh workflow run gpt-review.yml -R daniel-to-the-moon/camp-empire -f pr=<编号>` 不受开关限制，用于验证。
 - **分工**：云端只审**不改** `.github/workflows/` 的 PR；改工作流的 PR 由本机审核方处理（`GITHUB_TOKEN` 无 workflows 权限，合并不了）。开关打开后，本机常驻自动只兜底这类 PR。
-- **结构**：`select`（只读，选 PR）→ `review`（只读，codex-action 以 `:read-only` 在 PR 检出上审核，输出结构化结论）→ `decide`（有写权限、不运行模型：触发 CI、判定、合并或退回、评论）。整个工作流全局串行。
+- **为什么不用 openai/codex-action**：2026-11-22 换成 OpenAI 官方 key 后，Codex 报 `codex_byok_restricted_by_api_credit_promo`（该组织额度不能用于 Codex），直接调 Responses API 正常。模型按角色分：`GPT_MODEL`（代码审核，gpt-6.2-sol）、`VISUAL_MODEL` 与 `GPT_DESIGN_MODEL`（视觉评分与主设，gpt-6.2-astra）。
+- **结构**：`select`（只读，选 PR）→ `review`（只读，`gpt-agent.mjs --mode read` 只给读文件 / 搜索工具，在 PR 检出上审核，模型 `GPT_MODEL`，输出结构化结论）→ `decide`（有写权限、不运行模型：触发 CI、判定、合并或退回、评论）。整个工作流全局串行。
 - **后续动作**：`GITHUB_TOKEN` 发的评论不会触发 `claude.yml`，所以需修改时 `decide` 直接触发 `claude.yml -f pr=<编号>`；`GITHUB_TOKEN` 推送 main 不会触发 push 工作流，所以合并后直接触发 `ci.yml -f deploy_main=true` 完成发布。
 - **凭据**：`OPENAI_API_KEY`、`GPT_RESPONSES_ENDPOINT`、`GPT_MODEL`（与讨论评审共用）；签名密钥 `DEVLOOP_MARKER_KEY` 与本机 `../ce-devloop/marker.key` 相同，两边的审核记录互认、轮次连续计数。
 - **信任边界**：不设 `pull_request` 入口——那会用 PR 分支上的工作流定义运行，PR 能改 YAML 在过滤前读到签名密钥、或改写有写权限的 `decide`。定时任务只用 main 上的定义；手动触发时各任务校验 `github.ref == refs/heads/main`。

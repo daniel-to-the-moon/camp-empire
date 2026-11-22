@@ -367,19 +367,91 @@ test('codex.yml / claude.yml：读 issue 与 PR 只用 gh … --json（不带 --
   }
 });
 
-test('codex.yml：执行代码的任务只读、Codex 用 :workspace（无网络）且依赖先装好、固定 runner 镜像；发布任务不运行模型', () => {
+test('codex.yml：执行代码的任务只读、GPT 经 main 上的 gpt-agent 只改工作区、跑测试的步骤不持有 key、固定 runner 镜像；发布任务不运行模型', () => {
   const yml = readFileSync(join(HERE, '../../.github/workflows/codex.yml'), 'utf8');
-  const work = yml.slice(yml.indexOf('\n  work:'), yml.indexOf('\n  publish:'));
+  const work = yml.slice(yml.indexOf('\n  work:'), yml.indexOf('\n  gate:'));
+  const gate = yml.slice(yml.indexOf('\n  gate:'), yml.indexOf('\n  publish:'));
   const pub = yml.slice(yml.indexOf('\n  publish:'));
   assert.match(work, /permissions:\n {6}contents: read\n {6}issues: read\n {6}pull-requests: read\n {6}actions: read\n/);
   assert.doesNotMatch(work, /: write/);
   assert.match(work, /runs-on: ubuntu-24\.04/);
-  assert.match(work, /permission-profile: ':workspace'/);
-  assert.ok(work.indexOf('npm ci') < work.indexOf('openai/codex-action'), '依赖在 Codex 之前装好');
-  assert.ok(work.indexOf('openai/codex-action') < work.indexOf('npm test && npm run build'), 'Codex 之后由工作流再跑测试把关');
+  assert.doesNotMatch(work, /uses: openai\/codex-action/);
+  // 运行的是 main 上的 gpt-agent.mjs（先从 _devloop 复制出来），不是待修分支上的
+  assert.match(work, /cp _devloop\/scripts\/devloop\/gpt-agent\.mjs "\$RUNNER_TEMP\/gpt-agent\.mjs"/);
+  assert.match(work, /node "\$RUNNER_TEMP\/gpt-agent\.mjs" --mode write /);
+  const steps = work.split('\n      - ');
+  const keyed = steps.map((x, i) => (/OPENAI_API_KEY/.test(x) ? i : -1)).filter((i) => i >= 0);
+  assert.equal(keyed.length, 1, '只有一个步骤持有 key');
+  assert.match(steps[keyed[0]], /gpt-agent\.mjs" --mode write/);
+  // work 不运行任何仓库代码（Codex 审核 #76 P1；GPT 审核 #76：安装脚本不能改写尚未消费的结论）
+  assert.doesNotMatch(work, /npm ci --no-audit|npm test &&|npm run build\)/);
+  // 结论在 work 里当场消费，经 job 输出交给 gate / publish
+  assert.match(work, /outcome: \$\{\{ steps\.take\.outputs\.outcome \}\}/);
+  assert.match(work, /echo outcome=pr >> "\$GITHUB_OUTPUT"/);
+  // gate：没有 key、只读令牌，只在结论是 pr 时运行，取 work 的 bundle 再安装与测试
+  assert.doesNotMatch(gate, /secrets\.|OPENAI|: write/);
+  assert.match(gate, /permissions:\n {6}contents: read\n {4}steps:/);
+  assert.match(gate, /if: always\(\) && needs\.work\.outputs\.outcome == 'pr'/);
+  assert.match(gate, /work\.bundle" HEAD && git checkout -q --detach FETCH_HEAD/);
+  assert.match(gate, /npm ci --no-audit --no-fund && npm test && npm run build/);
+  // publish：把关没通过就转 needs-user，丢掉 bundle
+  assert.match(pub, /needs: \[work, gate\]/);
+  assert.match(pub, /stop\(\) \{[^\n]*echo needs-user > out\/outcome; rm -f out\/work\.bundle; \}/);
+  // 产物绑定 work 的尝试号（重跑不取旧产物），gate 核对提交
+  assert.match(work, /name: devloop-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/);
+  assert.match(gate, /name: devloop-\$\{\{ github\.run_id \}\}-\$\{\{ needs\.work\.outputs\.attempt \}\}/);
+  assert.match(pub, /name: devloop-\$\{\{ github\.run_id \}\}-\$\{\{ needs\.work\.outputs\.attempt \}\}/);
+  assert.match(gate, /"\$\(git rev-parse HEAD\)" = "\$HEAD_SHA" \] \|\| \{/);
+  assert.ok(pub.indexOf('合并把关结果') < pub.indexOf('publish.sh'));
   assert.match(work, /\^\\\.github\/workflows\//, '改了工作流的结果不发布');
   assert.match(work, /PREFIX: codex\n {10}LABEL: gpt-design/);
   assert.doesNotMatch(pub, /codex-action|claude-code-action|npm /);
   assert.match(pub, /PREFIX: codex/);
   assert.match(yml, /github\.event\.label\.name == 'gpt-design'/);
+});
+
+test('codex.yml publish「合并把关结果」：只有 work 成功、结论一致、为 pr、bundle 提交对得上、gate 成功才保留 bundle，其余一律 needs-user', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/codex.yml'), 'utf8');
+  const step = yml.slice(yml.indexOf('- name: 合并把关结果'));
+  const body = step.slice(step.indexOf('run: |\n') + 7).split('\n');
+  const script = body.slice(0, body.findIndex((l) => l !== '' && !l.startsWith('          '))).map((l) => l.slice(10)).join('\n');
+  // 一个真实的 bundle，HEAD 是 sha
+  const src = mkdtempSync(join(tmpdir(), 'bsrc-'));
+  const git = (...a) => execFileSync('git', ['-C', src, ...a], { encoding: 'utf8' }).trim();
+  git('init', '-q');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'x');
+  const sha = git('rev-parse', 'HEAD');
+  git('bundle', 'create', join(src, 'b.bundle'), 'HEAD');
+  const runIt = (env, { file = env.WORK_OUTCOME, log } = {}) => {
+    const d = mkdtempSync(join(tmpdir(), 'gate-'));
+    mkdirSync(join(d, 'out'));
+    if (file !== null) writeFileSync(join(d, 'out/outcome'), `${file}\n`);
+    writeFileSync(join(d, 'out/body.md'), 'GPT 的说明');
+    writeFileSync(join(d, 'out/work.bundle'), readFileSync(join(src, 'b.bundle')));
+    if (log) {
+      mkdirSync(join(d, 'gate'));
+      writeFileSync(join(d, 'gate/gate.log'), log);
+    }
+    const r = spawnSync('bash', ['-c', script], { cwd: d, env: { ...process.env, RUN_URL: 'U', WORK_RESULT: 'success', WORK_HEAD: sha, ...env }, encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    return { outcome: readFileSync(join(d, 'out/outcome'), 'utf8').trim(), body: readFileSync(join(d, 'out/body.md'), 'utf8'), bundle: existsSync(join(d, 'out/work.bundle')) };
+  };
+  const needsUser = (r) => assert.ok(r.outcome === 'needs-user' && !r.bundle, JSON.stringify(r));
+  assert.deepEqual(runIt({ WORK_OUTCOME: 'pr', GATE: 'success' }), { outcome: 'pr', body: 'GPT 的说明', bundle: true });
+  const failed = runIt({ WORK_OUTCOME: 'pr', GATE: 'failure' }, { log: 'npm ERR! 测试失败' });
+  needsUser(failed);
+  assert.match(failed.body, /把关结果：failure[\s\S]*npm ERR! 测试失败/);
+  needsUser(runIt({ WORK_OUTCOME: 'pr', GATE: 'cancelled' }));
+  // 结论本就是 needs-user：保留说明，丢 bundle
+  const nu = runIt({ WORK_OUTCOME: 'needs-user', GATE: 'skipped' });
+  assert.deepEqual(nu, { outcome: 'needs-user', body: 'GPT 的说明', bundle: false });
+  // 重跑取到旧产物：产物写着 pr，本次 work 结论 needs-user、gate 跳过 → 不发布
+  needsUser(runIt({ WORK_OUTCOME: 'needs-user', GATE: 'skipped' }, { file: 'pr' }));
+  // work 失败 / 没有输出 / 没有产物
+  needsUser(runIt({ WORK_RESULT: 'failure', WORK_OUTCOME: 'pr', GATE: 'success' }));
+  needsUser(runIt({ WORK_OUTCOME: '', GATE: 'skipped' }, { file: 'pr' }));
+  needsUser(runIt({ WORK_OUTCOME: 'pr', GATE: 'success' }, { file: null }));
+  // bundle 的提交与 work 输出不一致
+  needsUser(runIt({ WORK_OUTCOME: 'pr', GATE: 'success', WORK_HEAD: '0'.repeat(40) }));
+  needsUser(runIt({ WORK_OUTCOME: 'pr', GATE: 'success', WORK_HEAD: '' }));
 });
