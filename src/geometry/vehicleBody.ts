@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Variant } from '../data/models';
 import type { Layout } from './layout';
 import { lampFixtures } from './lampFixtures';
+import { grille, noseBelt, noseFloor, noseProfile } from './frontProfile';
 
 export const MAIN_PAINT = 0x608faa;
 const CREAM = 0xfff0d7;
@@ -140,9 +141,9 @@ function sideWindows(face: Face, bottom: number, top: number, driverEnd: number,
 }
 
 function paintLowerSides(
-  body: Facets, trim: Facets, paint: number, low: Point[], high: Point[], axles: number[], radius: number,
+  body: Facets, trim: Facets, paint: number, low: Point[], high: Point[], axles: number[], radius: number, joinZ: number,
 ): void {
-  const [half, floor, front] = low[2];
+  const [half, floor] = low[2];
   const rear = low[3][2];
   const belt = high[2][1];
   const cut = radius + 0.028;
@@ -156,15 +157,15 @@ function paintLowerSides(
       if (side === 1) out.quad(color, a, b, c, d);
       else out.quad(color, d, c, b, a);
     };
-    const span = (from: number, to: number, upperFrom = from) => {
+    const span = (from: number, to: number) => {
       const x = side * half;
-      skin(body, paint, [x, floor, from], [x, floor, to], [x, belt, to], [x, belt, upperFrom]);
+      skin(body, paint, [x, floor, from], [x, floor, to], [x, belt, to], [x, belt, from]);
       const edge = side * (half + 0.009);
       skin(trim, RUBBER, [edge, floor, from], [edge, floor, to], [edge, floor + 0.095, to], [edge, floor + 0.095, from]);
     };
-    let cursor = front;
+    let cursor = joinZ;
     for (const axle of axles) {
-      span(cursor, axle + mouth, cursor === front ? high[2][2] : cursor);
+      span(cursor, axle + mouth);
       const point = (x: number, r: number, angle: number): Point =>
         [side * x, radius + r * Math.sin(angle), axle + r * Math.cos(angle)];
       for (let i = 0; i < segments; i++) {
@@ -205,40 +206,77 @@ function wheelAndHub(trim: Facets, hub: Facets, side: Side, half: number, radius
   hub.solid(0x797c7a, cylinder(radius * 0.17, 0.016, outer + 0.028, 8, true));
 }
 
-function fascia(trim: Facets, half: number, front: number, rear: number): void {
-  const frontFace: Face = (x, y) => [x, y, front - 0.001];
-  const frontInset: Face = (x, y) => [x, y, front - 0.0007];
+function fascia(trim: Facets, front: number, rear: number): void {
+  const { halfWidth, bottom, top, proud } = grille;
+  const frontFace: Face = (x, y) => [x, y, noseProfile(front, y).z + proud];
+  rect(trim, RUBBER, frontFace, -halfWidth, bottom, halfWidth, top);
+  const rail: Face = (x, y) => [x, y, frontFace(x, y)[2] + 0.0005];
+  for (const h of [0.13, 0.36, 0.59, 0.82]) {
+    const y = lerp(bottom, top, h);
+    rect(trim, CHROME, rail, -halfWidth, y, halfWidth, y + 0.011);
+  }
+  // Unbranded oval fixed across the rails, parallel to the grille.
+  const mid = (bottom + top) / 2;
+  const tilt = Math.atan2(frontFace(0, top)[2] - frontFace(0, bottom)[2], top - bottom);
+  const badge = (g: THREE.BufferGeometry) => g.scale(0.125, 0.069, 1).rotateX(tilt).translate(0, mid, rail(0, mid)[2] + 0.0005);
+  trim.solid(CHROME, badge(new THREE.RingGeometry(0.73, 1, 20)));
+  trim.solid(RUBBER, badge(new THREE.CircleGeometry(0.73, 20)));
+
   const rearFace: Face = (x, y) => [-x, y, rear + 0.009];
   const rearInset: Face = (x, y) => [-x, y, rear + 0.007];
-  rect(trim, RUBBER, frontFace, -0.42, 0.785, 0.42, 1.103);
-  for (const y of [0.833, 0.917, 1.001, 1.069]) rect(trim, CHROME, frontInset, -0.40, y, 0.40, y + 0.014);
-  const oval = new THREE.RingGeometry(0.73, 1, 20).scale(0.125, 0.074, 1).translate(0, 0.963, front);
-  trim.solid(CHROME, oval);
-  const ovalInset = new THREE.CircleGeometry(1, 20).scale(0.092, 0.055, 1).translate(0, 0.963, front - 0.0004);
-  trim.solid(RUBBER, ovalInset);
-  // 提案：下格栅填满两雾灯座之间的空间；下边随唇边收窄，三道浅色横条与上格栅呼应。
-  const intake: Face = (u, h) => frontFace(u * (half - 0.51 + 0.07 * h), 0.429 + 0.276 * h);
-  rect(trim, 0x181c1d, intake, -1, 0, 1, 1);
-  const slat: Face = (u, h) => { const p = intake(u, h); p[2] += 0.0005; return p; };
-  for (const h of [0.2, 0.46, 0.72]) rect(trim, 0xb5b1a8, slat, -0.96, h, 0.96, h + 0.075);
   rect(trim, CHROME, rearFace, -0.24, 0.955, 0.24, 1.108);
   rect(trim, 0x515758, rearInset, -0.21, 0.979, 0.21, 1.084);
-  for (const side of SIDES) {
-    const fogX = side * (half - 0.31);
-    rect(trim, 0x4c4e4e, frontFace, fogX - 0.09, 0.463, fogX + 0.09, 0.571);
-    rect(trim, 0xbbaf92, frontInset, fogX - 0.051, 0.498, fogX + 0.051, 0.535);
-  }
 }
 
-function frontBumper(trim: Facets, half: number, front: number): void {
-  const base = ring(0.362, half - 0.067, front - 0.031, front - 0.207, 0.083, 0.02);
-  const lip = ring(0.412, half - 0.036, front - 0.003, front - 0.196, 0.11, 0.02);
-  const top = ring(0.724, half - 0.036, front - 0.003, front - 0.196, 0.11, 0.02);
-  band(trim, SEAL, base, lip);
-  band(trim, RUBBER, lip, top);
-  for (let i = 1; i < top.length - 1; i++) {
-    trim.triangle(RUBBER, top[0], top[i], top[i + 1]);
-    trim.triangle(RUBBER, base[0], base[i + 1], base[i]);
+/** 提案：下包围就是这段外蒙皮。两端沿翼子板收至裙边，中央留空，
+ * 四壁接后挡板；横条两端落在孔壁上。深度与色值均非原厂量测。 */
+function frontBumper(body: Facets, trim: Facets, paint: number, half: number, front: number, joinZ: number): void {
+  const x = half - 0.012;
+  // Open U from one skirt to the other. The front face is edge 2; no cap over the grille mouth.
+  const row = (y: number, z: number, cut: number, endY: number): Point[] => [
+    [-x, endY, joinZ], [-x, y, z - cut], [-x + cut, y, z],
+    [x - cut, y, z], [x, y, z - cut], [x, endY, joinZ],
+  ];
+  const skin = (y: number, endY = y) => {
+    const { z, cut } = noseProfile(front, y);
+    return row(y, z, cut, endY);
+  };
+  const toe = row(0.362, front - 0.035, 0.12, noseFloor);
+  const lip = row(0.429, front, 0.12, 0.425);
+  const rim = row(0.705, front - 0.008, 0.10, 0.48);
+  const shoulder = skin(0.754, noseFloor + 0.095);
+  band(trim, SEAL, toe, lip, [5]);
+  band(trim, RUBBER, lip, rim, [2, 5]);
+  band(trim, RUBBER, rim, shoulder, [5]);
+  band(body, paint, shoulder, skin(noseBelt), [5]);
+  trim.quad(RUBBER, toe[0], toe[5], toe[4], toe[1]);
+  trim.quad(RUBBER, toe[1], toe[4], toe[3], toe[2]);
+
+  const depth = 0.075;
+  const throat = (u: number, h: number, inset: number): Point => [
+    u * (half - 0.51 + 0.07 * h - 0.024 * inset), lerp(lip[2][1], rim[2][1], h),
+    lerp(lip[2][2], rim[2][2], h) - inset * depth,
+  ];
+  const opening = (inset: number) => [throat(-1, 0, inset), throat(1, 0, inset), throat(1, 1, inset), throat(-1, 1, inset)];
+  const mouth = opening(0), back = opening(1);
+  trim.quad(RUBBER, lip[2], mouth[0], mouth[3], rim[2]);
+  trim.quad(RUBBER, mouth[1], lip[3], rim[3], mouth[2]);
+  band(trim, SEAL, mouth, back);
+  trim.quad(0x181c1d, back[0], back[1], back[2], back[3]);
+  for (const h of [0.2, 0.46, 0.72]) {
+    rect(trim, 0xb5b1a8, (u, t) => throat(u, t, 0.32), -1, h, 1, h + 0.075);
+    trim.quad(0x626668, throat(-1, h + 0.075, 0.32), throat(1, h + 0.075, 0.32),
+      throat(1, h + 0.075, 0.70), throat(-1, h + 0.075, 0.70));
+  }
+  const cheek: Face = (u, h) => [u, lerp(lip[2][1], rim[2][1], h), lerp(lip[2][2], rim[2][2], h) + 0.0006];
+  for (const side of SIDES) {
+    const fogX = side * (half - 0.30);
+    rect(trim, 0x494c4c, cheek, fogX - 0.099, 0.21, fogX + 0.099, 0.67);
+    rect(trim, 0xbbaf92, (u, h) => { const p = cheek(u, h); p[2] += 0.0006; return p; },
+      fogX - 0.060, 0.32, fogX + 0.060, 0.55);
+    // Close the small step to the raised side skirt at the shared end station.
+    const ends = [side * x, side * (x + 0.009)];
+    rect(trim, RUBBER, (u, y) => [u, y, joinZ], Math.min(...ends), noseFloor, Math.max(...ends), noseFloor + 0.095);
   }
 }
 
@@ -384,6 +422,24 @@ function cabin(trim: Facets, half: number, windBaseZ: number, seatZ: number, dec
   consoleStack(trim, windBaseZ, deckTop);
 }
 
+/** Short bonnet pressing (proposal): two shoulders bound the raised centre fold.
+ * Fade the crown to zero at both ends to keep the grille lip and windscreen seams closed. */
+function bonnet(body: Facets, surface: Face): void {
+  const section = (v: number, rise: number) => {
+    const points = [0.28, 0.5, 0.72].map(u => surface(u, v));
+    points[1][1] += rise;
+    return points;
+  };
+  rect(body, CREAM, surface, 0, 0, 0.28, 1);
+  rect(body, CREAM, surface, 0.72, 0, 1, 1);
+  const rows = [section(0, 0), section(0.20, 0.041), section(0.64, 0.041), section(1, 0)];
+  for (let i = 1; i < rows.length; i++) {
+    const a = rows[i - 1], b = rows[i];
+    body.quad(CREAM, a[0], a[1], b[1], b[0]);
+    body.quad(CREAM, a[2], b[2], b[1], a[1]);
+  }
+}
+
 export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   const body = new Facets();
   const trim = new Facets();
@@ -393,26 +449,27 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   const { zFront: front, zRear: rear } = lay;
   const radius = v.lengthM * 0.061;
   const axles = [lay.frontAxleZ, lay.rearAxleZ];
-  const floorY = 0.4;
-  const beltY = 1.19;
+  const floorY = noseFloor;
+  const beltY = noseBelt;
   const windBaseZ = front - v.frontOverhangM * 0.68;
   const windTopZ = windBaseZ - 0.69;
   const headerY = v.hasBrow ? 2.20 : v.heightM - 0.21;
   const driverEnd = windTopZ - 0.34;
 
-  const sill = ring(floorY, half - 0.012, front - 0.023, rear + 0.012, 0.10, 0.036);
-  const belt = ring(beltY, half - 0.012, front - 0.004, rear + 0.012, 0.073, 0.036);
+  const lowerRing = (y: number) => {
+    const { z, cut } = noseProfile(front, y);
+    return ring(y, half - 0.012, z, rear + 0.012, cut, 0.036);
+  };
+  const sill = lowerRing(floorY), belt = lowerRing(beltY);
   const hood = ring(1.32, half - 0.012, windBaseZ, rear + 0.012, 0.096, 0.036);
   const header = ring(headerY, half - 0.052, windTopZ, rear + 0.012, 0.096, 0.056);
-  band(body, paint, sill, belt, [2, 6]);
-  paintLowerSides(body, trim, paint, sill, belt, axles, radius);
+  // Hand off the entire nose to the moulding ahead of the wheel opening; no painted panel behind its mouth.
+  const joinZ = front - 0.34;
+  band(body, paint, sill, belt, [0, 1, 2, 6, 7]);
+  frontBumper(body, trim, paint, half, front, joinZ);
+  paintLowerSides(body, trim, paint, sill, belt, axles, radius, joinZ);
   band(body, CREAM, belt, hood, [0]);
-  const bonnet = stationFace(belt, hood, 0);
-  const hoodRidge: Point = [0, 1.276, lerp(belt[0][2], windBaseZ, 0.5)];
-  body.triangle(CREAM, bonnet(0, 0), bonnet(0.5, 0), hoodRidge);
-  body.quad(CREAM, bonnet(0, 0), hoodRidge, bonnet(0.5, 1), bonnet(0, 1));
-  body.triangle(CREAM, bonnet(0.5, 0), bonnet(1, 0), hoodRidge);
-  body.quad(CREAM, hoodRidge, bonnet(1, 0), bonnet(1, 1), bonnet(0.5, 1));
+  bonnet(body, stationFace(belt, hood, 0));
   band(body, CREAM, hood, header, [0, 2, 4, 6]);
   windowRow(body, trim, glass, stationFace(hood, header, 0), 0.055, 0.945, [[0.032, 0.968, 0.032, 0.968, 0.30]]);
   windowRow(body, trim, glass, stationFace(hood, header, 4), 0.22, 0.90, [[0.16, 0.84, 0.16, 0.84, 0.67]]);
@@ -446,13 +503,12 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   const deckHeight = 0.07;
   const floor: Face = (x, z) => [x, floorY, z];
   rect(body, paint, floor, -bottomX, rear + 0.012, bottomX, deckZ - deckLength / 2);
-  rect(body, paint, floor, -bottomX, deckZ + deckLength / 2, bottomX, front - 0.023);
+  rect(body, paint, floor, -bottomX, deckZ + deckLength / 2, bottomX, joinZ);
   trim.solid(0x303637, block(2 * bottomX, deckHeight, deckLength, 0, floorY + deckHeight / 2, deckZ));
 
   for (const ax of axles) for (const side of SIDES) wheelAndHub(trim, hub, side, half, radius, ax);
-  frontBumper(trim, half, front);
   trim.solid(RUBBER, block(v.widthM - 0.073, 0.245, 0.145, 0, 0.478, rear + 0.0725));
-  fascia(trim, half, front, rear);
+  fascia(trim, front, rear);
   const { housings, lenses } = lampFixtures(v, lay);
   for (const housing of housings) trim.quad(SEAL, ...housing);
   sideDetails(trim, half, beltY, headerY, windBaseZ, driverEnd, lay.rearAxleZ + radius + 0.16, front, rear);

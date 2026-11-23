@@ -3,6 +3,7 @@
  */
 import type { Variant } from '../data/models';
 import { computeLayout, type Layout } from './layout';
+import { grille, noseProfile } from './frontProfile';
 
 export type LampRole = 'turnL' | 'turnR' | 'brake' | 'reverse' | 'head' | 'tail' | 'marker';
 type Point = [number, number, number];
@@ -29,19 +30,29 @@ export function lampFixtures(v: Variant, lay: Layout): Fixtures {
         lenses.push({ role, corners: patch(u0, v0, u1, v1) });
       };
     };
-    // Follow the slope between the sill and belt rings, then fold along their chamfer.
-    // At the outer seam both patches use exactly the same two points.
-    const nose = (y: number, inward: number, wrap: number): Point => {
-      const t = (y - 0.4) / (1.19 - 0.4);
-      const cut = 0.10 + t * (0.073 - 0.10);
-      const z = zFront - 0.023 + t * (0.023 - 0.004);
-      return [side * (half - 0.012 - cut * (1 - wrap) - inward), y, z - cut * wrap + 0.001];
+    // Three joined planes rather than a flat rectangle: start at the grille, rise
+    // around the bevel, then narrow to a point short of the separate axle repeater.
+    const mix = (a: number, b: number, t: number) => a + (b - a) * t;
+    const corner: Surface = (u, h) => {
+      const y = mix(mix(1.028, 1.164, h), mix(1.045, 1.147, h), u);
+      const { cut, z } = noseProfile(zFront, y);
+      return [side * (half - 0.012 - cut * (1 - u) + grille.proud * u), y, z - cut * u + grille.proud * (1 - u)];
     };
-    const frontFace = mount((u, h) => nose(0.979 + 0.045 * u + 0.126 * h, 0.46 * (1 - u), 0));
-    frontFace('head', 0.035, 0.14, 0.765, 0.89);
-    frontFace(turn, 0.79, 0.14, 0.976, 0.89);
-    const corner = mount((u, h) => nose(1.024 + 0.017 * u + (0.126 - 0.025 * u) * h, 0, u));
-    corner('marker', 0.075, 0.16, 0.93, 0.86);
+    const face = mount((u, h) => {
+      const [x, outerY] = corner(0, h);
+      const y = mix(mix(grille.bottom, grille.top, h), outerY, u);
+      return [mix(side * grille.halfWidth, x, u), y, noseProfile(zFront, y).z + grille.proud];
+    });
+    face(turn, 0.025, 0.13, 0.145, 0.87);
+    face('head', 0.166, 0.10, 0.99, 0.93);
+    const bevel = mount(corner);
+    bevel('marker', 0.06, 0.08, 0.94, 0.32);
+    bevel('head', 0.06, 0.49, 0.94, 0.93);
+    const wing = mount((u, h) => {
+      const [x, y, z] = corner(1, h);
+      return [x, mix(y, mix(1.109, 1.143, h), u), mix(z, zFront - 0.52 * v.frontOverhangM, u)];
+    });
+    wing('head', 0.012, 0.12, 0.963, 0.91);
 
     // Directly over the front axle, below the belt strip; 1 mm proud of the side skin.
     const fender = mount((u, h) => [side * (half - 0.011), 0.982 + 0.076 * h, frontAxleZ + (0.5 - u) * 0.18]);

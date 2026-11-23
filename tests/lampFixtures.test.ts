@@ -55,6 +55,24 @@ describe('车灯几何', () => {
       for (const [i, a] of group.entries()) {
         for (const b of group.slice(i + 1)) expect(a.box.intersectsBox(b.box)).toBe(false);
       }
+
+      // A marker on the bevel alone is not a wraparound headlamp. Follow the warm-white
+      // reflector across the front, around the corner, then back along the actual fender.
+      const head = group.filter(l => l.role === 'head').sort((a, b) => b.normal.z - a.normal.z);
+      expect(head).toHaveLength(3);
+      const [face, corner, wing] = head;
+      expect(face.box.max.x - face.box.min.x).toBeGreaterThan(0.4);
+      expect(corner.normal.x * side).toBeGreaterThan(0.5);
+      expect(corner.normal.z).toBeGreaterThan(0.5);
+      expect(wing.normal.x * side).toBeGreaterThan(0.99);
+      expect(wing.box.max.z - wing.box.min.z).toBeGreaterThan(0.30);
+      expect(wing.box.min.z).toBeGreaterThan(fender[0].box.max.z);
+      for (const light of head) {
+        const ray = new THREE.Raycaster(light.center.clone().addScaledVector(light.normal, 1), light.normal.clone().negate());
+        const lens = ray.intersectObject(lamps)[0];
+        expect(q[Math.floor(lens.faceIndex! / 2)].role).toBe('head');
+        expect(ray.intersectObject(root)[0].distance).toBeCloseTo(lens.distance, 5);
+      }
     }
   });
   it('setLights → setLamps：初始熄灭，常亮灯与驾驶灯互不影响，旧调用不保留夜间状态', () => {
