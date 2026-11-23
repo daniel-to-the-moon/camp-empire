@@ -145,7 +145,7 @@ export function buildSideAwning(v: Variant, depthM: number): THREE.Group {
     box(0.08, 0.08, len, 0, -0.04, 0), // 收纳盒
   ]);
 
-  // 同一材质用顶色保留橙色帐布与深色框架，双面显示帐布。
+  // 同一材质用顶点色保留橙色帐布与深色框架，双面显示帐布。
   poles.deleteAttribute('uv');
   for (const [part, hex] of [[fabric, 0xd9822b], [poles, TRIM_COLOR]] as const) {
     const color = new THREE.Color(hex);

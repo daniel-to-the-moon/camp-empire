@@ -96,10 +96,7 @@ const locks = (navigator as unknown as { locks?: LocksLike }).locks;
 const store = typeof indexedDB === 'undefined' ? null : await IdbStore.open(indexedDB, DB_NAME).catch(() => null);
 const slot = store ? new SaveSlot(store, SAVE_KEY) : null;
 // v3 槽位为空时导入 v2 槽位或 localStorage 旧存档（v2 槽位保留给仍开着的旧版本标签页，见 save.ts SAVE_KEY）
-if (store) {
-  const source = await migrateSave(store, localStorage.getItem(LEGACY_SAVE_KEY)).catch(() => null);
-  if (source === 'legacy') localStorage.removeItem(LEGACY_SAVE_KEY);
-}
+if (store && (await migrateSave(store, localStorage.getItem(LEGACY_SAVE_KEY)).catch(() => null)) === 'legacy') localStorage.removeItem(LEGACY_SAVE_KEY);
 const newSeed = () => hash32(`${Date.now()}:${Math.random()}`);
 function clearDevOffset() {
   devClock.clear();
@@ -408,8 +405,7 @@ const homeActions = homeFlow({
   startAuto: (path, done) => startAuto(path, done),
   onDeparted: (end) => {
     mode = 'driving';
-    drive = { pose: { x: end.x, y: end.y, yaw: 0 }, speed: 0, curvature: 0 };
-    drive.pose.yaw = end.yaw;
+    drive = { pose: { x: end.x, y: end.y, yaw: end.yaw }, speed: 0, curvature: 0 };
   },
   toast,
   lock: modeLock,
@@ -989,7 +985,7 @@ if (DEV) {
 syncNpcs([], false); // 先按存档摆好车；拿到写权后再回放离线时间
 renderHud();
 if (unsupported) {
-  // 没有可靠的写入机制：整页只读，说明原因（没有“在这里玩”按钮）
+  // 没有可靠的写入机制：整页只读，说明原因；没有“在这里玩”按钮
   $('#readonly-msg').textContent = unsupported;
   $('#readonly button').hidden = true;
   setWriter(false);
