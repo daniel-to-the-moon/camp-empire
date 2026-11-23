@@ -162,7 +162,7 @@ function buildWorld(scene: THREE.Scene): Map<string, THREE.Sprite> {
   flame.name = 'flame';
   fire.add(stones, flame);
   for (let i = 0; i < 4; i++) {
-    const log = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 2, 6), flat(0x7a5232));
+    const log = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 2, 6).rotateZ(Math.PI / 2), flat(0x7a5232));
     const a = (i * Math.PI) / 2 + Math.PI / 4;
     log.position.set(Math.cos(a) * 3, 0.22, Math.sin(a) * 3);
     log.rotation.y = -a + Math.PI / 2;
@@ -253,7 +253,7 @@ function buildWorld(scene: THREE.Scene): Map<string, THREE.Sprite> {
     const a = r() * Math.PI * 2;
     const d = 48 + r() * 40;
     const h = 4 + r() * 5;
-    const leaves = new THREE.Mesh(new THREE.ConeGeometry(h * 0.3, h, 6), flat(0x6e8a64));
+    const leaves = new THREE.Mesh(new THREE.ConeGeometry(h * 0.3, h, 6), leafMat);
     leaves.position.set(Math.cos(a) * d, h / 2, Math.sin(a) * d - 7);
     scene.add(leaves);
   }
@@ -327,20 +327,20 @@ function createDust(scene: THREE.Scene) {
         const p = pool[next];
         next = (next + 1) % pool.length;
         const a = Math.random() * Math.PI * 2;
-        const out = 0.6 + Math.random() * (0.8 + hard * 1.2);
+        const out = 0.6 + Math.random() * (1 + strength * 0.5);
         // 主方向沿推开方向 n，带随机散开；three 坐标 z = −y
         p.vel.set(
           n[0] * out + Math.cos(a) * 0.8,
           0.6 + Math.random() * (0.8 + hard * 1.2),
-          -(n[1] * out + Math.sin(a) * 0.8),
+          -(n[1] * out) + Math.sin(a) * 0.8,
         );
-        p.sprite.position.set(point[0] + (Math.random() - 0.5) * 0.4, 0.2 + Math.random() * 0.4, -point[1] + (Math.random() - 0.5) * 0.4);
+        p.sprite.position.set(point[0] + (Math.random() - 0.5) * 0.4, 0.2 + Math.random() * 0.8, -point[1] + (Math.random() - 0.5) * 0.4);
         p.max = p.life = 0.7 + Math.random() * (0.6 + hard * 0.8);
-        p.size0 = 0.4 + Math.random() * 0.45;
-        p.size1 = p.size0 + (0.8 + hard * 1.4);
-        p.alpha = 0.5 + hard * 0.3;
-        p.sprite.visible = true;
+        p.size0 = 0.4 + Math.random() * 0.4;
+        p.size1 = 1.4 + Math.random() * 1.2 + hard * 1.6;
+        p.alpha = 0.45 + hard * 0.35;
         (p.sprite.material as THREE.SpriteMaterial).color.copy(dustColor).lerp(smokeColor, hard * Math.random());
+        p.sprite.visible = true;
       }
     },
     update(dt: number) {
@@ -352,10 +352,11 @@ function createDust(scene: THREE.Scene) {
           continue;
         }
         const k = 1 - p.life / p.max; // 0 → 1
-        p.vel.multiplyScalar(Math.exp(-dt * 2.2));
+        p.vel.multiplyScalar(Math.exp(-dt * 2.2)); // 空气阻力
         p.vel.y += dt * 0.25; // 热烟上浮
         p.sprite.position.addScaledVector(p.vel, dt);
-        p.sprite.scale.setScalar(THREE.MathUtils.lerp(p.size0, p.size1, Math.sqrt(k)));
+        const size = p.size0 + (p.size1 - p.size0) * Math.sqrt(k);
+        p.sprite.scale.set(size, size, 1);
         (p.sprite.material as THREE.SpriteMaterial).opacity = p.alpha * (1 - k) * Math.min(1, k * 8);
       }
     },
