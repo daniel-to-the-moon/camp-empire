@@ -270,6 +270,11 @@ test('Pages 正式分支错误或产物自带 Worker：拒绝上传', async () =
   assert.match(incorrectBranch.summary(), /正式发布分支.*main/);
   assert.equal(incorrectBranch.wrangler(), '');
 
+  const previewIsProduction = setup({ projects: ['camp-empire'], productionBranch: 'pr-69' });
+  assert.notEqual((await previewIsProduction.run({ DEPLOY: 'true', PREVIEW_BRANCH: 'pr-69' })).code, 0);
+  assert.match(previewIsProduction.summary(), /正式发布分支.*main/);
+  assert.equal(previewIsProduction.wrangler(), '');
+
   for (const PREVIEW_BRANCH of ['', 'pr-69']) {
     const t = setup({ projects: ['camp-empire'], worker: true });
     assert.notEqual((await t.run({ DEPLOY: 'true', PREVIEW_BRANCH })).code, 0);

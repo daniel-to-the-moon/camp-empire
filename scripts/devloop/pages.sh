@@ -98,7 +98,8 @@ if [ "$latest" != "$SHA" ]; then
   exit 0
 fi
 
-if [ -z "${PREVIEW_BRANCH:-}" ] && [ "$(jq -r '.result.production_branch // empty' <<< "$info")" != 'main' ]; then
+# Wrangler 会把分支名与 production_branch 一致的上传当成正式发布，PR 预览也须核对。
+if [ "$(jq -r '.result.production_branch // empty' <<< "$info")" != 'main' ]; then
   fail 'Cloudflare Pages 的正式发布分支应为 main，已停止上传。'
 fi
 [ -f "$DIST/index.html" ] || fail '构建产物缺少 index.html。请检查 CI 构建和产物下载。'
