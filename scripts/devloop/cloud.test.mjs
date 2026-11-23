@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { finalize, followUps, loadReview, pickPr, runDecide, trustedReviewer } from './cloud.mjs';
+import { loadGates } from './accept.mjs';
 import { touchesWorkflows, validateReview } from './review-format.mjs';
 import { decide, MAX_CI_RETRIES, roundsUsed } from './policy.mjs';
 import { marker } from './policy.mjs';
@@ -84,11 +85,26 @@ test('select：不调用 gh api user；跳过改工作流的 PR；认得云端�
   const r = select([
     { number: 3, view: view(H, { files: ['.github/workflows/x.yml'] }) },
     { number: 4, view: view('c'.repeat(40), { comments: [botReview(4, 'changes', 'c'.repeat(40))] }) },
-    { number: 5, view: view('d'.repeat(40)) },
+    // 与 #4 改的不是同一文件（同一文件会按合并排期排在 #4 后面，见下一条测试）
+    { number: 5, view: view('d'.repeat(40), { files: ['src/b.ts'] }) },
   ]);
   assert.equal(r.code, 0, r.err);
   assert.match(r.out, /^pr=5\nhead=d{40}\nbase=b{40}\n/);
   assert.doesNotMatch(r.log, /^api user/m);
+});
+
+test('select：合并排期——与更早、仍在途的 PR 改同一文件就排队；前面的 PR 等人（needs-user / 等视觉验收）时不挡', () => {
+  const busy = { number: 4, view: view('c'.repeat(40), { comments: [botReview(4, 'changes', 'c'.repeat(40))] }) };
+  assert.match(select([busy, { number: 5, view: view('d'.repeat(40)) }]).out, /^pr=\n/);
+  // 等视觉验收：标签 + 当前 head 的 retry:accept 签名标记
+  const waitMark = { author: { login: 'github-actions' }, body: `执行者：GPT（云端）\n${marker(KEY, { pr: 4, state: 'retry', reason: 'accept', head: 'c'.repeat(40), base: B })}` };
+  for (const [labels, comments] of [[['needs-user'], []], [['awaiting-acceptance'], [waitMark]]]) {
+    const parked = { number: 4, view: { ...view('c'.repeat(40), { comments }), labels: labels.map((name) => ({ name })) } };
+    assert.match(select([parked, { number: 5, view: view('d'.repeat(40)) }]).out, /^pr=5\n/, labels.join());
+  }
+  // 等待标签还在，但 head 已换（新提交）：重新处理，照常挡住后面的同文件 PR
+  const moved = { number: 4, view: { ...view('e'.repeat(40), { comments: [waitMark] }), labels: [{ name: 'awaiting-acceptance' }] } };
+  assert.match(select([moved, { number: 5, view: view('d'.repeat(40)) }]).out, /^pr=4\n/);
 });
 
 test('select：没有可审的 PR 时输出空 pr；--pr 只看指定的那个', () => {
@@ -98,18 +114,20 @@ test('select：没有可审的 PR 时输出空 pr；--pr 只看指定的那个',
   assert.doesNotMatch(r.log, /pr list/);
 });
 
-test('gpt-review.yml：review 只读且以 :read-only 运行 codex、不持有签名密钥；decide 不运行模型；全局串行；开关', () => {
+test('gpt-review.yml：review 只读、GPT 以只读工具审核（gpt-agent read）、不持有签名密钥；decide 不运行模型；全局串行；开关', () => {
   const yml = readFileSync(join(HERE, '../../.github/workflows/gpt-review.yml'), 'utf8');
   const job = (name) => yml.match(new RegExp(`^  ${name}:\\n((?:(?: {4,}.*)?\\n)*)`, 'm'))?.[1] ?? '';
   const [select, review, decide] = ['select', 'review', 'decide'].map(job);
   assert.ok(select && review && decide);
   for (const j of [select, review]) assert.doesNotMatch(j, /: write$/m);
-  assert.match(review, /uses: openai\/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 /);
-  assert.match(review, /permission-profile: ':read-only'/);
+  // GPT 审核：main 上的 gpt-agent.mjs、read 模式（只读工具），不经 codex-action
+  const gptStep = review.slice(review.indexOf('- name: GPT 审核'), review.indexOf('# 第二审核方 Claude'));
+  assert.match(gptStep, /node \.\.\/_main\/scripts\/devloop\/gpt-agent\.mjs --mode read /);
+  assert.doesNotMatch(review, /uses: openai\/codex-action/);
   assert.match(review, /persist-credentials: false/);
-  // 签名密钥只在 prompt 这一步（不在运行 codex 的那一步）出现
-  const codexStep = review.slice(review.indexOf('- name: GPT 审核'), review.indexOf('- uses: actions/upload-artifact'));
-  assert.doesNotMatch(codexStep, /DEVLOOP_MARKER_KEY/);
+  // 签名密钥只在 prompt 这一步（不在运行模型的步骤）出现
+  const modelSteps = review.slice(review.indexOf('- name: GPT 审核'), review.indexOf('- uses: actions/upload-artifact'));
+  assert.doesNotMatch(modelSteps, /DEVLOOP_MARKER_KEY/);
   assert.doesNotMatch(decide, /uses: openai\/codex-action/);
   assert.match(decide, /^ {6}contents: write$/m);
   assert.match(decide, /^ {6}actions: write$/m);
@@ -341,8 +359,9 @@ test('gpt-review.yml：prompt 收到 select 选定的 head', () => {
  * decide 入口级测试：替换 GitHub / CI / git 接口，记录调用顺序。
  * states：prState 依次返回的 PR 状态（最后一个重复使用）；push：'ok' | 'fail'（mergeAndPush 是否抛错，成功前会先调用 beforePush）
  */
-function decideRig({ reviewResult = 'success', review = { verdict: 'approve', summary: 'ok', findings: [] }, ci = 'ok', states = [{}], push = 'ok', mainBase = B, limitMode } = {}) {
+function decideRig({ reviewResult = 'success', review = { verdict: 'approve', summary: 'ok', findings: [] }, ci = 'ok', states = [{}], push = 'ok', mainBase = B, limitMode, gates, acceptance = 'none', ciUrl = '' } = {}) {
   const calls = [];
+  const full = [];
   const pr = { title: 't', headRefOid: H, headRefName: 'claude/x', isCrossRepository: false, baseRefName: 'main', state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', labels: [], markers: [], files: ['src/a.ts'] };
   let i = 0;
   const io = {
@@ -350,10 +369,12 @@ function decideRig({ reviewResult = 'success', review = { verdict: 'approve', su
     model: 'm',
     limitMode,
     sleep: async () => {},
-    ghR: (args) => { calls.push(args.slice(0, 3).join(' ')); return args[0] === 'issue' && args[1] === 'create' ? `https://github.com/o/r/issues/${90 + calls.filter((c) => c.startsWith('issue create')).length}\n` : ''; },
+    gates,
+    acceptance: () => acceptance,
+    ghR: (args) => { calls.push(args.slice(0, 3).join(' ')); full.push(args.join(' ')); return args[0] === 'issue' && args[1] === 'create' ? `https://github.com/o/r/issues/${90 + calls.filter((c) => c.startsWith('issue create')).length}\n` : ''; },
     prState: () => ({ ...pr, ...states[Math.min(i++, states.length - 1)] }),
     mainSha: () => mainBase,
-    runCi: async (p) => { calls.push(`ci ${p.pr} ${p.head.slice(0, 4)} ${p.base.slice(0, 4)}`); return { status: ci, base: B, url: '' }; },
+    runCi: async (p) => { calls.push(`ci ${p.pr} ${p.head.slice(0, 4)} ${p.base.slice(0, 4)}`); return { status: ci, base: B, url: ciUrl }; },
     fetch: () => calls.push('fetch'),
     mergeAndPush: (opts) => {
       calls.push(`merge ${opts.base.slice(0, 4)}+${opts.head.slice(0, 4)}`);
@@ -366,7 +387,7 @@ function decideRig({ reviewResult = 'success', review = { verdict: 'approve', su
   };
   const files = { 'r.json': JSON.stringify(review), 'm.json': JSON.stringify({ pr: '7', head: H, base: B }) };
   const run = () => runDecide({ pr: 7, head: H, base: B, reviewResult, reviewPath: 'r.json', metaPath: 'm.json', read: (f) => files[f], exists: (f) => f in files }, io);
-  return { calls, run };
+  return { calls, full, run };
 }
 const merged = (calls) => calls.includes('pushed');
 const deployed = (calls) => calls.some((c) => c.startsWith('workflow run ci.yml'));
@@ -493,4 +514,41 @@ test('finalize：issue 创建成功但响应丢失 → 重新核对找回编号�
   assert.equal(created.length, 1);
   assert.ok(calls.includes('workflow run claude.yml -f'));
   assert.equal(calls.filter((c) => c.startsWith('issue create')).length, 1);
+});
+
+test('runDecide 发布把关：改画面的 PR 审核与 CI 都通过但用户没确认 → 不合并，加 awaiting-acceptance，触发预览与视觉评分', async () => {
+  const gates = loadGates();
+  const vis = { files: ['src/geometry/placeholder.ts'] };
+  const url = 'https://github.com/o/r/actions/runs/4242';
+  const r = decideRig({ gates, states: [vis], ciUrl: url });
+  const out = await r.run();
+  assert.equal(out.state, 'retry');
+  assert.ok(!merged(r.calls) && !deployed(r.calls));
+  assert.ok(r.full.includes('pr edit 7 --add-label awaiting-acceptance'));
+  assert.ok(r.full.findIndex((c) => c.startsWith('label create awaiting-acceptance')) < r.full.indexOf('pr edit 7 --add-label awaiting-acceptance'), '先建标签再加');
+  assert.ok(r.full.includes(`workflow run accept.yml --ref main -f pr=7 -f head=${H} -f run=4242`), r.full.join('\n'));
+  assert.ok(r.full.findIndex((c) => c.startsWith('pr comment 7')) < r.full.findIndex((c) => c.startsWith('workflow run accept.yml')), '先评论再触发');
+  // 用户已确认 → 合并
+  const ok = decideRig({ gates, states: [vis], ciUrl: url, acceptance: 'accepted' });
+  assert.equal((await ok.run()).state, 'merged');
+  // 确认早于最新提交 → 摘掉 accepted，重新走验收
+  const stale = decideRig({ gates, states: [vis], ciUrl: url, acceptance: 'stale' });
+  assert.equal((await stale.run()).state, 'retry');
+  assert.ok(stale.full.includes('pr edit 7 --remove-label accepted'));
+  // 不改画面的 PR 不受影响；没启用 gates 也不受影响
+  assert.equal((await decideRig({ gates, ciUrl: url }).run()).state, 'merged');
+  assert.equal((await decideRig({ states: [vis], ciUrl: url }).run()).state, 'merged');
+  // 拿不到 CI 运行号：仍不合并，只评论说明，不触发
+  const nourl = decideRig({ gates, states: [vis] });
+  assert.equal((await nourl.run()).state, 'retry');
+  assert.ok(!nourl.full.some((c) => c.startsWith('workflow run accept.yml')));
+  // 审核不通过时照常交 Claude 修，不走验收
+  const bad = decideRig({ gates, states: [vis], ciUrl: url, review: { verdict: 'request_changes', summary: 'x', findings: [{ severity: 'major', file: 'a.ts', line: 3, issue: 'i', suggestion: 's' }] } });
+  assert.equal((await bad.run()).state, 'changes');
+  assert.ok(!bad.full.some((c) => c.startsWith('workflow run accept.yml')));
+});
+
+test('followUps：retry + accept 才触发 accept.yml', () => {
+  assert.deepEqual(followUps('retry', 7), []);
+  assert.deepEqual(followUps('retry', 7, { head: H, run: '1' }), [['workflow', 'run', 'accept.yml', '--ref', 'main', '-f', 'pr=7', '-f', `head=${H}`, '-f', 'run=1']]);
 });
