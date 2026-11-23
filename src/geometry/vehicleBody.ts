@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Variant } from '../data/models';
 import type { Layout } from './layout';
+import { lampFixtures } from './lampFixtures';
 
 export const MAIN_PAINT = 0x608faa;
 const CREAM = 0xfff0d7;
@@ -189,17 +190,22 @@ function paintLowerSides(
 function wheelAndHub(trim: Facets, hub: Facets, side: Side, half: number, radius: number, z: number): void {
   const tireWidth = 0.215;
   const outer = half - 0.041;
-  const cylinder = (r: number, width: number, x: number, segments: number) =>
-    new THREE.CylinderGeometry(r, r, width, segments).rotateZ(Math.PI / 2).translate(side * x, Math.fround(radius), z);
+  const cylinder = (r: number, width: number, x: number, segments: number, buriedBack = false) => {
+    const g = new THREE.CylinderGeometry(r, r, width, segments);
+    if (buriedBack) {
+      // CylinderGeometry builds barrel, top cap, bottom cap. Only the last cap is buried.
+      g.setIndex(Array.from(g.getIndex()!.array.slice(0, g.groups[2].start)));
+    }
+    return g.rotateZ(-side * Math.PI / 2).translate(side * x, Math.fround(radius), z);
+  };
   trim.solid(RUBBER, cylinder(radius, tireWidth, outer - tireWidth / 2, 16));
-  trim.solid(0x414146, cylinder(radius * 0.80, 0.010, outer, 16));
-  hub.solid(0xb8b1a4, cylinder(radius * 0.57, 0.025, outer + 0.007, 12));
-  hub.solid(CHROME, cylinder(radius * 0.455, 0.018, outer + 0.019, 12));
-  hub.solid(0x797c7a, cylinder(radius * 0.17, 0.016, outer + 0.028, 8));
+  trim.solid(0x414146, cylinder(radius * 0.80, 0.010, outer, 16, true));
+  hub.solid(0xb8b1a4, cylinder(radius * 0.57, 0.025, outer + 0.007, 12, true));
+  hub.solid(CHROME, cylinder(radius * 0.455, 0.018, outer + 0.019, 12, true));
+  hub.solid(0x797c7a, cylinder(radius * 0.17, 0.016, outer + 0.028, 8, true));
 }
 
 function fascia(trim: Facets, half: number, front: number, rear: number): void {
-  // The supplied signal quads stay on their original planes. Surrounds sit just behind them.
   const frontFace: Face = (x, y) => [x, y, front - 0.001];
   const frontInset: Face = (x, y) => [x, y, front - 0.0007];
   const rearFace: Face = (x, y) => [-x, y, rear + 0.009];
@@ -210,46 +216,24 @@ function fascia(trim: Facets, half: number, front: number, rear: number): void {
   trim.solid(CHROME, oval);
   const ovalInset = new THREE.CircleGeometry(1, 20).scale(0.092, 0.055, 1).translate(0, 0.963, front - 0.0004);
   trim.solid(RUBBER, ovalInset);
-  rect(trim, 0x121a1d, frontFace, -0.49, 0.45, 0.49, 0.58);
-  rect(trim, 0x636568, frontInset, -0.43, 0.505, 0.43, 0.518);
+  // 提案：下格栅填满两雾灯座之间的空间；下边随唇边收窄，三道浅色横条与上格栅呼应。
+  const intake: Face = (u, h) => frontFace(u * (half - 0.51 + 0.07 * h), 0.429 + 0.276 * h);
+  rect(trim, 0x181c1d, intake, -1, 0, 1, 1);
+  const slat: Face = (u, h) => { const p = intake(u, h); p[2] += 0.0005; return p; };
+  for (const h of [0.2, 0.46, 0.72]) rect(trim, 0xb5b1a8, slat, -0.96, h, 0.96, h + 0.075);
   rect(trim, CHROME, rearFace, -0.24, 0.955, 0.24, 1.108);
   rect(trim, 0x515758, rearInset, -0.21, 0.979, 0.21, 1.084);
-
   for (const side of SIDES) {
-    const x = half - 0.08;
-    const point = (dx: number, y: number, dz = 0.002): Point => [side * (x - dx), y, front - dz];
-    const patch = (color: number, a: Point, b: Point, c: Point, d: Point) => {
-      if (side === 1) trim.quad(color, a, b, c, d);
-      else trim.quad(color, d, c, b, a);
-    };
-    patch(SEAL, point(0.46, 0.974), point(0.0, 1.014), point(0.0, 1.153), point(0.48, 1.108));
-    patch(0xffdf9b, point(0.429, 1.016, 0.001), point(0.006, 1.044, 0.001),
-      point(0.006, 1.137, 0.001), point(0.441, 1.093, 0.001));
-    patch(0xfff4cb, point(0.427, 1.075, 0.0005), point(0.006, 1.117, 0.0005),
-      point(0.006, 1.137, 0.0005), point(0.441, 1.093, 0.0005));
-    const wing = (y: number): Point => [side * (half - 0.031), y, front - 0.059];
-    patch(SEAL, point(0, 1.014), wing(1.037), wing(1.147), point(0, 1.153));
-    patch(0xffe3a3, point(0.006, 1.044, 0.001), wing(1.061), wing(1.127), point(0.006, 1.137, 0.001));
-
     const fogX = side * (half - 0.31);
     rect(trim, 0x4c4e4e, frontFace, fogX - 0.09, 0.463, fogX + 0.09, 0.571);
     rect(trim, 0xbbaf92, frontInset, fogX - 0.051, 0.498, fogX + 0.051, 0.535);
-
-    const lensX = side * (half - 0.155);
-    const tail: Face = (dx, y) => rearFace(lensX + dx, y);
-    rect(trim, SEAL, tail, -0.091, 0.95, 0.091, 1.76);
-    const lens: Face = (dx, y) => rearInset(lensX + dx, y);
-    const highlight: Face = (dx, y) => [-lensX - dx, y, rear + 0.005];
-    rect(trim, 0xa93237, lens, -0.061, 0.982, 0.061, 1.729);
-    rect(trim, 0xf87465, highlight, -0.053, 1.26, 0.053, 1.68);
-    rect(trim, 0xffc285, highlight, -0.053, 1.085, 0.053, 1.16);
   }
 }
 
 function frontBumper(trim: Facets, half: number, front: number): void {
   const base = ring(0.362, half - 0.067, front - 0.031, front - 0.207, 0.083, 0.02);
   const lip = ring(0.412, half - 0.036, front - 0.003, front - 0.196, 0.11, 0.02);
-  const top = ring(0.604, half - 0.036, front - 0.003, front - 0.196, 0.11, 0.02);
+  const top = ring(0.724, half - 0.036, front - 0.003, front - 0.196, 0.11, 0.02);
   band(trim, SEAL, base, lip);
   band(trim, RUBBER, lip, top);
   for (let i = 1; i < top.length - 1; i++) {
@@ -291,10 +275,10 @@ function sideDetails(
   rect(trim, SEAL, tail, -0.64, 0.651, 0.64, 0.663);
 }
 
+// Cabin dimensions and tints are stylised proposals, not factory measurements.
 function dashboard(trim: Facets, half: number, windBaseZ: number, steeringX: number): void {
-  // The dash meets the inner wall at the beltline and clears the shell above it.
-  const lower = ring(1.16, half - 0.012, windBaseZ - 0.065, windBaseZ - 0.49, 0.09, 0.07);
-  const shoulder = ring(1.315, half - 0.018, windBaseZ - 0.07, windBaseZ - 0.58, 0.09, 0.06);
+  const lower = ring(1.16, half - 0.03, windBaseZ - 0.065, windBaseZ - 0.49, 0.09, 0.07);
+  const shoulder = ring(1.315, half - 0.03, windBaseZ - 0.07, windBaseZ - 0.58, 0.09, 0.06);
   const top = ring(1.485, half - 0.096, windBaseZ - 0.175, windBaseZ - 0.55, 0.07, 0.04);
   band(trim, 0x524d46, lower, shoulder);
   band(trim, 0x997c5f, shoulder, top);
@@ -302,21 +286,58 @@ function dashboard(trim: Facets, half: number, windBaseZ: number, steeringX: num
     trim.triangle(0x826b55, top[0], top[i], top[i + 1]);
     trim.triangle(0x524d46, lower[0], lower[i + 1], lower[i]);
   }
-
-  const instrumentZ = windBaseZ - 0.409;
-  const instrumentY = 1.567;
-  const panelAngle = Math.atan2(0.021, 0.225);
-  const panelHeight = 0.113;
-  trim.solid(SEAL, new THREE.BoxGeometry(0.405, panelHeight, 0.225)
-    .rotateX(-panelAngle).translate(steeringX, instrumentY - panelHeight / (2 * Math.cos(panelAngle)), instrumentZ));
-  trim.solid(RUBBER, block(0.425, 0.039, 0.042, steeringX, 1.578, instrumentZ + 0.092));
-  for (const offset of [-0.098, 0.098]) {
-    const x = steeringX + offset;
-    trim.solid(0xd5c9a9, new THREE.RingGeometry(0.031, 0.045, 10)
-      .rotateX(-Math.PI / 2 - panelAngle).translate(x, instrumentY + 0.001, instrumentZ));
-    trim.solid(0xd99464, new THREE.BoxGeometry(0.009, 0.004, 0.035)
-      .rotateY(Math.sign(offset) * 0.52).rotateX(-panelAngle).translate(x, instrumentY + 0.002, instrumentZ));
+  // At the beltline, two short sleeves meet the skin edge-on. No outward cap coplanar with the paint.
+  for (const side of SIDES) {
+    const ends = [side * (half - 0.034), side * (half - 0.012)];
+    const x0 = Math.min(...ends), x1 = Math.max(...ends);
+    const sleeve = (y: number): [Point, Point, Point, Point] => [
+      [x0, y, windBaseZ - 0.22], [x1, y, windBaseZ - 0.22],
+      [x1, y, windBaseZ - 0.42], [x0, y, windBaseZ - 0.42],
+    ];
+    const low = sleeve(1.19), high = sleeve(1.28);
+    band(trim, 0x524d46, low, high, [1, 3]);
+    trim.quad(0x524d46, ...high);
+    trim.quad(0x524d46, low[3], low[2], low[1], low[0]);
   }
+
+  // A moulded cowl grows out of the padded top; only the driver-facing slope carries instruments.
+  const cowl = (y: number, w: number, nose: number, back: number) =>
+    ring(y, w, windBaseZ - nose, windBaseZ - back, 0.05, 0.028).map(([x, h, z]): Point => [x + steeringX, h, z]);
+  const foot = cowl(1.48, 0.25, 0.245, 0.545);
+  const crest = cowl(1.561, 0.197, 0.339, 0.425);
+  const lip = cowl(1.571, 0.194, 0.35, 0.442);
+  band(trim, 0x826b55, foot, crest);
+  band(trim, 0x715c4a, crest, lip);
+  for (let i = 1; i < lip.length - 1; i++) trim.triangle(0x92765b, lip[0], lip[i], lip[i + 1]);
+  const dialTilt = Math.atan2(crest[4][1] - foot[4][1], crest[4][2] - foot[4][2]);
+  const [, dialY, dialZ] = between(foot[4], crest[4], 0.5);
+  for (const dx of [-0.094, 0.094]) {
+    const x = steeringX + dx;
+    trim.solid(0xe2d5b9, new THREE.RingGeometry(0.035, 0.047, 10)
+      .rotateX(-Math.PI / 2 - dialTilt).translate(x, dialY + 0.001, dialZ));
+    const needle: Face = (u, h) => [x + u + h * Math.sign(dx) * 0.38, dialY + 0.002 + h * Math.sin(dialTilt), dialZ + h * Math.cos(dialTilt)];
+    rect(trim, 0xe6a465, needle, -0.004, 0.029, 0.004, -0.01);
+  }
+}
+
+/** The centre stack flares from a foot between the seat rails into the dash. Its controls
+ * sit on a shallow driver-facing slope, above the dash pad so they also read through the windscreen.
+ */
+function consoleStack(trim: Facets, baseZ: number, deckTop: number): void {
+  const station = (width: number, front: number, rear: number, frontY: number, rearY: number): Point[] => [
+    [-width, frontY, baseZ - front], [width, frontY, baseZ - front],
+    [width, rearY, baseZ - rear], [-width, rearY, baseZ - rear],
+  ];
+  const foot = station(0.131, 0.36, 1.12, deckTop - 0.012, deckTop - 0.012);
+  const waist = station(0.146, 0.36, 0.80, 1.17, 1.11);
+  const top = station(0.18, 0.32, 0.694, 1.548, 1.516);
+  band(trim, 0x63594c, foot, waist);
+  band(trim, 0xb29473, waist, top);
+  trim.quad(0x514d47, top[0], top[1], top[2], top[3]);
+  trim.quad(SEAL, foot[3], foot[2], foot[1], foot[0]);
+  const surface: Face = (x, t) => [x, lerp(top[0][1], top[3][1], t) + 0.001, lerp(top[0][2], top[3][2], t)];
+  for (const side of SIDES) rect(trim, RUBBER, surface, side * 0.083 - 0.067, 0.10, side * 0.083 + 0.067, 0.30);
+  rect(trim, 0x81a6a6, surface, -0.14, 0.41, 0.14, 0.87);
 }
 
 function steering(trim: Facets, x: number, windBaseZ: number): void {
@@ -339,16 +360,12 @@ function steering(trim: Facets, x: number, windBaseZ: number): void {
   trim.solid(RUBBER, atWheel(new THREE.BoxGeometry(0.108, 0.09, 0.075)));
 }
 
-function cabin(trim: Facets, half: number, windBaseZ: number, driverEnd: number, floorY: number): void {
+function cabin(trim: Facets, half: number, windBaseZ: number, seatZ: number, deckTop: number): void {
   const saddle = 0xbb794d;
   const cushion = 0xeabc88;
   const seatX = half * 0.47;
-  const seatZ = driverEnd + 0.21;
-  const deckHeight = 0.073;
-  const deckTop = floorY + 0.07;
   const pedestalBottom = deckTop + 0.026;
   const pedestalTop = 0.81;
-  trim.solid(0x303637, block(half * 1.74, deckHeight, 1.34, 0, deckTop - deckHeight / 2, seatZ + 0.18));
   for (const side of SIDES) {
     const x = side * seatX;
     for (const rail of SIDES) {
@@ -361,8 +378,10 @@ function cabin(trim: Facets, half: number, windBaseZ: number, driverEnd: number,
     trim.solid(cushion, new THREE.BoxGeometry(0.37, 0.44, 0.045).rotateX(-0.14).translate(x, 1.21, seatZ - 0.085));
     trim.solid(cushion, block(0.26, 0.18, 0.14, x, 1.56, seatZ - 0.21));
   }
+  // Local +x is the driver's left when looking along +z (layout.ts).
   dashboard(trim, half, windBaseZ, seatX);
   steering(trim, seatX, windBaseZ);
+  consoleStack(trim, windBaseZ, deckTop);
 }
 
 export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
@@ -419,16 +438,24 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   band(body, CREAM, roofBase, eave);
   band(body, CREAM, eave, roof);
   for (let i = 1; i < roof.length - 1; i++) body.triangle(CREAM, roof[0], roof[i], roof[i + 1]);
-  // The chassis floor leaves the tire sweep open at the four outside corners.
+  // One continuous underside: the seat deck occupies the middle span rather than overlaying the floor.
   const bottomX = half - 0.27;
-  body.quad(paint, [-bottomX, floorY, rear + 0.012], [bottomX, floorY, rear + 0.012],
-    [bottomX, floorY, front - 0.023], [-bottomX, floorY, front - 0.023]);
+  const seatZ = driverEnd + 0.21;
+  const deckZ = seatZ + 0.18;
+  const deckLength = 1.34;
+  const deckHeight = 0.07;
+  const floor: Face = (x, z) => [x, floorY, z];
+  rect(body, paint, floor, -bottomX, rear + 0.012, bottomX, deckZ - deckLength / 2);
+  rect(body, paint, floor, -bottomX, deckZ + deckLength / 2, bottomX, front - 0.023);
+  trim.solid(0x303637, block(2 * bottomX, deckHeight, deckLength, 0, floorY + deckHeight / 2, deckZ));
 
   for (const ax of axles) for (const side of SIDES) wheelAndHub(trim, hub, side, half, radius, ax);
   frontBumper(trim, half, front);
   trim.solid(RUBBER, block(v.widthM - 0.073, 0.245, 0.145, 0, 0.478, rear + 0.0725));
   fascia(trim, half, front, rear);
+  const { housings, lenses } = lampFixtures(v, lay);
+  for (const housing of housings) trim.quad(SEAL, ...housing);
   sideDetails(trim, half, beltY, headerY, windBaseZ, driverEnd, lay.rearAxleZ + radius + 0.16, front, rear);
-  cabin(trim, half, windBaseZ, driverEnd, floorY);
-  return { body: body.geometry(), trim: trim.geometry(), glass: glass.geometry(), hub: hub.geometry() };
+  cabin(trim, half, windBaseZ, seatZ, floorY + deckHeight);
+  return { body: body.geometry(), trim: trim.geometry(), glass: glass.geometry(), hub: hub.geometry(), lenses };
 }

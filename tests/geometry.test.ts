@@ -66,8 +66,7 @@ function hasSolidSection(mesh: THREE.Mesh, start: THREE.Vector3, end: THREE.Vect
   return solidCount > 0 || far - Math.max(previous, approach) <= 0.001;
 }
 
-const cabinVariants = [ALL_VARIANTS[0], ALL_VARIANTS.find((v) => v.model === 'SH6601A4DB')!];
-describe.each(cabinVariants.map((v) => [v.id, v] as const))('驾驶室 %s', (_id, v) => {
+describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('驾驶室 %s', (_id, v) => {
   const { root } = buildPlaceholderVehicle(v);
   const trim = root.getObjectByName('trim') as THREE.Mesh;
   const section = new THREE.Mesh(trim.geometry, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
@@ -101,11 +100,26 @@ describe.each(cabinVariants.map((v) => [v.id, v] as const))('驾驶室 %s', (_id
     expect(hasSolidSection(section, wheelHub, dash)).toBe(true);
   });
 
+  it('左舵仪表舱从台面升起，中央面板从两座之间的地台接到台面以上', () => {
+    const z = glassBase.z - 0.322;
+    const topAt = (x: number) => new THREE.Raycaster(new THREE.Vector3(x, 1.68, z), down).intersectObject(trim)[0].point.y;
+    const base = topAt(-halfWidth * 0.47);
+    const cowl = topAt(halfWidth * 0.47);
+    expect(cowl - base).toBeGreaterThan(0.04);
+    expect(cowl - base).toBeLessThan(0.10);
+    expect(topAt(0)).toBeGreaterThan(base);
+    const foot = new THREE.Vector3(0.023, 0.45, glassBase.z - 0.55);
+    expect(hasSolidSection(section, foot, new THREE.Vector3(foot.x, 1.51, foot.z))).toBe(true);
+  });
+
   it('左右座椅通过底座与驾驶室地板相接', () => {
     const z = glassBase.z - 0.75;
-    const floorRay = new THREE.Raycaster(new THREE.Vector3(0, 0.7, z), down);
+    // Sample the exposed deck between the new centre stack and the seat rails.
+    const floorRay = new THREE.Raycaster(new THREE.Vector3(0.20, 0.7, z), down);
     const floorTop = floorRay.intersectObject(trim)[0]?.point.y ?? -Infinity;
-    expect(floorTop).toBeGreaterThan(0.36);
+    expect(floorTop).toBeCloseTo(0.47, 4);
+    const underside = new THREE.Raycaster(new THREE.Vector3(0.20, 0.31, z), down.clone().negate());
+    expect(underside.intersectObject(trim)[0].point.y).toBeCloseTo(0.4, 5);
     for (const side of [-1, 1]) {
       const x = side * (halfWidth * 0.47 + 0.135);
       const deck = new THREE.Vector3(x, floorTop - 0.015, z);
@@ -133,13 +147,13 @@ describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('占位几何 %s', (_
     expect(box.max.z).toBeCloseTo(v.lengthM / 2, 5); // 半长可能是 .5 mm，直接比米
     expect(box.min.z).toBeCloseTo(-v.lengthM / 2, 5);
   });
-  it('整车只包含车身、饰件、玻璃、轮毂与车灯五个网格，面数 ≤ 2600', () => {
+  it('整车只包含车身、饰件、玻璃、轮毂与车灯五个网格，面数 ≤ 2472', () => {
     const meshes: string[] = [];
     root.traverse((object) => {
       if (object instanceof THREE.Mesh) meshes.push(object.name);
     });
     expect(meshes.sort()).toEqual(['body', 'glass', 'hub', 'lamps', 'trim']);
-    expect(triangleCount(root)).toBeLessThanOrEqual(2600);
+    expect(triangleCount(root)).toBeLessThanOrEqual(2472);
   });
   it('每个车轮正上方都有可见的圆拱边，并且饰件在公告尺寸内', () => {
     const hub = root.getObjectByName('hub') as THREE.Mesh;
@@ -194,11 +208,11 @@ describe.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('占位几何 %s', (_
   });
   it('车灯点亮且侧边帐展开时，整车仍在性能预算内', () => {
     const vehicle = makeVehicle(v);
-    vehicle.setLights({ turnL: true, turnR: false, brake: true, reverse: false });
+    vehicle.setLights({ turnL: true, turnR: true, brake: true, reverse: true, head: true, tail: true, marker: true });
     vehicle.setAwning(true);
 
-    expect(drawCallCount(vehicle.root)).toBeLessThanOrEqual(6);
-    expect(triangleCount(vehicle.root)).toBeLessThanOrEqual(2600);
+    expect(drawCallCount(vehicle.root)).toBe(6);
+    expect(triangleCount(vehicle.root)).toBeLessThanOrEqual(2510);
   });
   it('车身三角面朝外（有向体积 > 0，防止镜像变换翻转绕序导致外表面被剔除）', () => {
     const body = root.getObjectByName('body') as THREE.Mesh;

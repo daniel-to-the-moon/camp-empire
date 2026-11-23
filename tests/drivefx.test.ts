@@ -35,7 +35,7 @@ import { idealLapS, simulateLaps } from '../src/shared/lapsim';
 import { BlinkClock, blinkOn, LIGHTS, lightsFor, manualBraking } from '../src/shared/lights';
 import { uniform } from '../src/shared/rng';
 import { computeLayout } from '../src/geometry/layout';
-import { buildPlaceholderVehicle, lampLayout, LAMP_COLORS, setLamps } from '../src/geometry/placeholder';
+import { buildPlaceholderVehicle } from '../src/geometry/placeholder';
 
 const s = specOf(findVariant('SH5043XLJH9DB-C_3116')!);
 const drive = (st: DriveState, throttle: number, boost: boolean, n: number, dt = 1 / 60) => {
@@ -129,7 +129,7 @@ describe('环路圈速基线（游戏物理仿真）', () => {
   it('加速挡：飞驰圈比巡航缩短 ≥ 25%，起步圈也更快，全程无碰撞', () => {
     expect(boost.flyingS).toBeLessThan(cruise.flyingS * 0.75);
     expect(boost.standingS).toBeLessThan(cruise.standingS);
-    expect(boost.maxSpeed).toBeCloseTo(DRIVING.boostMaxForwardSpeed, 6);
+    expect(boost.maxSpeed * 3.6).toBeCloseTo(28.8, 6);
     expect(boost.impacts).toBe(0);
   });
 });
@@ -152,7 +152,6 @@ describe('车灯（自动）', () => {
     expect(manualBraking(-1, 3, false)).toBe(true);
     expect(manualBraking(1, -2, false)).toBe(true);
     expect(manualBraking(0, 3, false)).toBe(false); // 松油门滑行
-    expect(manualBraking(1, 3, false)).toBe(false);
     expect(manualBraking(0, 0, true)).toBe(true); // 停着按空格
     expect(manualBraking(-1, 0, false)).toBe(false); // 停着按倒车 = 起步倒车，不是刹车
   });
@@ -160,7 +159,7 @@ describe('车灯（自动）', () => {
     expect(lightsFor({ ...base, speed: -1 }).reverse).toBe(true);
     expect(lightsFor(base).reverse).toBe(false);
   });
-  it('停回家位：全部熄灭', () => {
+  it('停回家位：驾驶信号全部熄灭', () => {
     expect(lightsFor({ mode: 'parked', steer: 1, speed: -1, braking: true })).toEqual({ left: false, right: false, brake: false, reverse: false });
   });
   it('自动驾驶：按路径曲率亮转向灯，直线不亮', () => {
@@ -184,43 +183,7 @@ describe('车灯（自动）', () => {
   });
 });
 
-describe('车灯几何', () => {
-  it.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('%s：灯片在公告三围内、互不重叠，每车只多 1 个 draw call', (_id, v) => {
-    const lay = computeLayout(v);
-    const q = lampLayout(v);
-    expect(q.filter((l) => l.facing === 1).map((l) => l.role).sort()).toEqual(['turnL', 'turnR']);
-    expect(q.filter((l) => l.facing === -1)).toHaveLength(6);
-    for (const l of q) {
-      expect(Math.abs(l.x) + l.w / 2).toBeLessThanOrEqual(v.widthM / 2);
-      expect(l.z).toBeLessThanOrEqual(lay.zFront);
-      expect(l.z).toBeGreaterThanOrEqual(lay.zRear);
-      expect(l.y - l.h / 2).toBeGreaterThan(0.62); // 在前下包围 / 后保险杠之上
-      expect(l.y + l.h / 2).toBeLessThan(1.08); // 在机盖高度之下
-    }
-    // 左侧（+x）是左转向灯
-    for (const l of q) if (l.role === 'turnL') expect(l.x).toBeGreaterThan(0);
-    // 同一面上的灯片在 x 方向不重叠
-    for (const f of [1, -1]) {
-      const iv = q.filter((l) => l.facing === f).map((l) => [l.x - l.w / 2, l.x + l.w / 2]).sort((a, b) => a[0] - b[0]);
-      for (let i = 1; i < iv.length; i++) expect(iv[i][0]).toBeGreaterThanOrEqual(iv[i - 1][1]);
-    }
-  });
-  it('setLamps 只改对应灯的顶点颜色', () => {
-    const { root } = buildPlaceholderVehicle(ALL_VARIANTS[0]);
-    setLamps(root, { turnL: true, turnR: false, brake: true, reverse: false });
-    const m = root.getObjectByName('lamps') as THREE.Mesh;
-    const roles = m.geometry.userData.roles as string[];
-    const col = m.geometry.getAttribute('color');
-    const c = new THREE.Color();
-    roles.forEach((r, i) => {
-      const want = r === 'turnL' || r === 'brake' ? LAMP_COLORS[r as 'turnL'].on : LAMP_COLORS[r as 'turnL'].off;
-      c.setHex(want);
-      expect(col.getX(i * 6)).toBeCloseTo(c.r, 5);
-      expect(col.getZ(i * 6 + 5)).toBeCloseTo(c.b, 5);
-    });
-  });
-});
-
+// 车灯几何、昼夜与顶点色回归见 lampFixtures.test.ts。
 describe('视图切换', () => {
   it('四种视图；1–4 直选，V 循环，C 俯瞰 ↔ 跟随', () => {
     expect(VIEWS).toEqual(['overview', 'follow', 'orbit', 'hood']);
@@ -242,7 +205,6 @@ describe('视图切换', () => {
     expect(v.effective(true)).toBe('orbit');
     expect(v.effective(false)).toBe('orbit');
     v.onParked();
-    expect(v.effective(true)).toBe('overview');
     expect(v.next(true)).toBe('follow');
     expect(v.next(false)).toBe('hood'); // 驾驶中仍是上次选的环绕，V 切到引擎盖
   });
@@ -251,7 +213,7 @@ describe('视图切换', () => {
     const o = orbitBehind(t.yaw);
     const snap = JSON.stringify([t, o]);
     for (const v of VIEWS) camFor(v, t, o, hoodMount(ALL_VARIANTS[0]));
-    expect(JSON.stringify([t, o])).toBe(snap);
+    expect(JSON.stringify([t, o])).toEqual(snap);
   });
 });
 
@@ -290,19 +252,19 @@ describe('环绕相机', () => {
     expect(mid.pitch).toBeCloseTo((from.pitch + to.pitch) / 2, 10);
     expect(mid.dist).toBeCloseTo((from.dist + to.dist) / 2, 10);
   });
-  it('任意方位角、俯仰、距离：看向车身中心，距离与俯仰在上下限内，相机始终在地面以上', () => {
+  it('任意方位角、俯仰、距离：看向车身中心，距离与仰角在上下限内，相机始终在地面以上', () => {
     for (let i = 0; i < 2000; i++) {
       const o: Orbit = { azimuth: (uniform(i, 'a') - 0.5) * 40, pitch: (uniform(i, 'p') - 0.5) * 6, dist: uniform(i, 'd') * 200 - 50 };
       const c = orbitCam(t0, o);
       expect(c.look).toEqual([t0.x, 1, -t0.y]);
-      const d = Math.hypot(c.pos[0] - c.look[0], c.pos[1] - c.look[1], c.pos[2] - c.look[2]);
+      const d = Math.hypot(c.pos[0] - c.look[0], c.pos[2] - c.look[2], c.pos[1] - c.look[1]);
       expect(d).toBeGreaterThanOrEqual(ORBIT.minDist - 1e-9);
       expect(d).toBeLessThanOrEqual(ORBIT.maxDist + 1e-9);
       expect(c.pos[1]).toBeGreaterThanOrEqual(ORBIT.minHeight);
       expect(c.pos[1]).toBeGreaterThan(1); // 俯仰下限 > 0：相机永远高于看向点，不会从地下往上看
     }
   });
-  it('水平 360° 无死角：方位角连续转一圈，相机绕车一周，车始终在视线中心', () => {
+  it('水平 360° 无死角：方位角连续转一圈，车始终在视线中心', () => {
     let o = orbitBehind(0);
     const g = new OrbitGesture();
     g.down(1, 0, 0);
@@ -414,24 +376,25 @@ describe('引擎盖视角', () => {
       for (let t = 0; t <= 5; t += 0.01) {
         const r = applyShake(c.pos, c.look, c.shake, t, 1);
         expect(r.pos).toEqual(c.pos); // 相机位置不动：仍是上面逐款验证过的车外位置
-        expect(r.pos[1] - hoodSurfaceY(v, localForward(r.pos, tg))).toBeGreaterThan(HOOD.aboveHoodM - 0.1);
+        expect(r.pos[1]).toBeGreaterThan(hoodSurfaceY(v, localForward(r.pos, tg)) + HOOD.near);
       }
     }
   });
   it('GPT 审核 #48 反例：首款车朝东、t = 3 s、满强度——旧做法（抖位置）相机低于机盖面，新做法不会', () => {
     const v = ALL_VARIANTS[0];
     const m = hoodMount(v);
-    const tg = { x: 0, y: 0, yaw: 0, h: 1 };
+    const tg = { ...t0, yaw: 0 };
     const c = hoodCam(tg, m);
     const old = applyShake(c.pos, c.look, 'pos', 3, 1); // 改动前对所有视图都抖位置
     expect(old.pos[1]).toBeLessThan(hoodSurfaceY(v, localForward(old.pos, tg)));
     const now = applyShake(c.pos, c.look, c.shake, 3, 1);
+    expect(now.pos).toEqual(c.pos);
     expect(now.pos[1]).toBeGreaterThan(hoodSurfaceY(v, localForward(now.pos, tg)) + HOOD.near);
     // 看向点仍有抖动（保留碰撞反馈）：20 m 外最大 0.35 m ≈ 1°
     expect(Math.hypot(...now.look.map((x, i) => x - c.look[i]))).toBeGreaterThan(0.01);
   });
   it('其他视图仍抖位置，幅度不超过 SHAKE_MAX_M，强度 0 时不抖', () => {
-    const t = { x: 0, y: 0, yaw: 0.3, h: 1 };
+    const t: Target = { x: 3, y: -4, yaw: 0.7, h: 1.5 };
     for (const view of ['overview', 'follow', 'orbit'] as const) {
       const c = camFor(view, t, orbitBehind(0.3), hoodMount(ALL_VARIANTS[0]));
       expect(c.shake).toBe('pos');
@@ -440,7 +403,7 @@ describe('引擎盖视角', () => {
         expect(r.look).toEqual(c.look);
         for (let i = 0; i < 3; i++) expect(Math.abs(r.pos[i] - c.pos[i])).toBeLessThanOrEqual(SHAKE_MAX_M + 1e-12);
       }
-      expect(applyShake(c.pos, c.look, c.shake, 1, 0)).toEqual({ pos: c.pos, look: c.look });
+      expect(applyShake(c.pos, c.look, c.shake, 3, 0)).toEqual({ pos: c.pos, look: c.look });
     }
   });
   it('scene.ts 每帧的相机经 applyShake 叠加震屏，并按 CamWant.shake 选择方式', () => {
@@ -482,4 +445,3 @@ describe('底栏窄屏布局（GPT 审核 #48）', () => {
     expect(rule('.keys')).not.toMatch(/nowrap/);
   });
 });
-

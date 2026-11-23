@@ -110,10 +110,10 @@ try {
     if (logAfter === logBefore) throw new Error(`收取后流水没有新增（最新一条仍是：${logBefore}）`);
   });
 
-  await step('保存眉檐款三个机位和无眉檐款右前方的 PNG 截图', async () => {
+  await step('保存三机位、前后全亮对照与无眉檐款特写', async () => {
     const prefix = 'data:image/png;base64,';
-    const saveShot = async (angle, filename) => {
-      const dataUrl = await page.evaluate((a) => window.__campDebug.vehicleShot(a), angle);
+    const saveShot = async (angle, filename, lit = false) => {
+      const dataUrl = await page.evaluate(([a, on]) => window.__campDebug.vehicleShot(a, on), [angle, lit]);
       if (!dataUrl.startsWith(prefix)) throw new Error(`${angle} 未返回 PNG data URL`);
       const png = Buffer.from(dataUrl.slice(prefix.length), 'base64');
       if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error(`${angle} 的 PNG 文件头无效`);
@@ -131,6 +131,7 @@ try {
 
     await selectVariant('SH5043XLJH9DB-C_3116');
     for (const angle of ['front34', 'side', 'rear34']) await saveShot(angle, `vehicle-${angle}.png`);
+    for (const angle of ['front34', 'rear34']) await saveShot(angle, `vehicle-${angle}-lit.png`, true);
     await selectVariant('SH6591H4DB_2735');
     await saveShot('front34', 'vehicle-no-brow-front34.png');
   });
