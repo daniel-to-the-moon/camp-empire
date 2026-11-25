@@ -63,6 +63,14 @@ const now = () => devClock.now(state.sid);
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 // 图标列、罗盘先建好：之后任何 renderHud 都只更新它们
 mountHud();
+/** 与 style.css 窄屏断点同一条媒体查询；变窄时若两侧都开着，只留右侧（Codex 审核 #90） */
+const narrowQuery = window.matchMedia(`(max-width: ${NARROW_PX}px)`);
+narrowQuery.addEventListener('change', (e) => {
+  if (e.matches && drawers.open.left && drawers.open.right) {
+    drawers.open.left = null;
+    syncDrawers();
+  }
+});
 
 // ---------- T1 匿名统计（规则见 src/shared/analytics.ts，说明见 docs/ANALYTICS.md） ----------
 const prefs = (() => {
@@ -508,7 +516,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   // 收起式控制面板：点图标开合抽屉（同侧只开一个）
   drawer(tab) {
-    if (isDrawerTab(tab)) drawers.toggle(tab, window.innerWidth < NARROW_PX);
+    if (isDrawerTab(tab)) drawers.toggle(tab, narrowQuery.matches);
     syncDrawers();
   },
   // 快捷键引导：顶栏按钮 / H / ? 打开；关掉即记为看过
