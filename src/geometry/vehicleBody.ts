@@ -98,9 +98,13 @@ function band(out: Facets, color: number, low: Point[], high: Point[], skip: num
 
 type WindowSpan = [leftBottom: number, rightBottom: number, leftTop: number, rightTop: number, opacity: number];
 
+function mirrored(spans: WindowSpan[]): WindowSpan[] {
+  return [...spans].reverse().map(([a, b, c, d, opacity]) => [1 - b, 1 - a, 1 - d, 1 - c, opacity]);
+}
+
 /** Fills the sheet metal around real openings. Each gasket and pane shares the opening's plane. */
 function windowRow(
-  body: Facets, trim: Facets, glass: Facets, face: Face, bottom: number, top: number, spans: WindowSpan[],
+  body: Facets, trim: Facets, glass: Facets, face: Face, bottom: number, top: number, spans: WindowSpan[], liningOffset?: Point,
 ): void {
   rect(body, CREAM, face, 0, 0, 1, bottom);
   rect(body, CREAM, face, 0, top, 1, 1);
@@ -114,7 +118,8 @@ function windowRow(
     body.quad(CREAM, face(previousBottom, bottom), a, d, face(previousTop, top));
     const opening: Face = (u, v) => between(between(a, b, u), between(d, c, u), v);
     const edgeU = Math.min(0.16, 0.042 / Math.abs(b[2] - a[2] || b[0] - a[0]));
-    const edgeV = 0.042 / (c[1] - b[1]);
+    // On the flat skylight v runs aft rather than upwards.
+    const edgeV = 0.042 / Math.abs(c[1] - b[1] || c[2] - b[2]);
     rect(trim, SEAL, opening, 0, 0, 1, edgeV);
     rect(trim, SEAL, opening, 0, 1 - edgeV, 1, 1);
     rect(trim, SEAL, opening, 0, edgeV, edgeU, 1 - edgeV);
@@ -122,10 +127,42 @@ function windowRow(
     // A narrow pale strip suggests a reflection, while the main pane leaves the cabin visible.
     rect(glass, GLASS, opening, edgeU, edgeV, 1 - edgeU, 0.93 - edgeV, opacity);
     rect(glass, GLINT, opening, edgeU, 0.93 - edgeV, 1 - edgeU, 1 - edgeV, opacity);
+    if (liningOffset) {
+      // The brow is an enclosed compartment, not a second see-through cab. Return the
+      // inside edge of its gasket to a recessed opaque shade, closed even at grazing angles.
+      const rim = [opening(edgeU, edgeV), opening(1 - edgeU, edgeV),
+        opening(1 - edgeU, 1 - edgeV), opening(edgeU, 1 - edgeV)];
+      const back = rim.map(([x, y, z]): Point => [x + liningOffset[0], y + liningOffset[1], z + liningOffset[2]]);
+      band(trim, SEAL, rim, back);
+      trim.quad(SEAL, back[0], back[1], back[2], back[3]);
+    }
     previousBottom = rightBottom;
     previousTop = rightTop;
   }
   body.quad(CREAM, face(previousBottom, bottom), face(1, bottom), face(1, top), face(previousTop, top));
+}
+
+/** #73, 11-25 游戏需求。窗宽、留边、内衬深度均为风格化提案 / 待核实。
+ * 只裁风挡上沿前方的悬伸段；两侧与平顶共用乘客窗的密封条、玻璃及反光带。 */
+function browWindows(body: Facets, trim: Facets, glass: Facets, lip: Point[], eave: Point[], roof: Point[], windTopZ: number): void {
+  const rearEdge = windTopZ + 0.025;
+  const depth = 0.024;
+  const bottom = 0.13, top = 0.88;
+  const left = stationFace(lip, eave, 2);
+  const endAt = (v: number) => (rearEdge - left(0, v)[2]) / (left(1, v)[2] - left(0, v)[2]);
+  const side: WindowSpan[] = [[0.012, endAt(bottom), 0.022, endAt(top), 0.63]];
+  band(body, CREAM, lip, eave, [2, 6]);
+  windowRow(body, trim, glass, left, bottom, top, side, [-depth, 0, 0]);
+  windowRow(body, trim, glass, stationFace(lip, eave, 6), bottom, top, mirrored(side), [depth, 0, 0]);
+
+  // Keep both bevelled ends of the octagonal roof. The rectangle between them is
+  // partitioned around the skylight, not capped underneath the glazing.
+  body.quad(CREAM, roof[0], roof[1], roof[2], roof[7]);
+  body.quad(CREAM, roof[6], roof[3], roof[4], roof[5]);
+  const nose = roof[2][2], tail = roof[3][2];
+  const deck: Face = (u, v) => [lerp(roof[7][0], roof[2][0], u), roof[2][1], lerp(nose, tail, v)];
+  windowRow(body, trim, glass, deck, 0.04 / (nose - tail), (nose - rearEdge) / (nose - tail),
+    [[0.2, 0.8, 0.2, 0.8, 0.63]], [0, -depth, 0]);
 }
 
 function sideWindows(face: Face, bottom: number, top: number, driverEnd: number, tail: number): WindowSpan[] {
@@ -418,7 +455,7 @@ function cabin(trim: Facets, half: number, windBaseZ: number, seatZ: number, dec
   }
   // Local +x is the driver's left when looking along +z (layout.ts).
   dashboard(trim, half, windBaseZ, seatX);
-  steering(trim, seatX, windBaseZ);
+  steering(trim, half * 0.47, windBaseZ);
   consoleStack(trim, windBaseZ, deckTop);
 }
 
@@ -478,8 +515,7 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   const left = stationFace(hood, header, 2);
   const windows = sideWindows(left, windowBottom, windowTop, driverEnd, rear);
   windowRow(body, trim, glass, left, windowBottom, windowTop, windows);
-  windowRow(body, trim, glass, stationFace(hood, header, 6), windowBottom, windowTop,
-    [...windows].reverse().map(([a, b, c, d, opacity]) => [1 - b, 1 - a, 1 - d, 1 - c, opacity]));
+  windowRow(body, trim, glass, stationFace(hood, header, 6), windowBottom, windowTop, mirrored(windows));
 
   let roofBase = header;
   if (v.hasBrow) {
@@ -492,9 +528,14 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   const eave = ring(v.heightM - 0.105, half - 0.072, (v.hasBrow ? windBaseZ + 0.17 : windTopZ - 0.062),
     rear + 0.077, 0.155, 0.111);
   const roof = ring(v.heightM, half - 0.181, eave[0][2] - 0.14, rear + 0.195, 0.12, 0.12);
-  band(body, CREAM, roofBase, eave);
-  band(body, CREAM, eave, roof);
-  for (let i = 1; i < roof.length - 1; i++) body.triangle(CREAM, roof[0], roof[i], roof[i + 1]);
+  if (v.hasBrow) {
+    browWindows(body, trim, glass, roofBase, eave, roof, windTopZ);
+    band(body, CREAM, eave, roof);
+  } else {
+    band(body, CREAM, roofBase, eave);
+    band(body, CREAM, eave, roof);
+    for (let i = 1; i < roof.length - 1; i++) body.triangle(CREAM, roof[0], roof[i], roof[i + 1]);
+  }
   // One continuous underside: the seat deck occupies the middle span rather than overlaying the floor.
   const bottomX = half - 0.27;
   const seatZ = driverEnd + 0.21;
