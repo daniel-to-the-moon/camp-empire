@@ -167,7 +167,7 @@ const AUTO_SPEED = 6;
 let parkedDirty = false;
 
 // ---------- 视图（issue #44：俯瞰 / 跟随 / 环绕 / 引擎盖） ----------
-const views = new ViewChoice('follow');
+const views = new ViewChoice(); // 默认环绕（issue #82）
 let orbit: Orbit = orbitBehind(drive.pose.yaw);
 let displayedOrbit: Orbit | null = null;
 let hood = hoodMount(currentVariant(state));
@@ -337,6 +337,13 @@ function act<R extends { events: CampEvent[] }>(fn: (s: GameState) => R, opts: {
   });
 }
 
+/** 停回家位：视图回到默认环绕，从车后方起转（issue #82） */
+function resetViewOnPark() {
+  views.onParked();
+  orbit = orbitBehind(drive.pose.yaw);
+  displayedOrbit = null;
+}
+
 /** 按权威状态整体重建画面（玩家车 + 全部 NPC），用于采纳其他标签页写入的存档 */
 function resyncView() {
   autoRun = null;
@@ -344,9 +351,9 @@ function resyncView() {
   autoReplan = null;
   const wasParked = mode === 'parked';
   mode = state.player.parkedHome ? 'parked' : 'driving';
-  if (mode === 'parked' && !wasParked) views.onParked();
   const s = specOf(currentVariant(state));
   drive = { pose: state.player.parkedHome || !state.player.pose ? parkedPose(s, home) : state.player.pose, speed: 0, curvature: 0 };
+  if (mode === 'parked' && !wasParked) resetViewOnPark();
   rebuildPlayer();
   clearNpcs();
   syncNpcs([], false);
@@ -597,9 +604,9 @@ async function settleHome() {
     modeLock.busy = false;
   }
   mode = 'parked';
-  views.onParked(); // 停回家位：回到俯瞰（与改动前一致），停着时可再选别的视图
   boostLatch = false;
   drive = { pose: parkedPose(spec, home), speed: 0, curvature: 0 };
+  resetViewOnPark(); // 停回家位：回到默认环绕（issue #82），停着时可再选别的视图
   placeVehicle(player.root, spec, drive.pose);
   player.setAwning(awningOut(state));
   toast('已停回家位');

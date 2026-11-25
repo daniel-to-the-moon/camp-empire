@@ -194,30 +194,32 @@ export function camFor(view: View, t: Target, o: Orbit, m: HoodMount): CamWant {
   }
 }
 
+/** 默认视图：环绕（用户 2026-11-25，issue #82：“交互默认是‘环绕’模式”） */
+export const DEFAULT_VIEW: View = 'orbit';
+
 /**
- * 当前生效的视图：玩家选的视图在驾驶时生效；停回家位时默认俯瞰（与改动前一致），
- * 但停着时玩家再选视图（例如环绕看营地）就按玩家选的来，直到下次停回家位。
+ * 当前生效的视图（issue #82）：进入游戏、停回家位时都回到默认的环绕；
+ * 玩家手动选了别的视图（停着或行驶中都算）就按玩家选的来，直到下次停回家位。
+ * `parked` 参数保留给调用方，生效规则已与停 / 开无关。
  */
 export class ViewChoice {
   chosen: View;
-  private parkedPick: View | null = null;
 
-  constructor(initial: View = 'follow') {
+  constructor(initial: View = DEFAULT_VIEW) {
     this.chosen = initial;
   }
 
-  select(v: View, parked: boolean): void {
+  select(v: View, _parked: boolean): void {
     this.chosen = v;
-    if (parked) this.parkedPick = v;
   }
 
-  /** 停回家位那一刻调用：回到默认俯瞰 */
+  /** 停回家位那一刻调用：回到默认视图（环绕） */
   onParked(): void {
-    this.parkedPick = null;
+    this.chosen = DEFAULT_VIEW;
   }
 
-  effective(parked: boolean): View {
-    return parked ? (this.parkedPick ?? 'overview') : this.chosen;
+  effective(_parked: boolean): View {
+    return this.chosen;
   }
 
   /** V 键：按 VIEWS 顺序切到下一个 */
