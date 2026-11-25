@@ -8,6 +8,8 @@ import { stallById, stallRect, staticShapes } from '../shared/camp';
 import { ECONOMY, FRAME_MAX_DT_S, NPC, PENDING, SIDE_AWNING } from '../shared/config';
 import { camFor, hoodMount, OrbitGesture, orbitBehind, smoothOrbit, VIEW_LABEL, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
 import { BlinkClock, lightsFor, manualBraking } from '../shared/lights';
+import { runningLights } from '../shared/runningLights';
+import type { LampState } from '../geometry/placeholder';
 import { pointInPoly, type Shape } from '../shared/geom2d';
 import { resolveDrive, type Impact } from '../shared/collision';
 import { displayGold } from '../shared/ledger';
@@ -145,6 +147,7 @@ const home = stallById('home');
 
 let spec = specOf(currentVariant(state));
 let player: VehicleView = makeVehicle(currentVariant(state));
+let playerLights: LampState = {};
 /** 画面玩家车（spec / player）对应的车型；与 state.variantId 不同说明换车后的画面重建还没执行 */
 let playerVariantId = state.variantId;
 view.scene.add(player.root);
@@ -192,6 +195,7 @@ function rebuildPlayer() {
   disposeTree(player.root);
   spec = specOf(currentVariant(state));
   player = makeVehicle(currentVariant(state));
+  player.setLights(playerLights);
   playerVariantId = state.variantId;
   hood = hoodMount(currentVariant(state));
   view.scene.add(player.root);
@@ -768,6 +772,7 @@ function frame(t: number) {
   }
   placeVehicle(player.root, spec, drive.pose);
 
+  const running = runningLights(now());
   for (const a of traffic) {
     if (a === playerAgent) continue;
     const c = a as NpcCar;
@@ -779,6 +784,7 @@ function frame(t: number) {
       continue;
     }
     c.view.root.visible = !c.pending;
+    c.view.setLights(running);
     placeVehicle(c.view.root, c.spec, c.pose);
   }
 
@@ -810,7 +816,8 @@ function frame(t: number) {
   }
   const ls = lightsFor({ mode, steer: steerIn, curvature: autoCurv, speed: lightSpeed, braking: brakingIn });
   const bl = blink.update(ls, t / 1000);
-  player.setLights({ turnL: bl.left, turnR: bl.right, brake: ls.brake, reverse: ls.reverse });
+  playerLights = { ...running, turnL: bl.left, turnR: bl.right, brake: ls.brake, reverse: ls.reverse };
+  player.setLights(playerLights);
 
   const [cx, cy] = bodyCenter(spec, drive.pose);
   const activeView = currentView();
@@ -937,16 +944,22 @@ if (DEV) {
   $('#dev').hidden = false;
   // 调试入口（仅 ?dev），用于车辆截图和撞击效果检查
   (window as unknown as { __campDebug: unknown }).__campDebug = {
-    vehicleShot(angle: 'front34' | 'side' | 'rear34'): string {
+    vehicleShot(angle: 'front34' | 'side' | 'rear34', lit = false): string {
       const [forward, left] = { front34: [7, -5.5], side: [0, 9], rear34: [-7, 5.5] }[angle];
       const [cx, cy] = bodyCenter(spec, drive.pose);
       const cos = Math.cos(drive.pose.yaw);
       const sin = Math.sin(drive.pose.yaw);
-      return view.snapshot(
-        toThree(cx + forward * cos - left * sin, cy + forward * sin + left * cos, 2.6),
-        toThree(cx, cy, 1.2),
-        1280, 800, { fog: false, labels: false },
-      ).toDataURL('image/png');
+      // 固定灯态，让两张截图的区别不依赖 runner 时间。即使截图失败也恢复玩家车。
+      player.setLights({ head: lit, tail: lit, marker: lit, turnL: lit, turnR: lit, reverse: lit, brake: lit });
+      try {
+        return view.snapshot(
+          toThree(cx + forward * cos - left * sin, cy + forward * sin + left * cos, 2.6),
+          toThree(cx, cy, 1.2),
+          1280, 800, { fog: false, labels: false },
+        ).toDataURL('image/png');
+      } finally {
+        player.setLights(playerLights);
+      }
     },
     setTimeScale(v: number) {
       timeScale = v;

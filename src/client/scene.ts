@@ -9,7 +9,7 @@ import type { Variant } from '../data/models';
 import { GATE, ROAD, STALLS, TREES, WORLD, type Stall } from '../shared/camp';
 import { SIDE_AWNING } from '../shared/config';
 import { bodyCenter, type Pose, type VehicleSpec } from '../shared/kinematics';
-import { buildPlaceholderVehicle, buildSideAwning, setLamps, type LampRole } from '../geometry/placeholder';
+import { buildPlaceholderVehicle, buildSideAwning, setLamps, type LampState } from '../geometry/placeholder';
 import { applyShake, type CamWant, type V3 } from '../shared/camview';
 import { SNAPSHOT_FOV_DEG } from '../shared/cardcam';
 import { takeSnapshot } from './snapshot';
@@ -29,22 +29,16 @@ export function placeVehicle(obj: THREE.Object3D, s: VehicleSpec, p: Pose): void
 export interface VehicleView {
   root: THREE.Group;
   setAwning(on: boolean): void;
-  /** 车灯亮灭（issue #44）：只在状态变化时改顶点颜色 */
-  setLights(on: Record<LampRole, boolean>): void;
+  /** 车灯亮灭：只在状态变化时改顶点颜色 */
+  setLights(on: LampState): void;
 }
 
 export function makeVehicle(v: Variant, tint?: number): VehicleView {
   const { root, anchors } = buildPlaceholderVehicle(v, tint);
   let awning: THREE.Group | null = null;
-  let lit = '';
   return {
     root,
-    setLights(on) {
-      const key = `${+on.turnL}${+on.turnR}${+on.brake}${+on.reverse}`;
-      if (key === lit) return;
-      lit = key;
-      setLamps(root, on);
-    },
+    setLights: (on) => setLamps(root, on),
     setAwning(on) {
       if (on && !awning) {
         awning = buildSideAwning(v, SIDE_AWNING.depthM);

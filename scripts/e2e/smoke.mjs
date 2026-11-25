@@ -1,6 +1,6 @@
 // 浏览器端到端冒烟验收：在真实 Chromium 里打开构建产物（vite preview），走一遍核心循环。
 // 用法：node scripts/e2e/smoke.mjs [地址]，默认 http://127.0.0.1:4173/
-// 流程：?dev 入口 → 画布渲染出非空像素 → 金币显示 → 快进 1 天 → 待收取池有钱 → 收取 → 金币增加 → 车辆截图 → 无页面错误。
+// 流程：?dev 入口 → 画布渲染出非空像素 → 金币显示 → 快进 1 天 → 待收取池有钱 → 收取 → 车辆截图 → 无页面错误。
 // 截图写到 E2E_ARTIFACTS（默认 e2e-artifacts/）供 CI 上传，失败时退出码非 0。
 import { chromium } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -44,13 +44,14 @@ try {
     await page.locator('#stage canvas').waitFor({ timeout: 20_000 });
   });
 
+  const hideHud = () => page.addStyleTag({ content: 'body > *:not(#stage), #stage > *:not(canvas) { visibility: hidden !important; }' });
   await step('场景画布渲染出非空像素', async () => {
     await page.waitForTimeout(1500);
     // WebGL 画布没开 preserveDrawingBuffer，直接回读是空的；改为截屏。
     // 截屏前隐藏全部界面层（顶栏、面板、弹窗、底栏等），只留画布，避免界面颜色让空白场景蒙混过关（GPT 审核 #63 第 1 轮）。
-    await page.addStyleTag({ content: 'body > *:not(#stage), #stage > *:not(canvas) { visibility: hidden !important; }', }).then((h) => h.evaluate((el) => el.setAttribute('data-smoke', 'hide')));
+    const style = await hideHud();
     const png = (await page.locator('#stage canvas').first().screenshot()).toString('base64');
-    await page.evaluate(() => document.querySelector('style[data-smoke="hide"]')?.remove());
+    await style.evaluate(el => el.remove());
     const colors = await page.evaluate(async (b64) => {
       const img = new Image();
       img.src = `data:image/png;base64,${b64}`;
@@ -110,10 +111,10 @@ try {
     if (logAfter === logBefore) throw new Error(`收取后流水没有新增（最新一条仍是：${logBefore}）`);
   });
 
-  await step('保存眉檐款三个机位和无眉檐款右前方的 PNG 截图', async () => {
+  await step('保存三机位、眉檐高机位、前后全亮对照与无眉檐款特写', async () => {
     const prefix = 'data:image/png;base64,';
-    const saveShot = async (angle, filename) => {
-      const dataUrl = await page.evaluate((a) => window.__campDebug.vehicleShot(a), angle);
+    const saveShot = async (angle, filename, lit = false) => {
+      const dataUrl = await page.evaluate(([a, on]) => window.__campDebug.vehicleShot(a, on), [angle, lit]);
       if (!dataUrl.startsWith(prefix)) throw new Error(`${angle} 未返回 PNG data URL`);
       const png = Buffer.from(dataUrl.slice(prefix.length), 'base64');
       if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error(`${angle} 的 PNG 文件头无效`);
@@ -131,6 +132,25 @@ try {
 
     await selectVariant('SH5043XLJH9DB-C_3116');
     for (const angle of ['front34', 'side', 'rear34']) await saveShot(angle, `vehicle-${angle}.png`);
+    for (const angle of ['front34', 'rear34']) await saveShot(angle, `vehicle-${angle}-lit.png`, true);
+
+    // front34 高度 2.6 m，低于这款车的平顶；另用玩家可操作的环绕视图拍天窗。
+    await page.keyboard.press('3');
+    await page.locator('#views [data-arg="orbit"].on').waitFor();
+    const style = await hideHud();
+    try {
+      // 固定视口，环绕从车后 28° 起步：−310 px 绕向右前，+80 px 把仰角抬到约 65°。
+      await page.mouse.move(800, 300);
+      await page.mouse.down();
+      await page.mouse.move(490, 380);
+      await page.mouse.up();
+      await page.mouse.wheel(0, -340); // 距离 16 × exp(−340 × 0.0015) ≈ 9.6 m
+      await page.waitForTimeout(1000); // 环绕相机指数趋近目标，避免截到拖动过渡帧
+      await page.locator('#stage canvas').first().screenshot({ path: join(outDir, 'vehicle-brow-high.png') });
+    } finally {
+      await style.evaluate(el => el.remove());
+      await page.keyboard.press('1');
+    }
     await selectVariant('SH6591H4DB_2735');
     await saveShot('front34', 'vehicle-no-brow-front34.png');
   });

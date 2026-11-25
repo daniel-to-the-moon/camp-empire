@@ -35,7 +35,7 @@ import { idealLapS, simulateLaps } from '../src/shared/lapsim';
 import { BlinkClock, blinkOn, LIGHTS, lightsFor, manualBraking } from '../src/shared/lights';
 import { uniform } from '../src/shared/rng';
 import { computeLayout } from '../src/geometry/layout';
-import { buildPlaceholderVehicle, lampLayout, LAMP_COLORS, setLamps } from '../src/geometry/placeholder';
+import { buildPlaceholderVehicle } from '../src/geometry/placeholder';
 
 const s = specOf(findVariant('SH5043XLJH9DB-C_3116')!);
 const drive = (st: DriveState, throttle: number, boost: boolean, n: number, dt = 1 / 60) => {
@@ -160,7 +160,7 @@ describe('车灯（自动）', () => {
     expect(lightsFor({ ...base, speed: -1 }).reverse).toBe(true);
     expect(lightsFor(base).reverse).toBe(false);
   });
-  it('停回家位：全部熄灭', () => {
+  it('停回家位：驾驶信号全部熄灭', () => {
     expect(lightsFor({ mode: 'parked', steer: 1, speed: -1, braking: true })).toEqual({ left: false, right: false, brake: false, reverse: false });
   });
   it('自动驾驶：按路径曲率亮转向灯，直线不亮', () => {
@@ -184,43 +184,7 @@ describe('车灯（自动）', () => {
   });
 });
 
-describe('车灯几何', () => {
-  it.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('%s：灯片在公告三围内、互不重叠，每车只多 1 个 draw call', (_id, v) => {
-    const lay = computeLayout(v);
-    const q = lampLayout(v);
-    expect(q.filter((l) => l.facing === 1).map((l) => l.role).sort()).toEqual(['turnL', 'turnR']);
-    expect(q.filter((l) => l.facing === -1)).toHaveLength(6);
-    for (const l of q) {
-      expect(Math.abs(l.x) + l.w / 2).toBeLessThanOrEqual(v.widthM / 2);
-      expect(l.z).toBeLessThanOrEqual(lay.zFront);
-      expect(l.z).toBeGreaterThanOrEqual(lay.zRear);
-      expect(l.y - l.h / 2).toBeGreaterThan(0.62); // 在前下包围 / 后保险杠之上
-      expect(l.y + l.h / 2).toBeLessThan(1.08); // 在机盖高度之下
-    }
-    // 左侧（+x）是左转向灯
-    for (const l of q) if (l.role === 'turnL') expect(l.x).toBeGreaterThan(0);
-    // 同一面上的灯片在 x 方向不重叠
-    for (const f of [1, -1]) {
-      const iv = q.filter((l) => l.facing === f).map((l) => [l.x - l.w / 2, l.x + l.w / 2]).sort((a, b) => a[0] - b[0]);
-      for (let i = 1; i < iv.length; i++) expect(iv[i][0]).toBeGreaterThanOrEqual(iv[i - 1][1]);
-    }
-  });
-  it('setLamps 只改对应灯的顶点颜色', () => {
-    const { root } = buildPlaceholderVehicle(ALL_VARIANTS[0]);
-    setLamps(root, { turnL: true, turnR: false, brake: true, reverse: false });
-    const m = root.getObjectByName('lamps') as THREE.Mesh;
-    const roles = m.geometry.userData.roles as string[];
-    const col = m.geometry.getAttribute('color');
-    const c = new THREE.Color();
-    roles.forEach((r, i) => {
-      const want = r === 'turnL' || r === 'brake' ? LAMP_COLORS[r as 'turnL'].on : LAMP_COLORS[r as 'turnL'].off;
-      c.setHex(want);
-      expect(col.getX(i * 6)).toBeCloseTo(c.r, 5);
-      expect(col.getZ(i * 6 + 5)).toBeCloseTo(c.b, 5);
-    });
-  });
-});
-
+// 车灯几何、昼夜与顶点色回归见 lampFixtures.test.ts。
 describe('视图切换', () => {
   it('四种视图；1–4 直选，V 循环，C 俯瞰 ↔ 跟随', () => {
     expect(VIEWS).toEqual(['overview', 'follow', 'orbit', 'hood']);
