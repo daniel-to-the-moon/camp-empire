@@ -6,7 +6,7 @@ import { buildPlaceholderVehicle } from '../src/geometry/placeholder';
 describe('SH5043 眉檐窗', () => {
   const v = findVariant('SH5043XLJH9DB-C_3116')!;
   const { root } = buildPlaceholderVehicle(v);
-  const glass = root.getObjectByName('glass') as THREE.Mesh;
+  const glass = root.getObjectByName('glass') as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
   const pos = glass.geometry.getAttribute('position');
   const ray = (origin: THREE.Vector3, direction: THREE.Vector3) =>
     new THREE.Raycaster(origin, direction).intersectObject(root);
@@ -37,7 +37,7 @@ describe('SH5043 眉檐窗', () => {
     expect([...planes].sort()).toEqual(['left', 'right', 'roof']);
   });
 
-  it.each(['left', 'right', 'roof'] as const)('%s 的开口只有一扇；框两端接车漆，玻璃内侧封闭', (plane) => {
+  it.each(['left', 'right', 'roof'] as const)('%s 的开口只有一扇，窗框两端接车漆', (plane) => {
     const side = plane === 'left' ? 1 : -1;
     const sequence: string[] = [];
     for (let z = 1.50; z < 2.31; z += 0.01) {
@@ -47,13 +47,30 @@ describe('SH5043 眉檐窗', () => {
       const first = hits[0];
       const name = first.object.name;
       if (sequence.at(-1) !== name) sequence.push(name);
-      if (name !== 'glass') continue;
-      const lining = hits.find(h => h.object.name !== 'glass')!;
-      expect(lining.object.name).toBe('trim');
-      expect(lining.distance - first.distance).toBeGreaterThan(0.001); // 非共面贴花
-      expect(lining.distance - first.distance).toBeLessThan(0.05); // 不是透到厢体另一侧
     }
     expect(sequence).toEqual(['body', 'trim', 'glass', 'trim', 'body']);
+  });
+
+  it('眉檐侧窗与天窗透入内部，双面玻璃仍只用一个渲染通道', () => {
+    expect(glass.material.transparent).toBe(true);
+    expect(glass.material.depthWrite).toBe(false);
+    expect(glass.material.side).toBe(THREE.DoubleSide);
+    expect(glass.material.forceSinglePass).toBe(true);
+
+    const fromSide = ray(new THREE.Vector3(2, 2.74, 1.95), new THREE.Vector3(-1, 0, 0));
+    const fromRoof = ray(new THREE.Vector3(0.037, 4, 1.95), new THREE.Vector3(0, -1, 0));
+    expect(fromSide[0].object).toBe(glass);
+    expect(fromSide.some(hit => hit.object === glass && hit.point.x < -1)).toBe(true);
+    expect(fromRoof[0].object).toBe(glass);
+    for (const hits of [fromSide, fromRoof]) {
+      expect(hits.some(hit => hit.object !== glass && hit.distance - hits[0].distance < 0.12)).toBe(false);
+    }
+
+    const colors = glass.geometry.getAttribute('color');
+    expect(colors.itemSize).toBe(4);
+    for (let i = 0; i < colors.count; i++) {
+      if (pos.getY(i) > 2.20) expect(colors.getW(i)).toBe(0.25);
+    }
   });
 
   it('front34 和 side 机位到近侧窗中心的视线不被眉檐遮挡', () => {
