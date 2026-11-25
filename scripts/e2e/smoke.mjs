@@ -68,6 +68,18 @@ try {
     if (colors < 8) throw new Error(`场景画布只有 ${colors} 种颜色，疑似没有渲染`);
   });
 
+  await step('首次打开：快捷键引导出现，Esc 关掉；H 重开、按钮关掉', async () => {
+    const guide = page.locator('#guide');
+    await guide.waitFor({ state: 'visible', timeout: 10_000 });
+    await page.screenshot({ path: join(outDir, 'ui-guide.png') });
+    await page.keyboard.press('Escape');
+    await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+    await page.keyboard.press('KeyH');
+    await guide.waitFor({ state: 'visible', timeout: 5_000 });
+    await guide.locator('[data-act="guideClose"]').click();
+    await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+  });
+
   const welcome = page.locator('#welcome');
   /** 回访面板（每日礼物、离线汇总）只关掉、不在里面收取：收取一律走待收取区，才能单独核对收取入账 */
   async function closeWelcome() {
@@ -88,7 +100,10 @@ try {
   });
 
   const btn = page.locator('#pending [data-act="collect"]');
-  await step('待收取池有钱', async () => {
+  await step('待收取池有钱（右侧图标列展开待收取抽屉）', async () => {
+    await page.screenshot({ path: join(outDir, 'ui-collapsed.png') });
+    await page.locator('#rail-right [data-arg="pending"]').click();
+    await page.locator('#drawer-right').waitFor({ state: 'visible', timeout: 5_000 });
     await btn.waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => !document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 10_000 });
   });

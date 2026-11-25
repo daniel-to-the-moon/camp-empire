@@ -59,6 +59,16 @@ function hookGl() {
   window.__gates = { take: () => frames.splice(0, frames.length) };
 }
 
+/** 首次打开的快捷键引导（#guide）：等它出现再关掉，免得挡住回访面板和截图 */
+async function closeGuide(p) {
+  const g = p.locator('#guide');
+  await g.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
+  if (await g.isVisible()) {
+    await g.locator('[data-act="guideClose"]').click();
+    await g.waitFor({ state: 'hidden', timeout: 5_000 });
+  }
+}
+
 const errors = [];
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
 const results = { scenes: {}, shots: [], budgets };
@@ -73,6 +83,7 @@ try {
   await page.addInitScript(hookGl);
   await page.goto(url.toString(), { waitUntil: 'load', timeout: 30_000 });
   await page.locator('#stage canvas').waitFor({ timeout: 20_000 });
+  await closeGuide(page);
   const welcome = page.locator('#welcome');
   if (await welcome.isVisible()) {
     await welcome.locator('[data-act="closeWelcome"]').click();
@@ -113,6 +124,7 @@ try {
   // 不带 ?dev：看玩家实际看到的界面（本机地址本来就不发统计）
   await m.goto(base, { waitUntil: 'load', timeout: 30_000 });
   await m.locator('#stage canvas').waitFor({ timeout: 20_000 });
+  await closeGuide(m);
   const mw = m.locator('#welcome');
   if (await mw.isVisible()) await mw.locator('[data-act="closeWelcome"]').click().catch(() => {});
   await m.waitForTimeout(2500);

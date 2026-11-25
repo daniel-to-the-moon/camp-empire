@@ -11,17 +11,20 @@
       <div class="brand">camp<span>·</span>empire</div>
       <div class="clock" id="clock"></div>
       <div class="wallet" title="金币"><span class="coin" id="coins">0</span></div>
+      <button class="help" id="help" data-act="guide" title="快捷键引导（H）" aria-label="快捷键引导"></button>
     </header>
-    <aside class="panel left">
-      <section class="card-entry"><button data-act="card">生成露营卡片</button><button data-act="dex" id="dex-entry">车型图鉴</button><button data-act="privacy" class="quiet">隐私与统计</button></section>
-      <section id="garage"></section>
-      <section id="shop"></section>
+    <!-- 收起式控制面板：两侧只留图标列，点图标展开抽屉（逻辑见 src/shared/hudnav.ts、src/client/hud.ts） -->
+    <nav class="rail left" id="rail-left" aria-label="车与营地"></nav>
+    <aside class="panel left" id="drawer-left" hidden>
+      <section id="garage" data-tab="garage"></section>
+      <section id="shop" data-tab="shop"></section>
     </aside>
-    <aside class="panel right">
-      <section id="pending"></section>
-      <section id="spots"></section>
-      <section id="daily"></section>
-      <section><h2>流水</h2><ul id="log"></ul></section>
+    <nav class="rail right" id="rail-right" aria-label="收入与记录"></nav>
+    <aside class="panel right" id="drawer-right" hidden>
+      <section id="pending" data-tab="pending"></section>
+      <section id="spots" data-tab="spots"></section>
+      <section id="daily" data-tab="daily"></section>
+      <section data-tab="log"><h2>流水</h2><ul id="log"></ul></section>
     </aside>
     <div class="dock">
       <div id="views" role="group" aria-label="视图"></div>
@@ -43,6 +46,7 @@
         <button data-act="cardClose">关闭</button>
       </div>
     </div>
+    <div id="guide" role="dialog" aria-modal="false" aria-label="快捷键引导" hidden></div>
     <div id="dex" role="dialog" aria-label="车型图鉴" hidden></div>
     <div id="privacy" role="dialog" aria-label="隐私与统计" hidden>
       <h2>隐私与统计</h2>

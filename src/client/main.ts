@@ -6,7 +6,7 @@ import '../style.css';
 import { CATALOG, findVariant } from '../data/models';
 import { stallById, stallRect, staticShapes } from '../shared/camp';
 import { ECONOMY, FRAME_MAX_DT_S, NPC, PENDING, SIDE_AWNING } from '../shared/config';
-import { camFor, hoodMount, OrbitGesture, orbitBehind, smoothOrbit, VIEW_LABEL, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
+import { camFor, hoodMount, OrbitGesture, orbitBehind, smoothOrbit, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
 import { BlinkClock, lightsFor, manualBraking } from '../shared/lights';
 import { runningLights } from '../shared/runningLights';
 import type { LampState } from '../geometry/placeholder';
@@ -45,6 +45,8 @@ import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
+import { drawers, mountHud, openGuide, guideOpen, setBadge, syncCompass, syncDrawers } from './hud';
+import { guideSeen, isDrawerTab, isGuideKey, markGuideSeen, NARROW_PX } from '../shared/hudnav';
 import { ENDPOINT, successEvent, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
@@ -59,6 +61,8 @@ const devClock = new DevClock(DEV ? localStorage : null, DEV_KEY, () => Date.now
 const now = () => devClock.now(state.sid);
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
+// 图标列、罗盘先建好：之后任何 renderHud 都只更新它们
+mountHud();
 
 // ---------- T1 匿名统计（规则见 src/shared/analytics.ts，说明见 docs/ANALYTICS.md） ----------
 const prefs = (() => {
@@ -502,6 +506,20 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   closeWelcome() {
     $('#welcome').hidden = true;
   },
+  // 收起式控制面板：点图标开合抽屉（同侧只开一个）
+  drawer(tab) {
+    if (isDrawerTab(tab)) drawers.toggle(tab, window.innerWidth < NARROW_PX);
+    syncDrawers();
+  },
+  // 快捷键引导：顶栏按钮 / H / ? 打开；关掉即记为看过
+  guide() {
+    if (guideOpen()) return actions.guideClose('');
+    openGuide();
+  },
+  guideClose() {
+    $('#guide').hidden = true;
+    markGuideSeen(prefs);
+  },
   // 露营卡片（#30）：只在玩家点按钮时生成，不自动弹出、不接分享渠道、无分享奖励
   async card() {
     await cardFlow.generate();
@@ -621,6 +639,16 @@ window.addEventListener('keydown', (e) => {
   if (DRIVE_KEYS.includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (e.repeat) return;
+  if (e.code === 'Escape') {
+    // Esc 先关引导，再收抽屉
+    if (guideOpen()) void actions.guideClose('');
+    else if (drawers.closeAll()) syncDrawers();
+    return;
+  }
+  if (isGuideKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    void actions.guide('');
+    return;
+  }
   const v = viewForKey(e.code, currentView());
   if (v) selectView(v === 'next' ? views.next(mode === 'parked') : v);
   if (e.code === 'KeyP') void actions.park('');
@@ -635,6 +663,8 @@ const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
 // ---------- 场景画面手势（环绕视图；规则见 src/shared/camview.ts OrbitGesture） ----------
 const stage = $('#stage');
 stage.addEventListener('pointerdown', (e) => {
+  // 点场景画面就收起两侧抽屉，把画面还给营地
+  if (drawers.closeAll()) syncDrawers();
   if (currentView() !== 'orbit' || (e.pointerType === 'mouse' && e.button !== 0)) return;
   stage.setPointerCapture(e.pointerId);
   gesture.down(e.pointerId, e.clientX, e.clientY);
@@ -843,7 +873,9 @@ function renderHud() {
   const parkedHome = mode === 'parked';
   const ts = todayStats(state, t);
   const dv = dexView(state.dex);
-  $('#dex-entry').textContent = `车型图鉴 ${dv.lit} / ${dv.total}`;
+  $('#dex-entry').setAttribute('aria-label', `车型图鉴 ${dv.lit} / ${dv.total}`);
+  $('#dex-entry .tip').textContent = `车型图鉴 ${dv.lit} / ${dv.total}`;
+  setBadge('dex', `${dv.lit}`);
   if (!$('#dex').hidden) {
     // 内容没变就不重写，避免每秒刷新打断滚动
     const html = dexHtml(dv);
@@ -897,6 +929,11 @@ function renderHud() {
 
   const pv = pendingView(state.ledger.pending, out);
   const pl = pendingLines(pv);
+  // 图标角标：待收取金额（有钱就跳）、车位占用、买得起侧边帐、礼物未领
+  setBadge('pending', pv.pending > 0 ? displayGold(pv.pending).toLocaleString('zh-CN') : '', pv.pending > 0);
+  const busy = state.camp.spots.filter((sp) => sp.stay).length;
+  setBadge('spots', busy ? `${busy}/${state.camp.spots.length}` : '');
+  setBadge('shop', !state.awningOwned && state.ledger.balance >= SIDE_AWNING.priceGold * 100 ? '!' : '');
   $('#pending').innerHTML = `
     <h2>待收取</h2>
     <div class="card">
@@ -909,6 +946,7 @@ function renderHud() {
     <p class="fine">上限 = ${PENDING.capHours} 小时的期望停车收入（${PENDING.capGold} 金，提案值）。收取的金额按收取当天计入每日软上限。</p>`;
 
   const sv = giftStreakView(state, now());
+  setBadge('daily', sv.claimedToday ? '' : '!', true);
   $('#daily').innerHTML = `
     <h2>每日</h2>
     <p class="hint">每天首次登录，营地管理员巡视送礼。连续登录 7 日梯度（金额固定，无抽取，第 8 天起循环）：</p>
@@ -933,11 +971,10 @@ function renderHud() {
       : mode === 'driving'
         ? `<button class="primary" data-act="park">自动泊回家位 <kbd>P</kbd></button><button class="boost ${boostLatch ? 'on' : ''}" data-act="boost" aria-pressed="${boostLatch}">加速挡 <kbd>Shift</kbd></button><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶 · <kbd>空格</kbd> 刹车</span>`
         : `<span class="keys">自动驾驶中…</span>`;
-  // 视图切换（#44）：四个按钮 + 1–4 / V 键，当前视图高亮；环绕视图下提示手势
+  // 罗盘（#44 的四个视图 + 1–4 / V 键）：节点只建一次，这里只转指针；环绕视图下提示手势
   const cv = currentView();
-  $('#views').innerHTML =
-    VIEWS.map((v, i) => `<button class="${v === cv ? 'on' : ''}" data-act="view" data-arg="${v}" aria-pressed="${v === cv}">${VIEW_LABEL[v]} <kbd>${i + 1}</kbd></button>`).join('') +
-    (cv === 'orbit' ? `<span class="keys">拖拽画面环绕 · 滚轮 / 双指缩放</span>` : '');
+  syncCompass(cv);
+  if (cv === 'orbit') $('#controls').insertAdjacentHTML('beforeend', `<span class="keys">拖拽画面环绕 · 滚轮 / 双指缩放</span>`);
 }
 
 if (DEV) {
@@ -991,3 +1028,5 @@ if (unsupported) {
   setWriter(false);
 } else requestWriter(locks, LOCK_NAME, false, setWriter);
 requestAnimationFrame(frame);
+// 首次打开：快捷键引导（看过就不再自动弹，H / ? / 顶栏按钮可再开）
+if (!guideSeen(prefs)) openGuide();
