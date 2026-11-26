@@ -7,6 +7,7 @@ import { GATE, WORLD } from '../shared/camp';
 
 const west = WORLD.minX, east = WORLD.maxX, north = -WORLD.maxY, south = -WORLD.minY;
 const PLAIN = 80; // 方形平原半宽；其外缘就是第一层丘陵的坡脚
+const EARTH = 0xc3a66b;
 const HORIZON = 0xf3cfa0;
 const SUN = new THREE.Vector3(-58, 27, -34);
 type Point = [number, number, number];
@@ -17,14 +18,16 @@ class Facets {
   private colors: number[] = [];
   private rgb = new THREE.Color();
 
-  face(hex: number, ...pts: Point[]) {
-    this.rgb.setHex(hex); // 设计色是 sRGB；顶点色写线性值
-    for (let j = 1; j < pts.length - 1; j++) {
-      for (const p of [pts[0], pts[j], pts[j + 1]]) {
-        this.positions.push(...p);
-        this.colors.push(this.rgb.r, this.rgb.g, this.rgb.b);
-      }
+  triangle(a: Point, b: Point, c: Point, ca: number, cb = ca, cc = ca) {
+    this.positions.push(...a, ...b, ...c);
+    for (const hex of [ca, cb, cc]) {
+      this.rgb.setHex(hex); // 设计色是 sRGB；顶点色写线性值
+      this.colors.push(this.rgb.r, this.rgb.g, this.rgb.b);
     }
+  }
+
+  face(hex: number, ...pts: Point[]) {
+    for (let j = 1; j < pts.length - 1; j++) this.triangle(pts[0], pts[j], pts[j + 1], hex);
   }
 
   geometry() {
@@ -36,31 +39,66 @@ class Facets {
   }
 }
 
+/** 替换原场坪，不叠色片。中心是压暗的暖赭土，走到围栏时渐变为围栏外的田土色。 */
+export function createDuskYard() {
+  const yard = new Facets();
+  const core = 0xb49366;
+  const ring = (inset: number): Point[] => [
+    [west + inset, 0, north + inset], [west + inset, 0, south - inset],
+    [east - inset, 0, south - inset], [east - inset, 0, north + inset],
+  ];
+  const inner = ring(7), outer = ring(0);
+  yard.face(core, ...inner);
+  outer.forEach((p, i) => {
+    const j = (i + 1) % outer.length;
+    yard.triangle(p, outer[j], inner[j], EARTH, EARTH, core);
+    yard.triangle(p, inner[j], inner[i], EARTH, core, core);
+  });
+  const mesh = new THREE.Mesh(yard.geometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 }));
+  mesh.position.y = 0.002; // 沿用原场坪层高，在道路与车位以下
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
 function terrain() {
   const land = new Facets();
   function soil(x0: number, x1: number, z0: number, z1: number) {
-    land.face(0xbc985f, [x0, 0, z0], [x0, 0, z1], [x1, 0, z1], [x1, 0, z0]);
+    land.face(EARTH, [x0, 0, z0], [x0, 0, z1], [x1, 0, z1], [x1, 0, z0]);
   }
-  // 中间留孔，由现有营地地坪填满；不在营地路面下面叠一整张平面。
+  // 中间留孔，由营地地坪填满；不在营地路面下面叠一整张平面。
   soil(-PLAIN, PLAIN, -PLAIN, north);
   soil(-PLAIN, PLAIN, south, PLAIN);
   soil(-PLAIN, west, north, south);
   soil(east, PLAIN, north, south);
 
-  // 连续的坡面：田边 → 近脊 → 谷底 → 远脊 → 背坡。首环沿方田四边（含四角），没有浮在地平线上的山片。
-  // 东侧留一道低鞍部：朝东的环路直道上，跟随镜头也能越过田垄看到一线天空。
-  const sectors = 40;
-  const bands = [0xb2a178, 0xa9a07e, 0xab9694, 0xb5a1a0];
+  // 同样的 320 个坡地三角面，改分为 32 扇区 × 5 段坡 × 2 面。
+  // 加入蜿蜒的坡肩，而不是用贯穿视野的一张长斜面接田边与近脊；东、北侧压低峰线。
+  const sectors = 32;
   const sections = Array.from({ length: sectors }, (_, i): Point[] => {
     const a = i * 2 * Math.PI / sectors, x = Math.cos(a), z = Math.sin(a);
     const at = (r: number, h: number): Point => [x * r, h, z * r];
-    return [at(PLAIN / Math.max(Math.abs(x), Math.abs(z)), 0),
-      at(123 + 5 * Math.sin(3 * a), 4 + 2 * Math.sin(3 * a + 0.6) + 2.7 * (1 - x)),
-      at(142, 1.5), at(167 + 8 * Math.cos(2 * a), 5 + 2 * Math.sin(4 * a) + 5.5 * (1 - x)), at(188, 0)];
+    const foot = PLAIN / Math.max(Math.abs(x), Math.abs(z));
+    const crest = 123 + 5 * Math.sin(3 * a), h = 2.6 + 1.3 * Math.sin(3 * a + 0.6) + 2 * (1 - x);
+    return [at(foot, 0), at(foot + (crest - foot) * (0.54 + 0.14 * Math.sin(5 * a)), h * (0.4 + 0.19 * Math.cos(3 * a))),
+      at(crest, h), at(142, 0.8), at(167 + 8 * Math.cos(2 * a), 3 + 1.8 * Math.sin(4 * a) + 3.4 * (1 - x)), at(188, 0)];
   });
+  // 土层本色：坡脚偏草褐，肩部露出蜜色干草，隔谷的下一条脊偏藕灰。
+  // 同层以内按实际坡面相对平地多接到多少斜阳取色；不逐面掷随机数，以免像棋盘格。
+  const bands = [[0xa99e7a, 0xc9ad79], [0xb4a183, 0xe0bd8a], [0xa29788, 0xc1ab92],
+    [0xaf9da4, 0xd2b5a6], [0xab9ba2, 0xc3acac]];
+  const sunDir = SUN.clone().normalize();
+  const slopeFace = (a: Point, b: Point, c: Point, band: number[]) => {
+    const normal = THREE.Triangle.getNormal(new THREE.Vector3(...a), new THREE.Vector3(...b), new THREE.Vector3(...c), new THREE.Vector3());
+    const light = THREE.MathUtils.clamp(0.5 + 3 * (normal.dot(sunDir) - sunDir.y), 0, 1);
+    const color = new THREE.Color(band[0]).lerp(new THREE.Color(band[1]), light);
+    land.triangle(a, b, c, color.getHex());
+  };
   sections.forEach((s, i) => {
     const next = sections[(i + 1) % sectors];
-    bands.forEach((color, k) => land.face(color, s[k], next[k], next[k + 1], s[k + 1]));
+    bands.forEach((band, k) => {
+      slopeFace(s[k], next[k], next[k + 1], band);
+      slopeFace(s[k], next[k + 1], s[k + 1], band);
+    });
   });
   const mesh = new THREE.Mesh(land.geometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true }));
   mesh.name = 'field-earth-and-ridges';
@@ -70,48 +108,53 @@ function terrain() {
 
 function wheat() {
   const crop = new Facets();
-  const gold = [0xdeac57, 0xe2b361, 0xeabc68];
-  // 每垄是从泥土长起的两侧、穗面和收口；近端散出有茎、有旗叶的单穗。
+  // 色温留给斜阳；根部掺草黄，迎光穗尖用浅麦秆色，不把整垄刷成橙金色。
+  const straw = [0xc3ab70, 0xcab278, 0xc9b675], grain = [0xe3be72, 0xefd084, 0xeaca77];
   function plot(start: number, end: number, boundary: number, outward: number, alongX: boolean) {
     const rows = Math.floor((end - start) / 4);
     const pitch = (end - start) / rows;
     const depth = PLAIN - Math.abs(boundary) - 4;
     for (let row = 0; row < rows; row++) {
       const mid = start + (row + 0.5) * pitch;
-      const phase = mid * 0.28 + boundary;
+      const phase = mid * 0.83 + boundary;
       const point = (u: number, h: number, d: number): Point => {
         const v = boundary + outward * (2 + d);
         return alongX ? [mid + u, h, v] : [v, h, mid + u];
       };
-      const sections = [0, 0.54, 1].map((t) => {
-        const d = t * depth + 0.22 * Math.cos(phase);
-        // 成片弯向一侧，田边把弯幅收为零，不把垄挤进田径。
-        const drift = pitch * 0.48 * Math.sin(Math.PI * (row + 0.5) / rows) * Math.sin(t * 4 + mid * 0.04);
-        const h = 0.68 + 0.12 * Math.cos(phase + t * 5);
-        return [point(drift - pitch * 0.42, 0, d), point(drift - pitch * 0.34, h, d),
-          point(drift + pitch * 0.29, h + 0.14, d), point(drift + pitch * 0.42, 0, d)];
+      // 脊线依次经过「窄颈—偏向一侧的穗尖—窄颈」，两翼直接落地，不留木板状的平顶与端墙。
+      // 近围栏的一端穗簇较密；各垄错开簇距、起点、宽度和高低，仍限制在自己的田垄宽内。
+      const lobes = 5, lead = 0.72 * Math.sin(phase), vigor = 1 + 0.14 * Math.cos(phase);
+      const necks = Array.from({ length: lobes + 1 }, (_, j) => {
+        const endPoint = j === 0 || j === lobes;
+        const t = (j + (endPoint ? 0 : 0.22 * Math.sin(phase + 2.3 * j))) / lobes;
+        const d = depth * t * (0.58 + 0.42 * t) + lead * (1 - t);
+        const u = pitch * 0.08 * Math.sin(phase + j * 1.6);
+        const w = endPoint ? 0 : pitch * (0.32 + 0.07 * Math.cos(phase - j));
+        return { u, w, d, left: point(u - w, 0, d), right: point(u + w, 0, d),
+          neck: point(u, endPoint ? 0 : 0.29 + 0.1 * Math.sin(phase - j), d) };
       });
-      for (let i = 1; i < sections.length; i++) {
-        const a = sections[i - 1], b = sections[i];
-        const colors = [0xd9a24a, gold[(row + i) % gold.length], 0xd5a350];
-        for (let j = 0; j < 3; j++) crop.face(colors[j], a[j], b[j], b[j + 1], a[j + 1]);
+      for (let j = 0; j < lobes; j++) {
+        const a = necks[j], b = necks[j + 1];
+        const t = 0.53 + 0.15 * Math.sin(phase + 2 * j);
+        const u = THREE.MathUtils.lerp(a.u, b.u, t) + 0.54 * Math.sin(phase + 3 * j) * THREE.MathUtils.lerp(a.w, b.w, t);
+        const tip = point(u, vigor * (1.05 + 0.19 * Math.cos(phase + j)), THREE.MathUtils.lerp(a.d, b.d, t));
+        const ear = grain[(row + j) % grain.length], leaf = straw[row % straw.length];
+        for (const side of ['left', 'right'] as const) {
+          crop.triangle(a[side], tip, b[side], leaf, ear, leaf);
+          if (j > 0) crop.triangle(a[side], a.neck, tip, leaf, 0xd8b875, ear);
+          if (j + 1 < lobes) crop.triangle(b[side], tip, b.neck, leaf, ear, 0xd8b875);
+        }
       }
-      crop.face(0xcda052, ...sections[0]);
-      crop.face(0xcda052, ...sections[sections.length - 1]);
 
-      // 稍向同一侧弯：麦穗的棱脊落到茎顶，旗叶从茎身分叉；两侧穗芒从穗肩挑出。
-      for (const u of [-pitch * 0.22, pitch * 0.13]) {
-        const h = 0.83 + 0.10 * Math.sin(phase + u), d = -0.45 - 0.10 * Math.cos(phase + u);
-        const root = point(u, 0, d), collar = point(u + 0.12, h, d);
-        crop.face(0xbb893e, root, point(u + 0.07, 0, d), collar);
-        crop.face(0xdeac55, point(u + 0.07, h * 0.46, d), point(u - 0.10, h * 0.66, d), point(u - 0.17, h * 0.85, d));
-        const l = point(u + 0.06, h + 0.20, d), r = point(u + 0.28, h + 0.22, d);
-        const keel = point(u + 0.17, h + 0.22, d - 0.07), tip = point(u + 0.27, h + 0.48, d);
-        crop.face(0xeaba61, collar, l, keel); crop.face(0xeaba61, keel, l, tip);
-        crop.face(0xf0c46a, collar, keel, r); crop.face(0xf0c46a, r, keel, tip);
-        crop.face(0xeaba61, l, point(u + 0.144, h + 0.312, d), point(u - 0.03, h + 0.44, d));
-        crop.face(0xf0c46a, r, point(u + 0.275, h + 0.35, d), point(u + 0.38, h + 0.46, d));
-      }
+      // 近端一株供低视角读形：旗叶从茎边分叉，穗肩和穗尖共用同一道棱；它不插在穗面里。
+      const u = necks[0].u, d = lead - 0.42, h = vigor * 0.87;
+      const collar = point(u + 0.14, h, d);
+      crop.face(0xc6aa64, point(u, 0, d), point(u + 0.09, 0, d), collar);
+      crop.face(0xcbb672, point(u + 0.07, h * 0.5, d), point(u - 0.15, h * 0.62, d), point(u - 0.31, h * 0.93, d));
+      const left = point(u + 0.06, h + 0.19, d), right = point(u + 0.32, h + 0.22, d);
+      const keel = point(u + 0.19, h + 0.2, d - 0.09), tip = point(u + 0.31, h + 0.52, d);
+      crop.face(0xe4bb6e, collar, left, keel); crop.face(0xe4bb6e, keel, left, tip);
+      crop.face(0xf0c46a, collar, keel, right); crop.face(0xf0c46a, right, keel, tip);
     }
   }
   plot(-PLAIN, PLAIN, north, -1, true);

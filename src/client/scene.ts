@@ -12,7 +12,7 @@ import { bodyCenter, type Pose, type VehicleSpec } from '../shared/kinematics';
 import { buildPlaceholderVehicle, buildSideAwning, setLamps, type LampState } from '../geometry/placeholder';
 import { applyShake, type CamWant, type V3 } from '../shared/camview';
 import { SNAPSHOT_FOV_DEG } from '../shared/cardcam';
-import { addDuskLandscape } from './duskLandscape';
+import { addDuskLandscape, createDuskYard } from './duskLandscape';
 import { takeSnapshot } from './snapshot';
 
 const flat = (color: number) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.9 });
@@ -114,18 +114,14 @@ function labelSprite(text: string, color = '#f5efe0'): THREE.Sprite {
 
 function buildWorld(scene: THREE.Scene): Map<string, THREE.Sprite> {
   const { minX, maxX, minY, maxY } = WORLD;
-  // 围栏内压低草坪与车顶的明度竞争；草坪、道路和草岛色为 #97 美术提案，待三机位验收。
-  const yard = new THREE.Mesh(new THREE.PlaneGeometry(maxX - minX, maxY - minY).rotateX(-Math.PI / 2), flat(0xb3a179));
-  yard.position.copy(toThree((minX + maxX) / 2, (minY + maxY) / 2, 0.002));
-  yard.receiveShadow = true;
-  scene.add(yard);
+  scene.add(createDuskYard());
 
   // 环路：外跑道形挖掉内跑道形
   const roadMat = flat(0x8a6450);
   const outer = new THREE.Shape();
   stadium(outer, ROAD.halfStraight, ROAD.centerR + ROAD.width / 2);
   const hole = new THREE.Path();
-  stadium(hole, ROAD.halfStraight, ROAD.centerR - ROAD.width / 2, true);
+  stadium(hole, ROAD.halfStraight, ROAD.centerR - ROAD.width / 2);
   outer.holes.push(hole);
   scene.add(groundMesh(outer, roadMat, 0.01));
   // 中心虚线（逆时针单向，画箭头感的短段）
@@ -318,9 +314,9 @@ function createDust(scene: THREE.Scene) {
         p.vel.set(
           n[0] * out + Math.cos(a) * 0.8,
           0.6 + Math.random() * (0.8 + hard * 1.2),
-          -(n[1] * out + Math.sin(a) * 0.8),
+          -(n[1] * out) + Math.sin(a) * 0.8,
         );
-        p.sprite.position.set(point[0] + (Math.random() - 0.5) * 0.4, 0.2 + Math.random() * 0.8, -point[1] + (Math.random() - 0.5) * 0.8);
+        p.sprite.position.set(point[0] + (Math.random() - 0.5) * 0.4, 0.2 + Math.random() * 0.8, -point[1] + (Math.random() - 0.5) * 0.4);
         p.max = p.life = 0.7 + Math.random() * (0.6 + hard * 0.8);
         p.size0 = 0.4 + Math.random() * 0.4;
         p.size1 = 1.4 + Math.random() * 1.2 + hard * 1.6;
@@ -341,8 +337,7 @@ function createDust(scene: THREE.Scene) {
         p.vel.multiplyScalar(Math.exp(-dt * 2.2)); // 空气阻力
         p.vel.y += dt * 0.25; // 热烟上浮
         p.sprite.position.addScaledVector(p.vel, dt);
-        const size = p.size0 + (p.size1 - p.size0) * Math.sqrt(k);
-        p.sprite.scale.set(size, size, 1);
+        p.sprite.scale.setScalar(p.size0 + (p.size1 - p.size0) * Math.sqrt(k));
         (p.sprite.material as THREE.SpriteMaterial).opacity = p.alpha * (1 - k) * Math.min(1, k * 8);
       }
     },

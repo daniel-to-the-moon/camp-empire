@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { addDuskLandscape } from '../src/client/duskLandscape';
+import { addDuskLandscape, createDuskYard } from '../src/client/duskLandscape';
 import { GATE, ROAD, STALLS, WORLD } from '../src/shared/camp';
 import { followCam, overviewCam } from '../src/shared/camview';
 
@@ -15,8 +15,9 @@ const earth = scene.getObjectByName('field-earth-and-ridges') as THREE.Mesh;
 const wheat = scene.getObjectByName('wheat-rows') as THREE.Mesh;
 const clouds = scene.getObjectByName('pink-cloud-banks') as THREE.InstancedMesh;
 const down = new THREE.Vector3(0, -1, 0);
-const groundAt = (x: number, z: number) =>
-  new THREE.Raycaster(new THREE.Vector3(x, 100, z), down).intersectObject(earth, false)[0]?.point.y;
+const earthHit = (x: number, z: number) =>
+  new THREE.Raycaster(new THREE.Vector3(x, 100, z), down).intersectObject(earth, false)[0];
+const groundAt = (x: number, z: number) => earthHit(x, z)?.point.y;
 
 function* triangles(mesh: THREE.Mesh) {
   const { index } = mesh.geometry;
@@ -45,6 +46,55 @@ describe('黄昏麦田', () => {
     for (const [side, v] of roots) expect(groundAt(v.x, v.z), side).toBeCloseTo(v.y);
   });
 
+  it('相邻麦垄的主体都有连续高低穗簇，根部色和穗尖高度不整排复制', () => {
+    const p = wheat.geometry.getAttribute('position'), c = wheat.geometry.getAttribute('color');
+    // 北田正中的两垄；跳过围栏边的单株，不能只靠竖几根麦穗让整块平板通过。
+    function profile(left: number) {
+      const crest = new Map<number, number>();
+      const base = new Set<string>();
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+        if (z >= -WORLD.maxY - 3 || x < left || x >= left + 4) continue;
+        crest.set(z, Math.max(crest.get(z) ?? 0, y));
+        if (y === 0) base.add([c.getX(i), c.getY(i), c.getZ(i)].join(','));
+      }
+      const h = [...crest].sort(([a], [b]) => a - b).map(([, y]) => y);
+      // 美术提案的结构回归：至少三次可见起伏，不锁定随机相位或逐点造型。
+      expect(h.filter((y, i) => y > h[i - 1] + 0.25 && y > h[i + 1] + 0.25).length).toBeGreaterThanOrEqual(3);
+      expect(base.size).toBeGreaterThan(0);
+      return { peak: Math.max(...h), base };
+    }
+    const first = profile(0), next = profile(4);
+    expect(first.base).not.toEqual(next.base);
+    expect(first.peak).not.toBeCloseTo(next.peak, 2);
+  });
+
+  it('场坪中心比边缘暗，四边在围栏处接回田土色，整个过渡共用一个地坪', () => {
+    const yard = createDuskYard();
+    expect(yard.material.vertexColors).toBe(true);
+    const pos = yard.geometry.getAttribute('position'), color = yard.geometry.getAttribute('color');
+    const soil = earth.geometry.getAttribute('color');
+    const outer = new THREE.Vector3().fromBufferAttribute(soil, earthHit(WORLD.maxX + 1, 0).face!.a);
+    const edges = new Set<string>();
+    let inner = 0;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i), rgb = new THREE.Vector3().fromBufferAttribute(color, i);
+      const at = [x === WORLD.minX, x === WORLD.maxX, z === -WORLD.maxY, z === -WORLD.minY];
+      if (at.some(Boolean)) {
+        at.forEach((yes, side) => { if (yes) edges.add(String(side)); });
+        expect(rgb).toEqual(outer);
+      } else {
+        inner++;
+        expect(rgb.x).toBeGreaterThan(rgb.y);
+        expect(rgb.y).toBeGreaterThan(rgb.z);
+        expect(rgb.x).toBeLessThan(outer.x);
+        expect(rgb.y).toBeLessThan(outer.y);
+      }
+    }
+    expect(edges.size).toBe(4);
+    expect(inner).toBeGreaterThan(0);
+  });
+
   it('田外各方位都有上升的实坡面，田土不铺到车位上', () => {
     for (const s of STALLS) expect(groundAt(s.cx, -s.cy)).toBeUndefined();
     // 半径 130 m 在第一条脊和谷底之间；避开分段顶点，检验实际三角面而非顶点高度。
@@ -52,6 +102,15 @@ describe('黄昏麦田', () => {
       const a = (i + 0.5) * Math.PI / 12;
       expect(groundAt(130 * Math.cos(a), 130 * Math.sin(a))).toBeGreaterThan(0);
     }
+  });
+
+  it('东面第一道山脊之前已分出坡脚与受光的坡肩，不靠被遮住的背坡分色', () => {
+    const foot = earthHit(88, 1.5), shoulder = earthHit(117, 1.5);
+    expect(foot.point.y).toBeGreaterThan(0);
+    expect(shoulder.point.y).toBeGreaterThan(foot.point.y);
+    const colors = earth.geometry.getAttribute('color');
+    expect(colors.getX(shoulder.face!.a)).toBeGreaterThan(colors.getX(foot.face!.a));
+    expect(colors.getY(shoulder.face!.a)).toBeGreaterThan(colors.getY(foot.face!.a));
   });
 
   it('斜阳投长影，雾不抹掉俯瞰位的车，天光不遮写前景深度', () => {
@@ -79,6 +138,12 @@ describe('黄昏麦田', () => {
     cam.position.set(...w.pos);
     cam.lookAt(...w.look);
     cam.updateMatrixWorld();
+    // 不以「有一个云心没被挡住」代替横向的天空开口。三个采样点都是地形遮挡检查，不是截图评分。
+    for (const x of [-0.4, 0, 0.4]) {
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(x, 0.95), cam);
+      expect(ray.intersectObject(earth, false)).toHaveLength(0);
+    }
     expect(clouds.isInstancedMesh).toBe(true);
     expect(clouds.count).toBeGreaterThan(1);
     let seen = false;
@@ -106,7 +171,7 @@ describe('黄昏麦田', () => {
       const g = mesh.geometry;
       total += (g.index?.count ?? g.getAttribute('position').count) / 3 * (mesh instanceof THREE.InstancedMesh ? mesh.count : 1);
     }
-    // 仅布景的回归上界（提案）：110 垄 × 32 面 + 11 云 × 80 面 + 地形 328 面 + 天空 12 面 = 4740。
+    // 110 垄 ×（穗面 5 × 6 − 首尾收尖 4 + 单株 6）+ 11 云 × 80 + 坡地 328 + 天空 12 = 4740。
     expect(total).toBeLessThanOrEqual(4800);
   });
 });
