@@ -33,11 +33,42 @@ const server = createServer((req, res) => {
       if (mode.startsWith('to:')) { res.writeHead(302, { location: mode.slice(3) }); return res.end(); }
       res.writeHead(200); return res.end('<html>');
     }
+    // 假 D1：state.d1 为 { dbs: [{name, uuid}], listFails, queryFails, queries: [] }
+    const d = req.url.match(/^\/accounts\/([^/]+)\/d1\/database(?:\/([^/?]+)\/query)?(?:\?(.*))?$/);
+    if (d) {
+      if (d[1] !== ACCOUNT || req.headers.authorization !== 'Bearer tok' || state.d1.listFails) return send(403, { success: false, errors: [{ message: 'no D1 permission' }] });
+      if (req.method === 'GET' && !d[2]) {
+        const name = new URLSearchParams(d[3] ?? '').get('name') ?? '';
+        // 与真实 API 一样按名字模糊匹配：返回包含该名字的所有库
+        return send(200, { success: true, result: state.d1.dbs.filter((x) => x.name.includes(name)) });
+      }
+      if (req.method === 'POST' && !d[2]) {
+        const { name } = JSON.parse(body);
+        const db = { name, uuid: '0000aaaa-bbbb-4ccc-8ddd-eeeeffff0001' };
+        state.d1.dbs.push(db);
+        return send(200, { success: true, result: db });
+      }
+      if (req.method === 'POST' && d[2]) {
+        if (state.d1.queryFails) return send(400, { success: false, errors: [{ message: 'bad sql' }] });
+        state.d1.queries.push({ db: d[2], ...JSON.parse(body) });
+        return send(200, { success: true, result: [{ success: true }] });
+      }
+      return send(405, { success: false });
+    }
+    // 假的正式发布列表与回滚（rollback.sh）：state.deploys = [{ id, ok, sha }]（新的在前）
+    const dep = req.url.match(/^\/accounts\/([^/]+)\/pages\/projects\/([^/]+)\/deployments(?:\/([^/?]+)\/rollback)?(?:\?.*)?$/);
+    if (dep) {
+      if (dep[1] !== ACCOUNT || req.headers.authorization !== 'Bearer tok' || state.deploysFail) return send(403, { success: false, errors: [{ message: 'forbidden' }] });
+      if (req.method === 'GET') return send(200, { success: true, result: (state.deploys ?? []).map((d) => ({ id: d.id, environment: 'production', created_on: 't', latest_stage: { status: d.ok ? 'success' : 'failure' }, deployment_trigger: { metadata: { commit_hash: d.sha } } })) });
+      if (req.method === 'POST' && dep[3]) { state.rolledBack = dep[3]; return send(200, { success: true, result: { id: 'new' } }); }
+      return send(405, { success: false });
+    }
     const m = req.url.match(/^\/accounts\/([^/]+)\/pages\/projects(?:\/([^/]+))?$/);
     if (!m || m[1] !== ACCOUNT || req.headers.authorization !== 'Bearer tok') return send(403, { success: false, errors: [{ message: 'forbidden' }] });
     if (req.method === 'GET' && m[2]) {
       const p = state.projects.find((x) => x === m[2]); // 精确按名字
-      return p ? send(200, { success: true, result: { name: p, subdomain: `${p}.pages.dev` } }) : send(404, { success: false, errors: [{ message: 'not found' }] });
+      const canonical = state.active ? { canonical_deployment: { id: state.active } } : {};
+      return p ? send(200, { success: true, result: { name: p, subdomain: `${p}.pages.dev`, ...canonical } }) : send(404, { success: false, errors: [{ message: 'not found' }] });
     }
     if (req.method === 'POST' && !m[2]) {
       if (state.createFails) return send(400, { success: false, errors: [{ message: 'name taken' }] });
@@ -59,22 +90,26 @@ after(() => {
 });
 
 let n = 0;
-function setup({ projects = [], createFails = false, latest = 'sha1', dist = true, access = { '*': 'redirect' } } = {}) {
-  state = { projects: [...projects], createFails, calls: [], access };
+function setup({ projects = [], createFails = false, latest = 'sha1', dist = true, access = { '*': 'redirect' }, d1 = {} } = {}) {
+  state = { projects: [...projects], createFails, calls: [], access, d1: { dbs: [], queries: [], ...d1 } };
   const dir = join(root, `c${n++}`);
   const bin = join(dir, 'bin');
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, 'gh'), `#!/usr/bin/env bash\necho "$*" >> "${dir}/gh.log"\nprintf '%s' "${latest}"\n`);
-  writeFileSync(join(bin, 'wrangler'), `#!/usr/bin/env bash\necho "$*" >> "${dir}/wrangler.log"\n`);
+  // 假 wrangler：记录参数、工作目录里的 wrangler.toml 与 functions 文件
+  writeFileSync(
+    join(bin, 'wrangler'),
+    `#!/usr/bin/env bash\necho "$*" >> "${dir}/wrangler.log"\n[ -f wrangler.toml ] && cp wrangler.toml "${dir}/deployed.toml"\n[ -f functions/api/ev.js ] && echo yes > "${dir}/deployed-functions"\n[ -f functions/schema.sql ] && echo yes > "${dir}/deployed-schema"\n[ -f "$3/index.html" ] && echo yes > "${dir}/deployed-dist"\nexit 0\n`,
+  );
   chmodSync(join(bin, 'gh'), 0o755);
   chmodSync(join(bin, 'wrangler'), 0o755);
   const distDir = join(dir, 'dist');
   mkdirSync(distDir);
   if (dist) writeFileSync(join(distDir, 'index.html'), '<html>');
   const read = (f) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : '');
-  const run = (env = {}) =>
+  const run = (env = {}, script = 'pages.sh') =>
     new Promise((resolve) => {
-      const p = spawn('bash', [join(HERE, 'pages.sh')], {
+      const p = spawn('bash', [join(HERE, script)], {
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,
@@ -98,7 +133,11 @@ function setup({ projects = [], createFails = false, latest = 'sha1', dist = tru
       p.stderr.on('data', (d) => (err += d));
       p.on('exit', (code) => resolve({ code, out, err }));
     });
-  return { run, wrangler: () => read('wrangler.log'), summary: () => read('summary.md') };
+  const fdir = join(dir, 'functions');
+  mkdirSync(join(fdir, 'api'), { recursive: true });
+  writeFileSync(join(fdir, 'api', 'ev.js'), '// ev');
+  writeFileSync(join(fdir, 'schema.sql'), readFileSync(join(HERE, '../../functions/schema.sql'), 'utf8'));
+  return { run, wrangler: () => read('wrangler.log'), summary: () => read('summary.md'), read, fdir };
 }
 
 test('缺凭据：明确失败', async () => {
@@ -198,4 +237,202 @@ test('ci.yml：pages 任务只在 main 上（push 或 deploy_main 触发）运�
   assert.match(body, /^ {4}concurrency:\n {6}group: pages-deploy\n {6}cancel-in-progress: false\n {6}queue: max$/m);
   assert.match(body, /bash _devloop\/scripts\/devloop\/pages\.sh/);
   assert.match(body, /DEPLOY: \$\{\{ vars\.PAGES_DEPLOY \}\}/);
+});
+
+test('公开发布（PUBLIC=true）：不要求 Access 也上传；未设置时仍拒绝未保护的地址', async () => {
+  const pub = setup({ projects: ['camp-empire'], access: { '*': 'open' } });
+  const r = await pub.run({ DEPLOY: 'true', PUBLIC: 'true' });
+  assert.equal(r.code, 0, r.err);
+  assert.match(pub.wrangler(), /pages deploy/);
+  assert.match(pub.summary(), /公开发布/);
+  for (const PUBLIC of ['', 'false', 'TRUE', 'yes']) {
+    const t = setup({ projects: ['camp-empire'], access: { '*': 'open' } });
+    assert.notEqual((await t.run({ DEPLOY: 'true', PUBLIC })).code, 0, PUBLIC);
+    assert.equal(t.wrangler(), '', PUBLIC);
+  }
+});
+
+test('匿名统计（ANALYTICS=on）：没有库就创建，逐条建表、清理过期记录，带 D1 绑定与 functions 发布', async () => {
+  const t = setup({ projects: ['camp-empire'], d1: { dbs: [{ name: 'camp-empire-analytics-old', uuid: '9999' }] } });
+  const r = await t.run({ DEPLOY: 'true', ANALYTICS: 'on', FUNCTIONS_DIR: t.fdir, RETENTION_DAYS: '180' });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(state.d1.dbs.length, 2, '同前缀的其他库不能被误用，应新建');
+  const id = '0000aaaa-bbbb-4ccc-8ddd-eeeeffff0001';
+  const sqls = state.d1.queries.map((q) => q.sql);
+  assert.ok(state.d1.queries.every((q) => q.db === id));
+  assert.equal(sqls.filter((x) => /^(-- .*\n)?CREATE (TABLE|INDEX) IF NOT EXISTS/.test(x)).length, 3, sqls.join('\n---\n'));
+  const del = state.d1.queries.at(-1);
+  assert.equal(del.sql, 'DELETE FROM events WHERE ts < ?1');
+  const cutoff = del.params[0];
+  const expect = Date.now() - 180 * 86400000;
+  assert.ok(Math.abs(cutoff - expect) < 120000, `cutoff ${cutoff} vs ${expect}`);
+  const toml = t.read('deployed.toml');
+  assert.match(toml, /binding = "DB"/);
+  assert.match(toml, new RegExp(`database_id = "${id}"`));
+  assert.match(toml, /database_name = "camp-empire-analytics"/);
+  assert.equal(t.read('deployed-functions').trim(), 'yes');
+  assert.equal(t.read('deployed-schema'), '', 'schema.sql 不随站点发布');
+  assert.equal(t.read('deployed-dist').trim(), 'yes');
+  assert.match(t.wrangler(), /^pages deploy dist --project-name camp-empire --branch main --commit-hash sha1 /m);
+});
+
+test('匿名统计：已有同名库直接复用，不重复创建', async () => {
+  const t = setup({ projects: ['camp-empire'], d1: { dbs: [{ name: 'camp-empire-analytics', uuid: '1111aaaa-bbbb-4ccc-8ddd-eeeeffff0002' }] } });
+  const r = await t.run({ DEPLOY: 'true', ANALYTICS: 'on', FUNCTIONS_DIR: t.fdir });
+  assert.equal(r.code, 0, r.err);
+  assert.equal(state.d1.dbs.length, 1);
+  assert.match(t.read('deployed.toml'), /database_id = "1111aaaa-bbbb-4ccc-8ddd-eeeeffff0002"/);
+});
+
+test('匿名统计：缺 D1 权限、SQL 失败、缺 functions、保留天数非法，都失败且不上传', async () => {
+  const cases = [
+    [{ d1: { listFails: true } }, {}, /D1 → Edit[\s\S]*排查：令牌校验[\s\S]*排查：不带参数列 D1/],
+    [{ d1: { queryFails: true } }, {}, /D1 执行失败/],
+    [{}, { FUNCTIONS_DIR: '/nonexistent' }, /缺少 functions/],
+    [{}, { RETENTION_DAYS: '1;rm' }, /RETENTION_DAYS/],
+    // 隐私说明承诺 180 天：只能改短（GPT 审核 #66）
+    [{}, { RETENTION_DAYS: '181' }, /180/],
+    [{}, { RETENTION_DAYS: '0' }, /RETENTION_DAYS/],
+  ];
+  for (const [opt, env, re] of cases) {
+    const t = setup({ projects: ['camp-empire'], ...opt });
+    const r = await t.run({ DEPLOY: 'true', ANALYTICS: 'on', FUNCTIONS_DIR: t.fdir, ...env });
+    assert.notEqual(r.code, 0, JSON.stringify(env));
+    assert.match(r.err, re);
+    assert.equal(t.wrangler(), '');
+  }
+});
+
+test('统计关闭（默认）：不碰 D1，只发布静态产物', async () => {
+  const t = setup({ projects: ['camp-empire'] });
+  const r = await t.run({ DEPLOY: 'true', FUNCTIONS_DIR: t.fdir });
+  assert.equal(r.code, 0, r.err);
+  assert.ok(!state.calls.some((c) => c.includes('/d1/')));
+  assert.equal(t.read('deployed.toml'), '');
+});
+
+test('保留期清理（d1-retention.sh，与发布解耦）：有库就删过期记录；无库跳过；查询失败只在统计从未开启时跳过', async () => {
+  const id = '1111aaaa-bbbb-4ccc-8ddd-eeeeffff0002';
+  const t = setup({ d1: { dbs: [{ name: 'camp-empire-analytics-x', uuid: '9999' }, { name: 'camp-empire-analytics', uuid: id }] } });
+  const r = await t.run({ RETENTION_DAYS: '30' }, 'd1-retention.sh');
+  assert.equal(r.code, 0, r.err);
+  assert.equal(state.d1.queries.length, 1);
+  assert.equal(state.d1.queries[0].db, id);
+  assert.equal(state.d1.queries[0].sql, 'DELETE FROM events WHERE ts < ?1');
+  assert.ok(Math.abs(state.d1.queries[0].params[0] - (Date.now() - 30 * 86400000)) < 120000);
+  assert.ok(!state.calls.some((c) => c.includes('/pages/')), '清理不碰 Pages');
+
+  const none = setup({ d1: { dbs: [{ name: 'camp-empire-analytics-x', uuid: '9999' }] } });
+  assert.equal((await none.run({}, 'd1-retention.sh')).code, 0);
+  assert.equal(state.d1.queries.length, 0);
+
+  // ANALYTICS 从未设置：统计从未开启，不可能有数据，查询失败可跳过
+  const noPerm = setup({ d1: { listFails: true } });
+  assert.equal((await noPerm.run({}, 'd1-retention.sh')).code, 0);
+  // 开着、或曾开启后关闭（off）：查询失败必须失败，不能显示成功（GPT 审核 #66）
+  for (const ANALYTICS of ['on', 'off']) {
+    const t2 = setup({ d1: { listFails: true } });
+    const r2 = await t2.run({ ANALYTICS }, 'd1-retention.sh');
+    assert.notEqual(r2.code, 0, ANALYTICS);
+    assert.match(r2.err, /D1 → Edit/);
+  }
+  // 关闭后查询成功、确认没有库：安全跳过
+  const offNone = setup({ d1: { dbs: [] } });
+  assert.equal((await offNone.run({ ANALYTICS: 'off' }, 'd1-retention.sh')).code, 0);
+
+  const bad = setup({ d1: { dbs: [{ name: 'camp-empire-analytics', uuid: id }], queryFails: true } });
+  assert.notEqual((await bad.run({}, 'd1-retention.sh')).code, 0);
+  assert.notEqual((await bad.run({ RETENTION_DAYS: 'x' }, 'd1-retention.sh')).code, 0);
+  // 保留期上限：超过隐私说明的 180 天不删也不放过
+  const long = setup({ d1: { dbs: [{ name: 'camp-empire-analytics', uuid: id }] } });
+  const r3 = await long.run({ RETENTION_DAYS: '365' }, 'd1-retention.sh');
+  assert.notEqual(r3.code, 0);
+  assert.match(r3.err, /180/);
+  assert.equal(state.d1.queries.length, 0);
+  assert.equal((await long.run({ RETENTION_DAYS: '180' }, 'd1-retention.sh')).code, 0);
+});
+
+// 隐私说明里的天数与脚本上限必须是同一个数（GPT 审核 #66）
+test('保留期上限与隐私说明一致', () => {
+  const text = readFileSync(join(HERE, '../../src/shared/analytics.ts'), 'utf8');
+  const promised = /满 (\d+) 天自动删除/.exec(text)?.[1];
+  assert.equal(promised, '180');
+  for (const f of ['pages.sh', 'd1-retention.sh']) {
+    assert.match(readFileSync(join(HERE, f), 'utf8'), new RegExp(`\\[ "\\$RETENTION_DAYS" -le ${promised} \\]`), f);
+  }
+});
+
+test('analytics-retention.yml：每天定时、只在 main 上运行、只读权限，调用 d1-retention.sh 且不依赖 ANALYTICS 开关', () => {
+  const yml = readFileSync(join(HERE, '../../.github/workflows/analytics-retention.yml'), 'utf8');
+  assert.match(yml, /schedule:\n\s+- cron: '17 19 \* \* \*'/);
+  assert.match(yml, /if: github\.ref == 'refs\/heads\/main'$/m);
+  assert.match(yml, /^permissions:\n {2}contents: read$/m);
+  assert.match(yml, /run: bash scripts\/devloop\/d1-retention\.sh/);
+  assert.ok(!/if: .*ANALYTICS/.test(yml), '统计关闭后也要继续清理');
+});
+
+// Codex 审核 #66：发布时 pages.sh 也会清理一次，必须与每日清理用同一个保留期，否则 RETENTION_DAYS 调大时会多删
+test('ci.yml 与 analytics-retention.yml 传同一个 RETENTION_DAYS 给清理脚本', () => {
+  const expr = "RETENTION_DAYS: ${{ vars.RETENTION_DAYS || '180' }}";
+  const ci = readFileSync(join(HERE, '../../.github/workflows/ci.yml'), 'utf8');
+  const step = ci.slice(ci.indexOf('- name: 发布到 Cloudflare Pages'));
+  assert.ok(step.slice(0, step.indexOf('run: bash _devloop/scripts/devloop/pages.sh')).includes(expr), 'ci.yml 发布步骤没传 RETENTION_DAYS');
+  assert.ok(readFileSync(join(HERE, '../../.github/workflows/analytics-retention.yml'), 'utf8').includes(expr));
+});
+
+test('PR 预览（PREVIEW_BRANCH）：发到 pr-<编号> 分支、不查 main 最新、不带统计；正式站公开也要求预览受 Access 保护', async () => {
+  const t = setup({ projects: ['camp-empire'], latest: 'other' });
+  const r = await t.run({ DEPLOY: 'true', PREVIEW_BRANCH: 'pr-69', SHA: 'a'.repeat(40), ANALYTICS: 'on', FUNCTIONS_DIR: t.fdir });
+  assert.equal(r.code, 0, r.err);
+  assert.match(t.wrangler(), /pages deploy \S+ --project-name camp-empire --branch pr-69 --commit-hash a{40}/);
+  assert.match(r.out, /^preview=https:\/\/pr-69\.camp-empire\.pages\.dev$/m);
+  assert.equal(t.read('deployed-functions'), '');
+  assert.ok(!state.calls.some((c) => c.includes('/d1/')), '预览不碰 D1');
+  const open = setup({ projects: ['camp-empire'], access: { '*': 'open' } });
+  const o = await open.run({ DEPLOY: 'true', PUBLIC: 'true', PREVIEW_BRANCH: 'pr-69' });
+  assert.notEqual(o.code, 0);
+  assert.match(o.err, /预览地址 pr-69\.camp-empire\.pages\.dev 未确认受/);
+  assert.equal(open.wrangler(), '');
+  for (const bad of ['main', 'pr-0', 'pr-1;rm', 'feature']) {
+    const b = setup({ projects: ['camp-empire'] });
+    assert.notEqual((await b.run({ DEPLOY: 'true', PREVIEW_BRANCH: bad })).code, 0, bad);
+    assert.equal(b.wrangler(), '', bad);
+  }
+});
+
+test('一键回滚（rollback.sh）：以当前生效发布为准回到它的上一版；可指定（含比当前更新的）；没有上一版或 ID 不在列表里就失败', async () => {
+  const t = setup({ projects: ['camp-empire'] });
+  state.deploys = [{ id: 'd3', ok: true, sha: 'c3' }, { id: 'd2', ok: false, sha: 'c2' }, { id: 'd1', ok: true, sha: 'c1aaaaaaaa' }];
+  state.active = 'd3';
+  const r = await t.run({}, 'rollback.sh');
+  assert.equal(r.code, 0, r.err);
+  assert.equal(state.rolledBack, 'd1', '跳过失败的发布');
+  assert.match(t.summary(), /d3 → d1（提交 c1aaaaaa）/);
+  // 之前已回滚到 d2：默认回到 d2 之前的 d1；也可以切回更新的 d3
+  const after = setup({ projects: ['camp-empire'] });
+  state.deploys = [{ id: 'd3', ok: true }, { id: 'd2', ok: true }, { id: 'd1', ok: true }];
+  state.active = 'd2';
+  assert.equal((await after.run({}, 'rollback.sh')).code, 0);
+  assert.equal(state.rolledBack, 'd1');
+  const fwd = setup({ projects: ['camp-empire'] });
+  state.deploys = [{ id: 'd3', ok: true }, { id: 'd2', ok: true }, { id: 'd1', ok: true }];
+  state.active = 'd1';
+  assert.equal((await fwd.run({ TARGET: 'd3' }, 'rollback.sh')).code, 0);
+  assert.equal(state.rolledBack, 'd3', '当前是 d1 时 d3 不是“已生效”');
+  for (const [deploys, active, env] of [[[{ id: 'd3', ok: true }], 'd3', {}], [[{ id: 'd3', ok: true }, { id: 'd1', ok: true }], 'd3', { TARGET: 'dead' }], [[{ id: 'd3', ok: true }], 'd3', { TARGET: 'x;y' }], [[{ id: 'd3', ok: true }, { id: 'd1', ok: true }], undefined, {}]]) {
+    const f = setup({ projects: ['camp-empire'] });
+    state.deploys = deploys;
+    state.active = active;
+    const out = await f.run(env, 'rollback.sh');
+    assert.notEqual(out.code, 0, JSON.stringify(env));
+    assert.equal(state.rolledBack, undefined);
+  }
+  const same = setup({ projects: ['camp-empire'] });
+  state.deploys = [{ id: 'd3', ok: true }, { id: 'd1', ok: true }];
+  state.active = 'd3';
+  assert.equal((await same.run({ TARGET: 'd3' }, 'rollback.sh')).code, 0);
+  assert.equal(state.rolledBack, undefined, '目标就是当前发布：不调用回滚');
+  const denied = setup({ projects: ['camp-empire'] });
+  state.deploysFail = true;
+  assert.notEqual((await denied.run({}, 'rollback.sh')).code, 0);
 });

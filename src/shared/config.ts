@@ -83,4 +83,15 @@ export const DRIVING = {
   coastDecel: 1.5,
   /** 方向从中位打到满舵约 0.6 s */
   steerRatePerS: 1 / 0.6,
+  /**
+   * 加速挡最高速（issue #44，用户 2026-11-08 拍板“全域加速”）。【提案值】8.0 m/s = 28.8 km/h。
+   * 推演：巡航 5.5 m/s 时环路中心线恒速圈时 116.55 / 5.5 = 21.19 s，加速挡 116.55 / 8.0 = 14.57 s（−31%）；
+   * 仿真实测见 docs/DRIVING_VIEW.md 第一节（scripts/lap-table.ts）。
+   * 上限约束：8.0 × FRAME_MAX_DT_S 0.05 = 0.40 m/帧 < 最薄障碍物半厚 0.5 m（围栏、大门拦杆厚 1 m），
+   * 碰撞按帧末重叠判定也不会穿透（tests/drivefx.test.ts 校验）。
+   */
+  boostMaxForwardSpeed: 8.0,
 } as const;
+
+/** 单帧最大积分步长（秒）：掉帧时也按此截断，保证每帧位移有上限（见上方加速挡的穿透约束） */
+export const FRAME_MAX_DT_S = 0.05;

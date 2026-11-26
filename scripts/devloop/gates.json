@@ -1,0 +1,38 @@
+{
+  "_说明": "验收与发布角色的配置（docs/DEVLOOP.md “验收与发布角色”）。数值均为提案值，待 M1 试用后调整。",
+  "visual": {
+    "paths": [
+      "src/client/",
+      "src/geometry/",
+      "src/data/",
+      "src/style.css",
+      "index.html",
+      "models.json",
+      "docs/visual/STYLE.md"
+    ],
+    "waitLabel": "awaiting-acceptance",
+    "acceptLabel": "accepted",
+    "_说明": "改到这些路径的 PR 合并前要发预览、视觉评分、等用户加 accepted。以 / 结尾为目录前缀。src/client/ 整个目录都算：界面标记（main.ts、dex.ts 等）也是画面（Codex 审核 #70）。改生效评分标准 STYLE.md 同样须用户确认；研究稿、定调记录不是评分输入。"
+  },
+  "judge": {
+    "_说明": "五项评分按 docs/visual/STYLE.md 全文（#86，车辆方向 B）；数字只规定通过门槛，不定义车型比例。评分方由仓库变量 VISUAL_PROVIDER（openai | anthropic，默认 openai）与 VISUAL_MODEL 指定。",
+    "provider": "openai",
+    "model": "",
+    "effort": "low",
+    "reference": "docs/visual/reference.png",
+    "minEach": 4,
+    "minOverall": 6,
+    "maxRounds": 3,
+    "shots": [
+      "shot-camp.png",
+      "shot-driving.png",
+      "shot-mobile.png"
+    ],
+    "maxBytes": 3000000,
+    "optionalShots": [
+      "vehicle-front34.png",
+      "vehicle-side.png",
+      "vehicle-rear34.png"
+    ]
+  }
+}

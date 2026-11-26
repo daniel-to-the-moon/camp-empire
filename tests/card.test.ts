@@ -449,11 +449,13 @@ describe('生成 → 预览 → 下载 / 复制', () => {
       constructor(public items: Record<string, Blob>) {}
     }
     r.setClip({ ClipboardItem: Item, clipboard: { write: async (x) => void written.push(x) } });
-    await r.flow.copy();
+    expect(await r.flow.copy()).toBe(true); // 真的复制成功才计 card_export
     expect((written[0][0] as Item).items['image/png']).toBe(png);
     r.setClip({});
-    await r.flow.copy();
-    expect(r.toasts).toEqual([copyMessage('copied'), copyMessage('unsupported')]);
+    expect(await r.flow.copy()).toBe(false);
+    r.setClip({ ClipboardItem: Item, clipboard: { write: async () => Promise.reject(new Error('denied')) } });
+    expect(await r.flow.copy()).toBe(false);
+    expect(r.toasts.slice(0, 2)).toEqual([copyMessage('copied'), copyMessage('unsupported')]);
     r.flow.close();
     expect(r.ui.box.hidden).toBe(true);
     expect(r.flow.shown).not.toBeNull();
@@ -462,7 +464,7 @@ describe('生成 → 预览 → 下载 / 复制', () => {
   it('没生成过就不下载、不复制', async () => {
     const r = rig();
     expect(r.flow.download()).toBe(false);
-    await r.flow.copy();
+    expect(await r.flow.copy()).toBe(false);
     expect(r.toasts).toEqual([]);
   });
 });

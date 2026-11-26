@@ -5,7 +5,11 @@
 import '../style.css';
 import { CATALOG, findVariant } from '../data/models';
 import { stallById, stallRect, staticShapes } from '../shared/camp';
-import { ECONOMY, NPC, PENDING, SIDE_AWNING } from '../shared/config';
+import { ECONOMY, FRAME_MAX_DT_S, NPC, PENDING, SIDE_AWNING } from '../shared/config';
+import { camFor, hoodMount, OrbitGesture, orbitBehind, smoothOrbit, VIEW_LABEL, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
+import { BlinkClock, lightsFor, manualBraking } from '../shared/lights';
+import { runningLights } from '../shared/runningLights';
+import type { LampState } from '../geometry/placeholder';
 import { pointInPoly, type Shape } from '../shared/geom2d';
 import { resolveDrive, type Impact } from '../shared/collision';
 import { displayGold } from '../shared/ledger';
@@ -41,6 +45,7 @@ import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
+import { ENDPOINT, successEvent, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
 const LEGACY_SAVE_KEY = 'camp-empire.save.v2';
@@ -54,6 +59,37 @@ const devClock = new DevClock(DEV ? localStorage : null, DEV_KEY, () => Date.now
 const now = () => devClock.now(state.sid);
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
+
+// ---------- T1 匿名统计（规则见 src/shared/analytics.ts，说明见 docs/ANALYTICS.md） ----------
+const prefs = (() => {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+})();
+/** 本次会话的关闭状态：存储写入失败（如已满）时也立即停止发送 */
+let sessionOptOut = isOptedOut(prefs);
+/** ev 为 null（操作没成功）时不发 */
+function track(ev: AnalyticsEvent | null) {
+  if (!ev) return;
+  if (!shouldSend({ dev: DEV, hostname: location.hostname, storage: prefs, sessionOptOut })) return;
+  const aid = getOrCreateAid(prefs, () => uuidV4(crypto.getRandomValues(new Uint8Array(16))));
+  if (!aid) return;
+  try {
+    // text/plain：同源简单请求，不触发预检；失败静默，不影响游戏
+    navigator.sendBeacon?.(ENDPOINT, new Blob([payload(aid, ev, __APP_VERSION__)], { type: 'text/plain' }));
+  } catch {
+    /* 统计失败不影响游戏 */
+  }
+}
+function renderPrivacy() {
+  const off = sessionOptOut;
+  $('#privacy-body').innerHTML = `${PRIVACY_TEXT.map((t) => `<p>${t}</p>`).join('')}
+    <p class="fine">当前：<b>${off ? '已关闭' : '已开启'}</b>${DEV ? '（调试入口不发送）' : ''}</p>`;
+  $('#privacy-toggle').textContent = off ? '开启匿名统计' : '关闭匿名统计';
+}
+track('session_start');
 
 // ---------- 存档：IndexedDB 原子事务 + 单写者锁（见 src/shared/save.ts） ----------
 const locks = (navigator as unknown as { locks?: LocksLike }).locks;
@@ -111,6 +147,7 @@ const home = stallById('home');
 
 let spec = specOf(currentVariant(state));
 let player: VehicleView = makeVehicle(currentVariant(state));
+let playerLights: LampState = {};
 /** 画面玩家车（spec / player）对应的车型；与 state.variantId 不同说明换车后的画面重建还没执行 */
 let playerVariantId = state.variantId;
 view.scene.add(player.root);
@@ -128,14 +165,39 @@ let autoReplan: ((from: Pose, parked: Shape[]) => PathPose[] | null) | null = nu
 const AUTO_SPEED = 6;
 /** 停好的 NPC 集合变了（到位、跳过、同步增删），自动驾驶需要重新验证剩余路线 */
 let parkedDirty = false;
-let overview = false;
+
+// ---------- 视图（issue #44：俯瞰 / 跟随 / 环绕 / 引擎盖） ----------
+const views = new ViewChoice(); // 默认环绕（issue #82）
+let orbit: Orbit = orbitBehind(drive.pose.yaw);
+let displayedOrbit: Orbit | null = null;
+let hood = hoodMount(currentVariant(state));
+const gesture = new OrbitGesture();
+/** 加速挡：Shift 按住，或底栏按钮切换（触屏用） */
+let boostLatch = false;
+const blink = new BlinkClock();
+
+function currentView(): View {
+  return views.effective(mode === 'parked');
+}
+
+function selectView(v: View) {
+  // 进入环绕时从车后方起转，与跟随视图衔接
+  if (v === 'orbit' && currentView() !== 'orbit') {
+    orbit = orbitBehind(drive.pose.yaw);
+    displayedOrbit = null;
+  }
+  views.select(v, mode === 'parked');
+  renderHud();
+}
 
 function rebuildPlayer() {
   view.scene.remove(player.root);
   disposeTree(player.root);
   spec = specOf(currentVariant(state));
   player = makeVehicle(currentVariant(state));
+  player.setLights(playerLights);
   playerVariantId = state.variantId;
+  hood = hoodMount(currentVariant(state));
   view.scene.add(player.root);
   if (mode === 'parked') drive.pose = parkedPose(spec, home);
   placeVehicle(player.root, spec, drive.pose);
@@ -275,14 +337,23 @@ function act<R extends { events: CampEvent[] }>(fn: (s: GameState) => R, opts: {
   });
 }
 
+/** 停回家位：视图回到默认环绕，从车后方起转（issue #82） */
+function resetViewOnPark() {
+  views.onParked();
+  orbit = orbitBehind(drive.pose.yaw);
+  displayedOrbit = null;
+}
+
 /** 按权威状态整体重建画面（玩家车 + 全部 NPC），用于采纳其他标签页写入的存档 */
 function resyncView() {
   autoRun = null;
   autoDone = null;
   autoReplan = null;
+  const wasParked = mode === 'parked';
   mode = state.player.parkedHome ? 'parked' : 'driving';
   const s = specOf(currentVariant(state));
   drive = { pose: state.player.parkedHome || !state.player.pose ? parkedPose(s, home) : state.player.pose, speed: 0, curvature: 0 };
+  if (mode === 'parked' && !wasParked) resetViewOnPark();
   rebuildPlayer();
   clearNpcs();
   syncNpcs([], false);
@@ -351,6 +422,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   variant: (id) => homeActions.variant(id),
   async buy() {
     const r = await act((s) => buyAwning(s, now()));
+    track(successEvent.buy(r));
     if (!r) return;
     if (!r.ok) return toast(r.error!);
     player.setAwning(awningOut(state));
@@ -360,7 +432,10 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     if (!(await act((s) => setAwningWanted(s, now(), !s.awningWanted)))) return;
     player.setAwning(awningOut(state));
   },
-  out: () => homeActions.out(),
+  // 按钮与 O 键共用：只有真的起步才计 drive_out（开着车、提交等待中、长按 O 的重复按键都不算）
+  async out() {
+    track(successEvent.driveOut(await homeActions.out()));
+  },
   park() {
     if (mode !== 'driving' || modeLock.busy) return;
     if (!writer) return toast(unsupported ?? READONLY_MSG);
@@ -378,8 +453,11 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
       },
     );
   },
-  overview() {
-    overview = !overview;
+  view(arg) {
+    if ((VIEWS as readonly string[]).includes(arg)) selectView(arg as View);
+  },
+  boost() {
+    boostLatch = !boostLatch;
   },
   takeover() {
     if (unsupported) return toast(unsupported);
@@ -421,6 +499,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   async collect(arg) {
     const r = await act((s) => collectPending(s, now()));
+    track(successEvent.collect(r));
     if (!r) return;
     if (closeWelcomeAfterCollect(arg === 'close', !!r.collected)) $('#welcome').hidden = true;
     if (!r.collected) return toast(r.error!);
@@ -435,20 +514,35 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     await cardFlow.generate();
   },
   cardDownload() {
-    cardFlow.download();
+    track(successEvent.cardExport(cardFlow.download()));
   },
   async cardCopy() {
-    await cardFlow.copy();
+    track(successEvent.cardExport(await cardFlow.copy()));
   },
   cardClose() {
     cardFlow.close();
   },
   // 车型图鉴（#31）：只读面板，打开期间随 renderHud 刷新
   dex() {
+    track(successEvent.dexOpen($('#dex').hidden));
     $('#dex').hidden = false;
   },
   dexClose() {
     $('#dex').hidden = true;
+  },
+  // T1 隐私与统计面板
+  privacy() {
+    renderPrivacy();
+    $('#privacy').hidden = false;
+  },
+  privacyToggle() {
+    sessionOptOut = !sessionOptOut;
+    const saved = setOptOut(prefs, sessionOptOut);
+    renderPrivacy();
+    toast(`${sessionOptOut ? '已关闭匿名统计' : '已开启匿名统计'}${saved ? '' : '（浏览器存储不可用，只对本次打开有效）'}`);
+  },
+  privacyClose() {
+    $('#privacy').hidden = true;
   },
 };
 
@@ -510,7 +604,9 @@ async function settleHome() {
     modeLock.busy = false;
   }
   mode = 'parked';
+  boostLatch = false;
   drive = { pose: parkedPose(spec, home), speed: 0, curvature: 0 };
+  resetViewOnPark(); // 停回家位：回到默认环绕（issue #82），停着时可再选别的视图
   placeVehicle(player.root, spec, drive.pose);
   player.setAwning(awningOut(state));
   toast('已停回家位');
@@ -520,7 +616,9 @@ document.addEventListener('click', (e) => {
   const el = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
   if (!el || (el as HTMLButtonElement).disabled) return;
   renderHud();
-  void Promise.resolve(actions[el.dataset.act!]?.(el.dataset.arg ?? '')).finally(renderHud);
+  const act = el.dataset.act!;
+  // 统计不在这里发：点击不等于成功，各操作确认成功后自己上报（GPT 审核 #66 第 2 轮）
+  void Promise.resolve(actions[act]?.(el.dataset.arg ?? '')).finally(renderHud);
 });
 
 // ---------- 键盘 ----------
@@ -529,13 +627,40 @@ const DRIVE_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'Arr
 window.addEventListener('keydown', (e) => {
   if (DRIVE_KEYS.includes(e.code)) e.preventDefault();
   keys.add(e.code);
-  if (e.code === 'KeyC') actions.overview('');
+  if (e.repeat) return;
+  const v = viewForKey(e.code, currentView());
+  if (v) selectView(v === 'next' ? views.next(mode === 'parked') : v);
   if (e.code === 'KeyP') void actions.park('');
-  if (e.code === 'KeyO') void Promise.resolve(actions.out('')).finally(renderHud);
+  if (e.code === 'KeyO') {
+    void Promise.resolve(actions.out('')).finally(renderHud);
+  }
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
 const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
+
+// ---------- 场景画面手势（环绕视图；规则见 src/shared/camview.ts OrbitGesture） ----------
+const stage = $('#stage');
+stage.addEventListener('pointerdown', (e) => {
+  if (currentView() !== 'orbit' || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  stage.setPointerCapture(e.pointerId);
+  gesture.down(e.pointerId, e.clientX, e.clientY);
+});
+stage.addEventListener('pointermove', (e) => {
+  if (currentView() !== 'orbit') return;
+  const o = gesture.move(e.pointerId, e.clientX, e.clientY, orbit);
+  if (o) orbit = o;
+});
+for (const ev of ['pointerup', 'pointercancel'] as const) stage.addEventListener(ev, (e) => gesture.up(e.pointerId));
+stage.addEventListener(
+  'wheel',
+  (e) => {
+    if (currentView() !== 'orbit') return;
+    e.preventDefault();
+    orbit = wheelZoom(orbit, e.deltaY);
+  },
+  { passive: false },
+);
 
 // ---------- 主循环 ----------
 const obstacles = playerObstacles();
@@ -573,15 +698,23 @@ const playerAgent: Agent = { id: 'player', spec, pose: drive.pose, runner: null,
 function frame(t: number) {
   // 先排下一帧：本帧逻辑即使抛异常，主循环也不会停
   requestAnimationFrame(frame);
-  const dt = Math.min(0.05, (t - prev) / 1000) * timeScale;
+  // 步长上限 FRAME_MAX_DT_S：加速挡下每帧位移也有上限，碰撞不穿透（config.ts 推演）
+  const dt = Math.min(FRAME_MAX_DT_S, (t - prev) / 1000) * timeScale;
   prev = t;
+  const prevPose = { ...(mode === 'auto' && autoRun ? autoRun.current : drive.pose) };
+  /** 车灯用的输入：手动驾驶时为玩家方向 / 刹车 */
+  let steerIn = 0;
+  let brakingIn = false;
+  const boost = boostLatch || keys.has('ShiftLeft') || keys.has('ShiftRight');
 
   // 停回家位正在提交时冻结手动输入，避免提交后位姿跳变
   if (mode === 'driving' && writer && !modeLock.busy) {
     let throttle = k('KeyW', 'ArrowUp') - k('KeyS', 'ArrowDown');
     if (keys.has('Space')) throttle = drive.speed > 0 ? -1 : drive.speed < 0 ? 1 : 0;
     const steer = k('KeyA', 'ArrowLeft') - k('KeyD', 'ArrowRight');
-    const next = stepDrive(spec, drive, { throttle, steer }, dt);
+    steerIn = steer;
+    brakingIn = manualBraking(throttle, drive.speed, keys.has('Space'));
+    const next = stepDrive(spec, drive, { throttle, steer, boost }, dt);
     const r = resolveDrive(spec, drive, next, [...obstacles, ...movingNpcShapes()]);
     drive = r.state;
     if (r.impact) onImpact(r.impact, t);
@@ -646,6 +779,7 @@ function frame(t: number) {
   }
   placeVehicle(player.root, spec, drive.pose);
 
+  const running = runningLights(now());
   for (const a of traffic) {
     if (a === playerAgent) continue;
     const c = a as NpcCar;
@@ -657,6 +791,7 @@ function frame(t: number) {
       continue;
     }
     c.view.root.visible = !c.pending;
+    c.view.setLights(running);
     placeVehicle(c.view.root, c.spec, c.pose);
   }
 
@@ -675,10 +810,29 @@ function frame(t: number) {
     renderHud();
   }
 
+  // 车灯（自动灯光，规则见 src/shared/lights.ts）。自动驾驶时没有方向 / 速度输入，用本帧实际位移推算
+  let lightSpeed = drive.speed;
+  let autoCurv = 0;
+  if (mode === 'auto' && dt > 0) {
+    const p = drive.pose;
+    const ds = (p.x - prevPose.x) * Math.cos(p.yaw) + (p.y - prevPose.y) * Math.sin(p.yaw);
+    lightSpeed = ds / dt;
+    brakingIn = Math.abs(ds) < 1e-4; // 让行停住
+    const dyaw = Math.atan2(Math.sin(p.yaw - prevPose.yaw), Math.cos(p.yaw - prevPose.yaw));
+    autoCurv = Math.abs(ds) > 1e-4 ? dyaw / ds : 0;
+  }
+  const ls = lightsFor({ mode, steer: steerIn, curvature: autoCurv, speed: lightSpeed, braking: brakingIn });
+  const bl = blink.update(ls, t / 1000);
+  playerLights = { ...running, turnL: bl.left, turnR: bl.right, brake: ls.brake, reverse: ls.reverse };
+  player.setLights(playerLights);
+
   const [cx, cy] = bodyCenter(spec, drive.pose);
-  view.follow({ x: cx, y: cy, yaw: drive.pose.yaw, h: spec.lengthM / 4 }, overview || mode === 'parked');
+  const activeView = currentView();
+  displayedOrbit = activeView === 'orbit' ? smoothOrbit(displayedOrbit ?? orbit, orbit, dt) : null;
+  view.setCamera(camFor(activeView, { x: cx, y: cy, yaw: drive.pose.yaw, h: spec.lengthM / 4 }, displayedOrbit ?? orbit, hood));
   $('#bump').hidden = t > bumpUntil;
-  $('#speed').textContent = `${Math.abs(drive.speed * 3.6).toFixed(0)} km/h${drive.speed < -0.05 ? ' 倒车' : ''}`;
+  const boosting = mode === 'driving' && boost;
+  $('#speed').textContent = `${Math.abs(drive.speed * 3.6).toFixed(0)} km/h${drive.speed < -0.05 ? ' 倒车' : ''}${boosting ? ' · 加速挡' : ''}`;
   view.render(dt);
 }
 
@@ -784,14 +938,36 @@ function renderHud() {
     mode === 'parked'
       ? `<button class="primary" data-act="out">开出去兜一圈 <kbd>O</kbd></button>`
       : mode === 'driving'
-        ? `<button class="primary" data-act="park">自动泊回家位 <kbd>P</kbd></button><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶 · <kbd>空格</kbd> 刹车 · <kbd>C</kbd> 俯瞰</span>`
+        ? `<button class="primary" data-act="park">自动泊回家位 <kbd>P</kbd></button><button class="boost ${boostLatch ? 'on' : ''}" data-act="boost" aria-pressed="${boostLatch}">加速挡 <kbd>Shift</kbd></button><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶 · <kbd>空格</kbd> 刹车</span>`
         : `<span class="keys">自动驾驶中…</span>`;
+  // 视图切换（#44）：四个按钮 + 1–4 / V 键，当前视图高亮；环绕视图下提示手势
+  const cv = currentView();
+  $('#views').innerHTML =
+    VIEWS.map((v, i) => `<button class="${v === cv ? 'on' : ''}" data-act="view" data-arg="${v}" aria-pressed="${v === cv}">${VIEW_LABEL[v]} <kbd>${i + 1}</kbd></button>`).join('') +
+    (cv === 'orbit' ? `<span class="keys">拖拽画面环绕 · 滚轮 / 双指缩放</span>` : '');
 }
 
 if (DEV) {
   $('#dev').hidden = false;
-  // 调试入口（仅 ?dev）：在车头前方模拟一次撞击，用于检查烟尘 / 震屏 / 提示
+  // 调试入口（仅 ?dev），用于车辆截图和撞击效果检查
   (window as unknown as { __campDebug: unknown }).__campDebug = {
+    vehicleShot(angle: 'front34' | 'side' | 'entrySide' | 'rear34', lit = false): string {
+      const [forward, left] = { front34: [7, -5.5], side: [0, 9], entrySide: [0, -9], rear34: [-7, 5.5] }[angle];
+      const [cx, cy] = bodyCenter(spec, drive.pose);
+      const cos = Math.cos(drive.pose.yaw);
+      const sin = Math.sin(drive.pose.yaw);
+      // 固定灯态，让两张截图的区别不依赖 runner 时间。即使截图失败也恢复玩家车。
+      player.setLights({ head: lit, tail: lit, marker: lit, turnL: lit, turnR: lit, reverse: lit, brake: lit });
+      try {
+        return view.snapshot(
+          toThree(cx + forward * cos - left * sin, cy + forward * sin + left * cos, 2.6),
+          toThree(cx, cy, 1.2),
+          1280, 800, { fog: false, labels: false },
+        ).toDataURL('image/png');
+      } finally {
+        player.setLights(playerLights);
+      }
+    },
     setTimeScale(v: number) {
       timeScale = v;
     },

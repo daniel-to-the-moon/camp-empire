@@ -221,7 +221,7 @@ describe('客户端：出库失败', () => {
   it('车后被挡：提示原因，不起步，仍停在家位，释放锁', async () => {
     const wall: Shape = { type: 'circle', c: [home.cx, home.cy], r: 50, tag: 'wall' };
     const p = await page({ obstacles: () => [...staticShapes(), wall] });
-    await p.flow.out();
+    expect(await p.flow.out()).toBe(false);
     expect(p.toasts).toEqual(['车后方有障碍，无法倒出']);
     expect(p.log).toEqual([]);
     expect(p.mode).toBe('parked');
@@ -232,7 +232,7 @@ describe('客户端：出库失败', () => {
   it('提交失败：不起步、不重建，状态不变，释放锁', async () => {
     const p = await page();
     p.store.failNext = true;
-    await p.flow.out();
+    expect(await p.flow.out()).toBe(false);
     expect(p.toasts).toEqual(['存档写入失败，这次操作没有生效']);
     expect(p.log).toEqual([]);
     expect(p.mode).toBe('parked');
@@ -247,7 +247,10 @@ describe('客户端：出库失败', () => {
     const b = p.flow.out();
     expect(p.lock.busy).toBe(true);
     await p.drain();
-    await Promise.all([a, b]);
+    // 返回值决定是否计 drive_out（Codex 审核 #66）：只有真正起步的那次为 true
+    expect(await Promise.all([a, b])).toEqual([true, false]);
     expect(p.log.filter((l) => l.kind === 'start')).toHaveLength(1);
+    // 已经开出去了再按 O：不起步，也不计数
+    expect(await p.flow.out()).toBe(false);
   });
 });
