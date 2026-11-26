@@ -18,6 +18,7 @@ import {
   ORBIT,
   OrbitGesture,
   orbitBehind,
+  DEFAULT_VIEW,
   orbitCam,
   smoothOrbit,
   VIEWS,
@@ -195,20 +196,25 @@ describe('视图切换', () => {
     expect(viewForKey('KeyC', 'hood')).toBe('overview');
     expect(viewForKey('KeyW', 'follow')).toBeNull();
   });
-  it('驾驶时用玩家选的视图；停回家位回到俯瞰；停着时再选就按玩家选的；开出去恢复驾驶视图', () => {
-    const v = new ViewChoice('follow');
-    expect(v.effective(false)).toBe('follow');
+  it('默认环绕（#82）：进入游戏与停回家位都是环绕；玩家手动选的视图停着、行驶都生效，直到下次停回家位', () => {
+    expect(DEFAULT_VIEW).toBe('orbit');
+    const v = new ViewChoice();
+    expect(v.effective(true)).toBe('orbit');
+    expect(v.effective(false)).toBe('orbit');
     v.select('hood', false);
     expect(v.effective(false)).toBe('hood');
     v.onParked();
-    expect(v.effective(true)).toBe('overview');
-    v.select('orbit', true);
     expect(v.effective(true)).toBe('orbit');
     expect(v.effective(false)).toBe('orbit');
-    v.onParked();
+    v.select('overview', true);
     expect(v.effective(true)).toBe('overview');
-    expect(v.next(true)).toBe('follow');
-    expect(v.next(false)).toBe('hood'); // 驾驶中仍是上次选的环绕，V 切到引擎盖
+    expect(v.effective(false)).toBe('overview');
+    v.select('follow', false);
+    expect(v.effective(false)).toBe('follow');
+    v.onParked();
+    expect(v.effective(true)).toBe('orbit');
+    expect(v.next(true)).toBe('hood');
+    expect(v.next(false)).toBe('hood'); // 停回家位后开出去仍是默认环绕，V 切到引擎盖
   });
   it('切换视图只换相机，不改车的位姿与速度（camFor 是纯函数，输入不变）', () => {
     const t: Target = { x: 3, y: -4, yaw: 0.7, h: 1.5 };
