@@ -432,9 +432,30 @@ function adoptState(s: GameState) {
 
 /** 拿到写权后：离线回放 + 每日礼物 */
 async function startSession() {
-  const r = await act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
-  if (!r) return;
-  showReturnPanel(r.events, r.gift);
+  try {
+    const r = await act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
+    if (!r) return;
+    showReturnPanel(r.events, r.gift);
+  } finally {
+    maybeAutoGuide();
+  }
+}
+
+/**
+ * 首次快捷键引导：开局处理结束后再决定（Codex 审核 #90）。回访面板开着就等它关掉再弹，免得两层叠在屏幕中央。
+ * 只读标签页（没有开局处理）在拿不到写权时弹。只自动弹一次。
+ */
+let autoGuideDone = false;
+function maybeAutoGuide() {
+  if (autoGuideDone) return;
+  autoGuideDone = true;
+  if (guideSeen(prefs)) return;
+  if ($('#welcome').hidden) return openGuide();
+  new MutationObserver((_, obs) => {
+    if (!$('#welcome').hidden) return;
+    obs.disconnect();
+    if (!guideSeen(prefs) && !guideOpen()) openGuide();
+  }).observe($('#welcome'), { attributes: true, attributeFilter: ['hidden'] });
 }
 
 function setWriter(w: boolean) {
@@ -443,6 +464,7 @@ function setWriter(w: boolean) {
   $('#readonly').hidden = w;
   if (w !== was) void adoptLatest(); // 交接写权时都以存档为准
   if (w && !was) void startSession();
+  else if (!w) maybeAutoGuide();
   renderHud();
 }
 
@@ -1111,13 +1133,5 @@ if (unsupported) {
 } else requestWriter(locks, LOCK_NAME, false, setWriter);
 requestAnimationFrame(frame);
 // 首次打开：快捷键引导（看过就不再自动弹，H / ? / 顶栏按钮可再开）
-// 回访面板（每日礼物）正开着时先不弹，等它关掉再弹，免得两层叠在屏幕中央
-if (!guideSeen(prefs)) {
-  if ($('#welcome').hidden) openGuide();
-  else
-    new MutationObserver((_, obs) => {
-      if (!$('#welcome').hidden) return;
-      obs.disconnect();
-      if (!guideSeen(prefs) && !guideOpen()) openGuide();
-    }).observe($('#welcome'), { attributes: true, attributeFilter: ['hidden'] });
-}
+// 首次快捷键引导在 maybeAutoGuide 里弹：等开局处理（每日礼物 / 回访面板）结束之后
+setTimeout(maybeAutoGuide, 4000); // 兜底：拿写权或开局迟迟没结束时也要弹

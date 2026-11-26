@@ -83,12 +83,13 @@ try {
   await page.addInitScript(hookGl);
   await page.goto(url.toString(), { waitUntil: 'load', timeout: 30_000 });
   await page.locator('#stage canvas').waitFor({ timeout: 20_000 });
-  await closeGuide(page);
   const welcome = page.locator('#welcome');
+  await welcome.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await welcome.isVisible()) {
     await welcome.locator('[data-act="closeWelcome"]').click();
     await welcome.waitFor({ state: 'hidden', timeout: 5_000 });
   }
+  await closeGuide(page); // 引导在回访面板关掉之后才弹
   /** 等镜头稳定后采样 n 帧 */
   async function sample(name, settleMs = 2500, n = 60) {
     await page.waitForTimeout(settleMs);
@@ -129,9 +130,10 @@ try {
   // 不带 ?dev：看玩家实际看到的界面（本机地址本来就不发统计）
   await m.goto(base, { waitUntil: 'load', timeout: 30_000 });
   await m.locator('#stage canvas').waitFor({ timeout: 20_000 });
-  await closeGuide(m);
   const mw = m.locator('#welcome');
+  await mw.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await mw.isVisible()) await mw.locator('[data-act="closeWelcome"]').click().catch(() => {});
+  await closeGuide(m);
   await m.waitForTimeout(2500);
   await m.screenshot({ path: join(outDir, 'shot-mobile.png') });
   results.shots.push('shot-mobile.png');

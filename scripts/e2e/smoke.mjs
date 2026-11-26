@@ -70,6 +70,11 @@ try {
 
   await step('首次打开：快捷键引导出现，Esc 关掉；H 重开、按钮关掉', async () => {
     const guide = page.locator('#guide');
+    // 首次打开先出回访面板（每日礼物），引导要等它关掉才弹，不能叠在它上面
+    const wel = page.locator('#welcome');
+    await wel.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await guide.isVisible()) throw new Error('回访面板开着时引导也弹出来了');
+    await wel.locator('[data-act="closeWelcome"]').click();
     await guide.waitFor({ state: 'visible', timeout: 10_000 });
     await page.screenshot({ path: join(outDir, 'ui-guide.png') });
     await page.keyboard.press('Escape');
