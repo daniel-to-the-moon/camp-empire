@@ -200,20 +200,33 @@ try {
     await page.setViewportSize({ width: 1280, height: 800 });
   });
 
-  await step('罗盘连切：转向南刚起步就按 4，指针从北附近直接转向西，不绕过南', async () => {
+  await step('罗盘连切：转向南途中按 4，指针从当时的实际角度走最短弧转到西', async () => {
     const angle = () => page.evaluate(() => {
       const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
       return m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
     });
     await page.keyboard.press('1');
     await page.waitForTimeout(1200);
-    await page.keyboard.press('3');
-    await page.waitForTimeout(60);
-    await page.keyboard.press('4');
-    const seen = [];
-    for (let i = 0; i < 20; i++) { seen.push(await angle()); await page.waitForTimeout(50); }
-    if (seen.some((a) => Math.abs(a) > 150)) throw new Error(`指针绕过了南：${seen.map((a) => a.toFixed(0)).join(', ')}`);
+    // 按 3 后等两帧（指针刚起步），记下此刻实际角度，再立刻按 4；跑得快慢不同的机器上起点不同，所以断言相对起点
+    const start = await page.evaluate(async () => {
+      const key = (code, key) => window.dispatchEvent(new KeyboardEvent('keydown', { code, key }));
+      key('Digit3', '3');
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
+      const a = m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
+      key('Digit4', '4');
+      return a;
+    });
+    const seen = [start];
+    for (let i = 0; i < 20; i++) { await page.waitForTimeout(50); seen.push(await angle()); }
+    // 展开成连续角度，看总共转了多远
+    const cum = [start];
+    for (let i = 1; i < seen.length; i++) cum.push(cum[i - 1] + ((((seen[i] - seen[i - 1]) % 360) + 540) % 360) - 180);
+    const shortest = Math.abs(((((-90 - start) % 360) + 540) % 360) - 180);
+    const far = Math.max(...cum.map((a) => Math.abs(a - start)));
+    if (far > shortest * 1.1 + 5) throw new Error(`指针没走最短弧：起点 ${start.toFixed(0)}°，最短 ${shortest.toFixed(0)}°，实际转到 ${far.toFixed(0)}°（${seen.map((a) => a.toFixed(0)).join(', ')}）`);
     if (Math.abs(seen.at(-1) + 90) > 15) throw new Error(`指针没停在西：${seen.at(-1).toFixed(0)}°`);
+    for (const k of ['Digit3', 'Digit4']) await page.evaluate((code) => window.dispatchEvent(new KeyboardEvent('keyup', { code })), k);
     await page.keyboard.press('1');
   });
 
