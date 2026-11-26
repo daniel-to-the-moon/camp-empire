@@ -1,4 +1,4 @@
-// gates.mjs 的纯函数部分（gates-lib.test.mjs 覆盖）。
+// gates.mjs 的纯函数部分（scripts/devloop/perf-gate.test.mjs 覆盖）。
 
 const median = (xs) => {
   if (!xs.length) return 0;
@@ -19,6 +19,19 @@ export function summarize(frames) {
     trisMax: tris.length ? Math.max(...tris) : 0,
     msMedian: Math.round(median(ms) * 10) / 10,
   };
+}
+
+/** 供 PR 所链接的 CI 运行摘要使用，与 perf.json 同源；缺采样不能写成 0 ms。 */
+export function perfTable(scenes) {
+  return [
+    '### E2E 整场实测（SwiftShader；帧时间仅供同环境比较）', '',
+    '| 场景 | 采样帧 | draw call 中位 / 最大 | 三角形中位 | 帧时间中位 (ms) |', '|---|---:|---:|---:|---:|',
+    ...['camp', 'driving'].map((name) => {
+      const s = scenes[name];
+      return s?.frames ? `| ${name} | ${s.frames} | ${s.callsMedian} / ${s.callsMax} | ${s.trisMedian} | ${s.msMedian || '—'} |`
+        : `| ${name} | 未采到 | — | — | — |`;
+    }), '',
+  ].join('\n');
 }
 
 /**

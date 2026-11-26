@@ -2,7 +2,7 @@
  * Three.js 营地场景：只负责显示，不含玩法逻辑。
  * 坐标映射（逻辑数学平面系 → three）：three.x = x，three.z = −y；车辆 rotation.y = yaw + π/2
  *（占位车模车头朝 +z，见 src/geometry/layout.ts）。
- * 场景美术是占位（低多边形色块），正式方向由 GPT Image 的 A1 场景图给出后替换。
+ * 围栏外的地貌、天空与夕照见 duskLandscape.ts（#97）。
  */
 import * as THREE from 'three';
 import type { Variant } from '../data/models';
@@ -12,6 +12,7 @@ import { bodyCenter, type Pose, type VehicleSpec } from '../shared/kinematics';
 import { buildPlaceholderVehicle, buildSideAwning, setLamps, type LampState } from '../geometry/placeholder';
 import { applyShake, type CamWant, type V3 } from '../shared/camview';
 import { SNAPSHOT_FOV_DEG } from '../shared/cardcam';
+import { addDuskLandscape, createDuskYard } from './duskLandscape';
 import { takeSnapshot } from './snapshot';
 
 const flat = (color: number) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.9 });
@@ -105,7 +106,7 @@ function labelSprite(text: string, color = '#f5efe0'): THREE.Sprite {
   ctx.fillText(text, 128, 33);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, toneMapped: false }));
   s.scale.set(4, 1, 1);
   s.renderOrder = 10;
   return s;
@@ -113,22 +114,14 @@ function labelSprite(text: string, color = '#f5efe0'): THREE.Sprite {
 
 function buildWorld(scene: THREE.Scene): Map<string, THREE.Sprite> {
   const { minX, maxX, minY, maxY } = WORLD;
-  // 草地
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200).rotateX(-Math.PI / 2), flat(0x7c9a5a));
-  ground.receiveShadow = true;
-  scene.add(ground);
-  // 营地内地面（略浅）
-  const yard = new THREE.Mesh(new THREE.PlaneGeometry(maxX - minX, maxY - minY).rotateX(-Math.PI / 2), flat(0x8fae66));
-  yard.position.copy(toThree((minX + maxX) / 2, (minY + maxY) / 2, 0.002));
-  yard.receiveShadow = true;
-  scene.add(yard);
+  scene.add(createDuskYard());
 
   // 环路：外跑道形挖掉内跑道形
-  const roadMat = flat(0x6f6a62);
+  const roadMat = flat(0x8a6450);
   const outer = new THREE.Shape();
   stadium(outer, ROAD.halfStraight, ROAD.centerR + ROAD.width / 2);
   const hole = new THREE.Path();
-  stadium(hole, ROAD.halfStraight, ROAD.centerR - ROAD.width / 2, true);
+  stadium(hole, ROAD.halfStraight, ROAD.centerR - ROAD.width / 2);
   outer.holes.push(hole);
   scene.add(groundMesh(outer, roadMat, 0.01));
   // 中心虚线（逆时针单向，画箭头感的短段）
@@ -153,7 +146,7 @@ function buildWorld(scene: THREE.Scene): Map<string, THREE.Sprite> {
   // 篝火岛：草坪 + 篝火 + 几根原木
   const island = new THREE.Shape();
   stadium(island, ROAD.halfStraight, ROAD.centerR - ROAD.width / 2);
-  scene.add(groundMesh(island, flat(0x6b8f4e), 0.012));
+  scene.add(groundMesh(island, flat(0x929664), 0.012));
   const fire = new THREE.Group();
   const stones = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.22, 5, 10).rotateX(Math.PI / 2), flat(0x8c8a84));
   stones.position.y = 0.15;
@@ -231,7 +224,7 @@ function buildWorld(scene: THREE.Scene): Map<string, THREE.Sprite> {
   sign.position.copy(toThree(GATE.x, minY, 5));
   scene.add(sign);
 
-  // 树
+  // 树（围栏内有碰撞的地标保留；围栏外原来逐棵提交的锥形林改为麦田与缓丘）
   const trunkMat = flat(0x6b4a2f);
   const leafMat = flat(0x2f5a3a);
   for (const t of TREES) {
@@ -245,17 +238,6 @@ function buildWorld(scene: THREE.Scene): Map<string, THREE.Sprite> {
     g.add(trunk, leaves);
     g.position.copy(toThree(t.x, t.y));
     scene.add(g);
-  }
-  // 营地外的远景树（无碰撞，围栏外）
-  let seed = 11;
-  const r = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-  for (let i = 0; i < 70; i++) {
-    const a = r() * Math.PI * 2;
-    const d = 48 + r() * 40;
-    const h = 4 + r() * 5;
-    const leaves = new THREE.Mesh(new THREE.ConeGeometry(h * 0.3, h, 6), leafMat);
-    leaves.position.set(Math.cos(a) * d, h / 2, Math.sin(a) * d - 7);
-    scene.add(leaves);
   }
   return labels;
 }
@@ -355,8 +337,7 @@ function createDust(scene: THREE.Scene) {
         p.vel.multiplyScalar(Math.exp(-dt * 2.2)); // 空气阻力
         p.vel.y += dt * 0.25; // 热烟上浮
         p.sprite.position.addScaledVector(p.vel, dt);
-        const size = p.size0 + (p.size1 - p.size0) * Math.sqrt(k);
-        p.sprite.scale.set(size, size, 1);
+        p.sprite.scale.setScalar(p.size0 + (p.size1 - p.size0) * Math.sqrt(k));
         (p.sprite.material as THREE.SpriteMaterial).opacity = p.alpha * (1 - k) * Math.min(1, k * 8);
       }
     },
@@ -371,19 +352,10 @@ export function createCampScene(container: HTMLElement): CampScene {
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xa9cbc3);
-  scene.fog = new THREE.Fog(0xa9cbc3, 70, 140);
+  addDuskLandscape(scene, renderer);
 
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 400);
   camera.position.set(0, 60, 40);
-
-  scene.add(new THREE.HemisphereLight(0xfff4e0, 0x3d5a40, 1.15));
-  const sun = new THREE.DirectionalLight(0xffe2b8, 2.2);
-  sun.position.set(-30, 50, 20);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  Object.assign(sun.shadow.camera, { left: -45, right: 45, top: 45, bottom: -45, far: 150 });
-  scene.add(sun);
 
   const labels = buildWorld(scene);
   const flame = scene.getObjectByName('flame');
