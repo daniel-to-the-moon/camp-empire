@@ -24,4 +24,4 @@ CC0 不要求署名；仍建议在游戏「致谢」里写 Kenney、Quaternius�
 
 | 文件 | 用途 | 来源 |
 |---|---|---|
-| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供；生成方式与商用条款**待用户说明** |
+| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供，**用户确认为 AI 生成**（2026-11-26）。生成工具与账号套餐：**待用户说明**；商用条款原文：**待核实**（拿到工具名后按 CHARTER 第三节第 1 条补原文与核实日期）。在补齐前只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。 |
