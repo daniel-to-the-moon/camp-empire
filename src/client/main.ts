@@ -719,7 +719,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   // 键盘聚焦在按钮上时，空格 / 回车按原生方式点这个按钮，不当作刹车（GPT 审核 #90 第 2 轮）；
-  // 点过按钮后焦点留在按钮上会挡住空格刹车，所以只在键盘导航（:focus-visible）时让出
+  // 鼠标点过的按钮焦点不让出，空格照样刹车（见 isKeyboardFocusedButton）
   if ((e.code === 'Space' || e.code === 'Enter') && isKeyboardFocusedButton(e.target)) return;
   if (DRIVE_KEYS.includes(e.code)) e.preventDefault();
   keys.add(e.code);
@@ -743,13 +743,23 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
+/**
+ * 焦点来源：鼠标 / 触摸点过的按钮焦点不算键盘焦点，按空格仍是刹车；只有 Tab 走到的按钮才让空格按原生方式点它。
+ * 不用 :focus-visible 判断——鼠标点过的按钮在按下任意键后也会变成 focus-visible（Codex 审核 #90）。
+ */
+const keyboardFocused = new WeakSet<EventTarget>();
+let pointerFocus = false;
+window.addEventListener('pointerdown', () => (pointerFocus = true), true);
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') pointerFocus = false;
+}, true);
+document.addEventListener('focusin', (e) => {
+  if (!e.target) return;
+  if (pointerFocus) keyboardFocused.delete(e.target);
+  else keyboardFocused.add(e.target);
+});
 function isKeyboardFocusedButton(t: EventTarget | null): boolean {
-  if (!(t instanceof HTMLButtonElement)) return false;
-  try {
-    return t.matches(':focus-visible');
-  } catch {
-    return false;
-  }
+  return t instanceof HTMLButtonElement && keyboardFocused.has(t);
 }
 const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
 

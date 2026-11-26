@@ -279,6 +279,13 @@ try {
     await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press('Escape');
     await page.keyboard.press('1');
+    // 鼠标点过的图标留着焦点：先按 W 再按空格，空格仍是刹车，不会再点一次图标把抽屉收起
+    await page.locator('#rail-right [data-arg="daily"]').click();
+    await page.keyboard.press('KeyW');
+    await page.keyboard.press('Space');
+    if (!(await page.locator('#daily.active').isVisible())) throw new Error('鼠标点过的图标被空格再次触发（抽屉收起了）');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => document.activeElement?.blur());
   });
 
   await step('减少动态效果：途中开启立即停在目标；开启后换视图不转动画', async () => {
