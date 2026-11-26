@@ -266,8 +266,8 @@ describe('main.ts 接线（静态检查）', () => {
   it('now() 只取当前这一局的偏移，没有与局无关的全局偏移', () => {
     expect(main).not.toMatch(/\bdevOffset\b/);
     expect(main).toMatch(/const now = \(\) => devClock\.now\(state\.sid\)/);
-    // 存储经 prefs 安全取得（localStorage 不可用时为 null，GPT 审核 #90）；普通入口仍不读不写
-    expect(main).toMatch(/new DevClock\(DEV \? prefs : null, DEV_KEY,/);
+    // 存储经 safeStorage 适配器（各方法抛错都兜底，GPT 审核 #90）；普通入口仍不读不写
+    expect(main).toMatch(/new DevClock\(DEV \? safeStorage : null, DEV_KEY,/);
   });
 
   it('adoptState 在换局前让偏移失效', () => {

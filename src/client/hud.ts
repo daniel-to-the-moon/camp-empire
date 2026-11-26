@@ -4,7 +4,7 @@
  * 重写会打断按钮的弹跳动画和指针的转动过渡。
  */
 import { VIEW_LABEL, VIEWS, type View } from '../shared/camview';
-import { DRAWERS, Drawers, needleFrom, SHORTCUTS, type DrawerTab, type Side } from '../shared/hudnav';
+import { DRAWERS, Drawers, needleTurn, SHORTCUTS, type DrawerTab, type Side } from '../shared/hudnav';
 import { ICON } from './icons';
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -97,7 +97,17 @@ const needle = { shown: 0, from: 0, to: 0, t0: 0, raf: 0 };
 const NEEDLE_MS = 650;
 /** 带一点回弹的缓出（easeOutBack），对应原先 CSS 的 --spring */
 const easeOutBack = (x: number) => 1 + 2.2 * (x - 1) ** 3 + 1.2 * (x - 1) ** 2;
-const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+const reduceQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null;
+const reduceMotion = () => reduceQuery?.matches ?? false;
+// 转动途中开启“减少动态效果”：立即停下并对齐目标（GPT 审核 #90 第 2 轮）
+reduceQuery?.addEventListener?.('change', (e) => {
+  if (!e.matches || !needle.raf) return;
+  cancelAnimationFrame(needle.raf);
+  needle.raf = 0;
+  needle.shown = needle.to;
+  const box = document.querySelector<HTMLElement>('#views');
+  if (box) drawNeedle(box);
+});
 
 function drawNeedle(box: HTMLElement) {
   box.querySelector<HTMLElement>('.needle')!.style.transform = `rotate(${needle.shown}deg)`;
@@ -114,10 +124,11 @@ function spinNeedle(box: HTMLElement, to: number) {
     return;
   }
   const step = (now: number) => {
-    const x = Math.min(1, (now - needle.t0) / NEEDLE_MS);
+    // 每帧都查一次：转动途中开启“减少动态效果”，下一帧就对齐目标（不只依赖 change 事件）
+    const x = reduceMotion() ? 1 : Math.min(1, (now - needle.t0) / NEEDLE_MS);
     needle.shown = needle.from + (needle.to - needle.from) * easeOutBack(x);
     drawNeedle(box);
-    if (x < 1) needle.raf = requestAnimationFrame(step);
+    needle.raf = x < 1 ? requestAnimationFrame(step) : 0;
   };
   needle.raf = requestAnimationFrame(step);
 }
@@ -129,7 +140,7 @@ export function syncCompass(cv: View) {
   shownView = cv;
   const box = $('#views');
   // 以指针此刻实际显示的角度为起点（上一段转动可能还没转完），再走最短的一边（GPT 审核 #90）
-  spinNeedle(box, needleFrom(needle.to, needle.shown, cv));
+  spinNeedle(box, needleTurn(needle.shown, cv));
   box.querySelectorAll<HTMLButtonElement>('button[data-act="view"]').forEach((b) => {
     const on = b.dataset.arg === cv;
     b.classList.toggle('on', on);

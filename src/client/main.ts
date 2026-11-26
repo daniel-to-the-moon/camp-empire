@@ -18,7 +18,7 @@ import { feeCents, type CampEvent } from '../shared/npc';
 import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, type PathPose } from '../shared/parking';
 import { hash32 } from '../shared/rng';
 import { devCommand, DevClock, freshGameAt, isDevEntry, resetSave } from '../shared/devgate';
-import { IdbStore, migrateSave, requestWriter, SAVE_KEY, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
+import { IdbStore, legacyMayBeHidden, migrateSave, requestWriter, SAVE_KEY, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
 import {
   arriveHome,
   awningOut,
@@ -64,11 +64,13 @@ const prefs = (() => {
     return null;
   }
 })();
-const safeGet = (k: string) => {
+/** 读一个键：读到（含“没有这个键”的 null）返回 { ok: true }；本地存储拿不到或读取抛错返回 { ok: false } */
+const tryGet = (k: string): { ok: true; value: string | null } | { ok: false } => {
   try {
-    return prefs?.getItem(k) ?? null;
+    if (!prefs) return { ok: false };
+    return { ok: true, value: prefs.getItem(k) };
   } catch {
-    return null;
+    return { ok: false };
   }
 };
 const safeRemove = (k: string) => {
@@ -78,9 +80,24 @@ const safeRemove = (k: string) => {
     /* 存储不可用：旧存档留着也不影响 IndexedDB 存档 */
   }
 };
+/** 给开发快进用的存储适配器：每个方法单独兜底，存储方法抛错不让 ?dev 启动或重开中断（GPT 审核 #90 第 2 轮） */
+const safeStorage = {
+  getItem: (k: string) => {
+    const r = tryGet(k);
+    return r.ok ? r.value : null;
+  },
+  setItem: (k: string, v: string) => {
+    try {
+      prefs?.setItem(k, v);
+    } catch {
+      /* 写不进去就只在本页内存里生效 */
+    }
+  },
+  removeItem: safeRemove,
+};
 
 /** 开发快进偏移只对记录它的那一局生效（issue #11）；普通入口不读不写 */
-const devClock = new DevClock(DEV ? prefs : null, DEV_KEY, () => Date.now());
+const devClock = new DevClock(DEV ? safeStorage : null, DEV_KEY, () => Date.now());
 const now = () => devClock.now(state.sid);
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -124,7 +141,9 @@ const locks = (navigator as unknown as { locks?: LocksLike }).locks;
 const store = typeof indexedDB === 'undefined' ? null : await IdbStore.open(indexedDB, DB_NAME).catch(() => null);
 const slot = store ? new SaveSlot(store, SAVE_KEY) : null;
 // v3 槽位为空时导入 v2 槽位或 localStorage 旧存档（v2 槽位保留给仍开着的旧版本标签页，见 save.ts SAVE_KEY）
-if (store && (await migrateSave(store, safeGet(LEGACY_SAVE_KEY)).catch(() => null)) === 'legacy') safeRemove(LEGACY_SAVE_KEY);
+// 旧存档读不到（存储被禁用或读取抛错）和“没有旧档”要分开：读不到时不能当作新玩家写入新档，否则恢复后再也不会迁移（GPT 审核 #90 第 2 轮）
+const legacyRead = tryGet(LEGACY_SAVE_KEY);
+if (store && (await migrateSave(store, legacyRead.ok ? legacyRead.value : null).catch(() => null)) === 'legacy') safeRemove(LEGACY_SAVE_KEY);
 const newSeed = () => hash32(`${Date.now()}:${Math.random()}`);
 function clearDevOffset() {
   devClock.clear();
@@ -137,9 +156,14 @@ function freshGame(): GameState {
   clearDevOffset();
   return freshGameAt(Date.now(), newSeed());
 }
-let state: GameState = (slot && (await slot.read().catch(() => null))) ?? freshGame();
+const saved = slot ? await slot.read().catch(() => null) : null;
+let state: GameState = saved ?? freshGame();
 /** 没有可靠的原子写入或单写者机制：整页只读，提示原因（GPT 审核 #4 第 2 轮第 1 条） */
-const unsupported = !slot ? '这个浏览器打不开 IndexedDB（可能是隐私模式），无法可靠保存，本页只读。' : !locks ? '这个浏览器不支持 Web Locks，无法保证只有一个标签页写存档，本页只读。' : null;
+const unsupported = !slot
+  ? '这个浏览器打不开 IndexedDB（可能是隐私模式），无法可靠保存，本页只读。'
+  : legacyMayBeHidden(!!saved, legacyRead.ok)
+    ? '读不到浏览器本地存储，那里可能还有你的旧存档。为了不覆盖它，本页先只读；请允许本站使用存储后刷新。'
+    : !locks ? '这个浏览器不支持 Web Locks，无法保证只有一个标签页写存档，本页只读。' : null;
 /** 本标签页是否持有写权；拿到锁之前一律只读 */
 let writer = false;
 /** 同一标签页内的存档读写按顺序执行 */
@@ -669,9 +693,12 @@ const DRIVE_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'Arr
 window.addEventListener('keydown', (e) => {
   // 焦点在引导里的按钮上时，空格 / 回车按原生方式点按钮，不当作驾驶输入（GPT 审核 #90）
   if (guideOpen() && (e.target as HTMLElement | null)?.closest?.('#guide')) {
-    if (e.code === 'Escape') void actions.guideClose('');
+    if (e.code === 'Escape' || (isGuideKey(e) && !e.repeat)) void actions.guideClose('');
     return;
   }
+  // 键盘聚焦在按钮上时，空格 / 回车按原生方式点这个按钮，不当作刹车（GPT 审核 #90 第 2 轮）；
+  // 点过按钮后焦点留在按钮上会挡住空格刹车，所以只在键盘导航（:focus-visible）时让出
+  if ((e.code === 'Space' || e.code === 'Enter') && isKeyboardFocusedButton(e.target)) return;
   if (DRIVE_KEYS.includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (e.repeat) return;
@@ -694,6 +721,14 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
+function isKeyboardFocusedButton(t: EventTarget | null): boolean {
+  if (!(t instanceof HTMLButtonElement)) return false;
+  try {
+    return t.matches(':focus-visible');
+  } catch {
+    return false;
+  }
+}
 const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
 
 // ---------- 场景画面手势（环绕视图；规则见 src/shared/camview.ts OrbitGesture） ----------
@@ -1076,4 +1111,13 @@ if (unsupported) {
 } else requestWriter(locks, LOCK_NAME, false, setWriter);
 requestAnimationFrame(frame);
 // 首次打开：快捷键引导（看过就不再自动弹，H / ? / 顶栏按钮可再开）
-if (!guideSeen(prefs)) openGuide();
+// 回访面板（每日礼物）正开着时先不弹，等它关掉再弹，免得两层叠在屏幕中央
+if (!guideSeen(prefs)) {
+  if ($('#welcome').hidden) openGuide();
+  else
+    new MutationObserver((_, obs) => {
+      if (!$('#welcome').hidden) return;
+      obs.disconnect();
+      if (!guideSeen(prefs) && !guideOpen()) openGuide();
+    }).observe($('#welcome'), { attributes: true, attributeFilter: ['hidden'] });
+}

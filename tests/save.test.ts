@@ -341,3 +341,16 @@ describe('单写者锁', () => {
     expect(r).toEqual([false]);
   });
 });
+
+describe('本地存储读不到时不覆盖可能存在的旧档（GPT 审核 #90 第 2 轮）', () => {
+  it('IndexedDB 没有存档且旧档读不到：只读，不新开局', async () => {
+    const { legacyMayBeHidden } = await import('../src/shared/save');
+    expect(legacyMayBeHidden(false, false)).toBe(true);
+  });
+  it('旧档读得到（包括确实没有旧档），或 IndexedDB 已有存档：照常开局', async () => {
+    const { legacyMayBeHidden } = await import('../src/shared/save');
+    expect(legacyMayBeHidden(false, true)).toBe(false);
+    expect(legacyMayBeHidden(true, false)).toBe(false);
+    expect(legacyMayBeHidden(true, true)).toBe(false);
+  });
+});

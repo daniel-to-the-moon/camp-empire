@@ -2,7 +2,7 @@
  * 收起式控制面板与首次快捷键引导（hudnav.ts）：抽屉开合、罗盘指针最短转向、引导只自动弹一次、引导里的按键与实际键位一致。
  */
 import { describe, expect, it } from 'vitest';
-import { compassAngle, DRAWERS, Drawers, GUIDE_KEY, guideSeen, isDrawerTab, isGuideKey, markGuideSeen, needleFrom, needleTurn, SHORTCUTS } from '../src/shared/hudnav';
+import { compassAngle, DRAWERS, Drawers, GUIDE_KEY, guideSeen, isDrawerTab, isGuideKey, markGuideSeen, needleTurn, SHORTCUTS } from '../src/shared/hudnav';
 import mainSrc from '../src/client/main.ts?raw';
 import hudSrc from '../src/client/hud.ts?raw';
 import { VIEWS, viewForKey } from '../src/shared/camview';
@@ -60,19 +60,19 @@ describe('罗盘', () => {
   });
 });
 
-describe('罗盘连切（过渡没转完又换视图）', () => {
-  it('从北转向南刚起步就按 4：从当前实际角度（北附近）直接向西转，不绕过南', () => {
-    // 目标 180°，指针实际才转到 10°
-    const next = needleFrom(180, 10, 'hood');
-    expect(next).toBe(-90);
-    expect(Math.abs(next - 10)).toBeLessThanOrEqual(180);
+describe('罗盘连切（转动途中又换视图）', () => {
+  it('同一帧内连按 3、4：指针还在北（0°），直接向西转 90°，不向东绕 270°', () => {
+    expect(needleTurn(0, 'orbit')).toBe(180);
+    // 起点用指针实际显示的角度（还是 0°），不是上一个目标 180°
+    expect(needleTurn(0, 'hood')).toBe(-90);
   });
-  it('实际角度在 -180..180 内也能接上累计角度', () => {
-    expect(needleFrom(450, 80, 'orbit')).toBe(540); // 累计 450≈东，实际 80°，转到南 = +100°
-    expect(needleFrom(-270, -170, 'overview')).toBe(0); // 实际在 -170°（近南），回北走 +170°
+  it('转到一半（累计 100°）再按 4：从 100° 走最短弧到西（270°），转 170° 而不是 190°', () => {
+    expect(needleTurn(100, 'hood')).toBe(270);
+    expect(needleTurn(80, 'hood')).toBe(-90);
   });
-  it('读不到实际角度时退回按上一个目标算', () => {
-    expect(needleFrom(270, null, 'overview')).toBe(needleTurn(270, 'overview'));
+  it('累计角度很大时也走最短弧', () => {
+    expect(needleTurn(725, 'overview')).toBe(720);
+    expect(needleTurn(-445, 'orbit')).toBe(-540);
   });
 });
 

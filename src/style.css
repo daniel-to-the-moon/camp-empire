@@ -248,6 +248,15 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
   .dock { border-radius: 20px; }
 }
 
+/* 矮视口（手机横屏等）：抽屉改为盖在底栏之上的整高浮层，图标列可滚动；抽屉高度由视口决定，不再固定扣除底栏（GPT 审核 #90 第 2 轮） */
+@media (max-height: 520px) {
+  .rail { max-height: calc(100vh - 60px - 8px); overflow-y: auto; overscroll-behavior: contain; padding: 6px 8px; scrollbar-width: none; }
+  .rail.left { left: 4px; }
+  .rail.right { right: 4px; }
+  .rail .tip { display: none; }
+  .panel, .panel.right { top: 8px; max-height: calc(100vh - 16px); z-index: 6; }
+}
+
 /* ---------- 首次快捷键引导（src/client/hud.ts） ---------- */
 #guide {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 9; width: min(720px, 92vw); max-height: 86vh; overflow-y: auto;

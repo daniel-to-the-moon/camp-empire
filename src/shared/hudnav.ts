@@ -54,7 +54,7 @@ export class Drawers {
 export const compassAngle = (v: View): number => VIEWS.indexOf(v) * 90;
 
 /**
- * 指针从 prev（累计角度）转到 v 的方位，走最短的那一边（±180° 内），
+ * 指针从 prev（累计角度；转动途中传指针此刻实际显示的角度，可以带小数）转到 v 的方位，走最短的那一边（±180° 内），
  * 返回新的累计角度：CSS 过渡按累计角度插值，所以从西转到北是 +90°，不会倒转 270°。
  */
 export function needleTurn(prev: number, v: View): number {
@@ -64,16 +64,6 @@ export function needleTurn(prev: number, v: View): number {
   if (d > 180) d -= 360;
   if (d <= -180) d += 360;
   return prev + d;
-}
-
-/**
- * 换视图时指针的新累计角度：起点用指针此刻实际显示的角度 visible（-180..180，过渡中途读到的值），
- * 先把它换成离上一个目标 prevTarget 最近的累计角度，再走最短的一边。读不到实际角度时退回 needleTurn。
- */
-export function needleFrom(prevTarget: number, visible: number | null, v: View): number {
-  if (visible === null || !Number.isFinite(visible)) return needleTurn(prevTarget, v);
-  const cum = visible + 360 * Math.round((prevTarget - visible) / 360);
-  return needleTurn(cum, v);
 }
 
 // ---------- 首次快捷键引导 ----------

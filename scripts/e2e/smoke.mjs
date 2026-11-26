@@ -256,6 +256,124 @@ try {
     if (errs.length) throw new Error(`存储不可用时页面报错：${errs.join('；')}`);
   });
 
+  await step('键盘：Tab 聚焦图标按空格展开抽屉、聚焦罗盘按空格换视图', async () => {
+    await page.keyboard.press('Escape');
+    const tabTo = async (sel) => {
+      for (let i = 0; i < 40; i++) {
+        await page.keyboard.press('Tab');
+        if (await page.evaluate((q) => document.activeElement?.matches(q), sel)) return;
+      }
+      throw new Error(`Tab 走不到 ${sel}`);
+    };
+    await tabTo('#rail-left [data-arg="garage"]');
+    await page.keyboard.press('Space');
+    await page.locator('#garage.active').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('空格没有展开车库抽屉'); });
+    await tabTo('#views [data-arg="hood"]');
+    await page.keyboard.press('Space');
+    await page.locator('#views [data-arg="hood"].on').waitFor({ timeout: 3_000 }).catch(() => { throw new Error('空格没有切到引擎盖视图'); });
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('1');
+  });
+
+  await step('减少动态效果：途中开启立即停在目标；开启后换视图不转动画', async () => {
+    const angle = () => page.evaluate(() => {
+      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
+      return m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
+    });
+    await page.waitForTimeout(900);
+    await page.keyboard.press('3');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    const a1 = await angle();
+    if (Math.abs(Math.abs(a1) - 180) > 2) throw new Error(`途中开启减少动态后指针没对齐南：${a1.toFixed(0)}°`);
+    await page.keyboard.press('2');
+    await page.waitForTimeout(30);
+    const a2 = await angle();
+    if (Math.abs(a2 - 90) > 2) throw new Error(`减少动态下换视图仍在转动：${a2.toFixed(0)}°`);
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.keyboard.press('1');
+  });
+
+  await step('矮横屏 667×280：点图标打开抽屉，能点到里面的按钮', async () => {
+    await page.setViewportSize({ width: 667, height: 280 });
+    await page.keyboard.press('Escape');
+    await page.locator('#rail-left [data-arg="garage"]').click();
+    const chip = page.locator('#garage [data-act="variant"][data-arg="SH5043XLJH9DB-C_3116"]');
+    await chip.click();
+    await page.locator('#garage [data-arg="SH5043XLJH9DB-C_3116"].on').waitFor({ state: 'attached', timeout: 5_000 });
+    await page.keyboard.press('Escape');
+    // 右侧最后一个图标在矮屏下要滚到才能点
+    await page.locator('#rail-right [data-arg="log"]').click();
+    await page.locator('#log').waitFor({ state: 'visible', timeout: 3_000 });
+    await page.screenshot({ path: join(outDir, 'ui-short-landscape.png') });
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  await step('?dev 下本地存储方法抛错（getItem / setItem / removeItem）照样启动', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const p3 = await ctx.newPage();
+    const errs = [];
+    p3.on('pageerror', (e) => errs.push(e.message));
+    await p3.addInitScript(() => {
+      for (const m of ['getItem', 'setItem', 'removeItem']) Storage.prototype[m] = () => { throw new DOMException('denied', 'SecurityError'); };
+    });
+    await p3.goto(url.toString(), { waitUntil: 'load', timeout: 30_000 });
+    await p3.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    await p3.locator('#guide').waitFor({ state: 'visible', timeout: 10_000 });
+    await ctx.close();
+    if (errs.length) throw new Error(`存储方法抛错时 ?dev 页面报错：${errs.join('；')}`);
+  });
+
+  await step('只有 localStorage 旧档且暂时读不到：只读、不写新档；恢复后旧档被导入', async () => {
+    // 用当前页的 v3 存档当作“旧版 localStorage 存档”的内容
+    const legacy = await page.evaluate(() => new Promise((res, rej) => {
+      const r = indexedDB.open('camp-empire', 1);
+      r.onerror = () => rej(r.error);
+      r.onsuccess = () => {
+        const g = r.result.transaction('kv', 'readonly').objectStore('kv').get('save.v3');
+        g.onsuccess = () => res(g.result);
+        g.onerror = () => rej(g.error);
+      };
+    }));
+    if (typeof legacy !== 'string') throw new Error('取不到当前存档做旧档样本');
+    const wantCoins = await coins();
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const seed = await ctx.newPage();
+    await seed.goto(new URL('/favicon.ico', base).toString()).catch(() => {});
+    await seed.evaluate((v) => localStorage.setItem('camp-empire.save.v2', v), legacy);
+    await seed.close();
+    const blocked = await ctx.newPage();
+    await blocked.addInitScript(() => {
+      Storage.prototype.getItem = () => { throw new DOMException('denied', 'SecurityError'); };
+    });
+    await blocked.goto(base, { waitUntil: 'load', timeout: 30_000 });
+    await blocked.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    await blocked.locator('#readonly').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => { throw new Error('旧档读不到时没有进入只读'); });
+    await blocked.waitForTimeout(1500);
+    const v3 = await blocked.evaluate(() => new Promise((res) => {
+      const r = indexedDB.open('camp-empire', 1);
+      r.onsuccess = () => {
+        const g = r.result.transaction('kv', 'readonly').objectStore('kv').get('save.v3');
+        g.onsuccess = () => res(g.result ?? null);
+      };
+    }));
+    await blocked.close();
+    if (v3 !== null) throw new Error('旧档读不到时仍写入了新存档');
+    const ok = await ctx.newPage();
+    await ok.goto(base, { waitUntil: 'load', timeout: 30_000 });
+    await ok.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    await ok.waitForTimeout(1500);
+    const t = (await ok.locator('#coins').textContent()) ?? '';
+    const got = Number(t.replace(/[^\d.-]/g, ''));
+    const left = await ok.evaluate(() => localStorage.getItem('camp-empire.save.v2'));
+    await ctx.close();
+    // 迁移后可能再领一次当日礼物，金币只会多不会少
+    if (!(got >= wantCoins)) throw new Error(`恢复后旧档没有导入：金币 ${got}，旧档 ${wantCoins}`);
+    if (left !== null) throw new Error('导入后旧档没有从 localStorage 删除');
+  });
+
   if (errors.length) throw new Error(`页面出现错误：\n${errors.join('\n')}`);
   ok = true;
 } catch (e) {
