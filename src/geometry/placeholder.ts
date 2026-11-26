@@ -32,6 +32,7 @@ export const MATERIALS = {
   trim: () => new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.85 }),
   glass: () => new THREE.MeshStandardMaterial({
     vertexColors: true, transparent: true, roughness: 0.22, depthWrite: false,
+    side: THREE.DoubleSide, forceSinglePass: true,
   }),
   hub: () => new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.58 }),
 };

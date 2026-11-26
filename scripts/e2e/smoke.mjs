@@ -132,6 +132,7 @@ try {
 
     await selectVariant('SH5043XLJH9DB-C_3116');
     for (const angle of ['front34', 'side', 'rear34']) await saveShot(angle, `vehicle-${angle}.png`);
+    await saveShot('entrySide', 'vehicle-entry-side.png');
     for (const angle of ['front34', 'rear34']) await saveShot(angle, `vehicle-${angle}-lit.png`, true);
 
     // front34 高度 2.6 m，低于这款车的平顶；另用玩家可操作的环绕视图拍天窗。

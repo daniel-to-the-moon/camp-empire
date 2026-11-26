@@ -9,8 +9,9 @@ const CREAM = 0xfff0d7;
 const RUBBER = 0x292a2d;
 const SEAL = 0x33393b;
 const BELT = 0xf5d9b2;
-const GLASS = 0x4f7b90;
+const GLASS = 0x9fc3cb;
 const GLINT = 0xb9d9de;
+const GLASS_ALPHA = 0.25;
 const CHROME = 0xe4dfd4;
 
 type Point = [x: number, y: number, z: number];
@@ -96,21 +97,21 @@ function band(out: Facets, color: number, low: Point[], high: Point[], skip: num
   }
 }
 
-type WindowSpan = [leftBottom: number, rightBottom: number, leftTop: number, rightTop: number, opacity: number];
+type WindowSpan = [leftBottom: number, rightBottom: number, leftTop: number, rightTop: number];
 
 function mirrored(spans: WindowSpan[]): WindowSpan[] {
-  return [...spans].reverse().map(([a, b, c, d, opacity]) => [1 - b, 1 - a, 1 - d, 1 - c, opacity]);
+  return [...spans].reverse().map(([a, b, c, d]) => [1 - b, 1 - a, 1 - d, 1 - c]);
 }
 
 /** Fills the sheet metal around real openings. Each gasket and pane shares the opening's plane. */
 function windowRow(
-  body: Facets, trim: Facets, glass: Facets, face: Face, bottom: number, top: number, spans: WindowSpan[], liningOffset?: Point,
+  body: Facets, trim: Facets, glass: Facets, face: Face, bottom: number, top: number, spans: WindowSpan[], revealOffset?: Point,
 ): void {
   rect(body, CREAM, face, 0, 0, 1, bottom);
   rect(body, CREAM, face, 0, top, 1, 1);
   let previousBottom = 0;
   let previousTop = 0;
-  for (const [leftBottom, rightBottom, leftTop, rightTop, opacity] of spans) {
+  for (const [leftBottom, rightBottom, leftTop, rightTop] of spans) {
     const a = face(leftBottom, bottom);
     const b = face(rightBottom, bottom);
     const c = face(rightTop, top);
@@ -125,16 +126,14 @@ function windowRow(
     rect(trim, SEAL, opening, 0, edgeV, edgeU, 1 - edgeV);
     rect(trim, SEAL, opening, 1 - edgeU, edgeV, 1, 1 - edgeV);
     // A narrow pale strip suggests a reflection, while the main pane leaves the cabin visible.
-    rect(glass, GLASS, opening, edgeU, edgeV, 1 - edgeU, 0.93 - edgeV, opacity);
-    rect(glass, GLINT, opening, edgeU, 0.93 - edgeV, 1 - edgeU, 1 - edgeV, opacity);
-    if (liningOffset) {
-      // The brow is an enclosed compartment, not a second see-through cab. Return the
-      // inside edge of its gasket to a recessed opaque shade, closed even at grazing angles.
+    rect(glass, GLASS, opening, edgeU, edgeV, 1 - edgeU, 0.93 - edgeV, GLASS_ALPHA);
+    rect(glass, GLINT, opening, edgeU, 0.93 - edgeV, 1 - edgeU, 1 - edgeV, GLASS_ALPHA);
+    if (revealOffset) {
+      // The recessed edge gives the brow gasket thickness and leaves the pane open to the interior.
       const rim = [opening(edgeU, edgeV), opening(1 - edgeU, edgeV),
         opening(1 - edgeU, 1 - edgeV), opening(edgeU, 1 - edgeV)];
-      const back = rim.map(([x, y, z]): Point => [x + liningOffset[0], y + liningOffset[1], z + liningOffset[2]]);
+      const back = rim.map(([x, y, z]): Point => [x + revealOffset[0], y + revealOffset[1], z + revealOffset[2]]);
       band(trim, SEAL, rim, back);
-      trim.quad(SEAL, back[0], back[1], back[2], back[3]);
     }
     previousBottom = rightBottom;
     previousTop = rightTop;
@@ -142,7 +141,7 @@ function windowRow(
   body.quad(CREAM, face(previousBottom, bottom), face(1, bottom), face(1, top), face(previousTop, top));
 }
 
-/** #73, 11-25 游戏需求。窗宽、留边、内衬深度均为风格化提案 / 待核实。
+/** #73, 11-25 游戏需求。窗宽、留边、窗框深度均为风格化提案 / 待核实。
  * 只裁风挡上沿前方的悬伸段；两侧与平顶共用乘客窗的密封条、玻璃及反光带。 */
 function browWindows(body: Facets, trim: Facets, glass: Facets, lip: Point[], eave: Point[], roof: Point[], windTopZ: number): void {
   const rearEdge = windTopZ + 0.025;
@@ -150,7 +149,7 @@ function browWindows(body: Facets, trim: Facets, glass: Facets, lip: Point[], ea
   const bottom = 0.13, top = 0.88;
   const left = stationFace(lip, eave, 2);
   const endAt = (v: number) => (rearEdge - left(0, v)[2]) / (left(1, v)[2] - left(0, v)[2]);
-  const side: WindowSpan[] = [[0.012, endAt(bottom), 0.022, endAt(top), 0.63]];
+  const side: WindowSpan[] = [[0.012, endAt(bottom), 0.022, endAt(top)]];
   band(body, CREAM, lip, eave, [2, 6]);
   windowRow(body, trim, glass, left, bottom, top, side, [-depth, 0, 0]);
   windowRow(body, trim, glass, stationFace(lip, eave, 6), bottom, top, mirrored(side), [depth, 0, 0]);
@@ -162,7 +161,7 @@ function browWindows(body: Facets, trim: Facets, glass: Facets, lip: Point[], ea
   const nose = roof[2][2], tail = roof[3][2];
   const deck: Face = (u, v) => [lerp(roof[7][0], roof[2][0], u), roof[2][1], lerp(nose, tail, v)];
   windowRow(body, trim, glass, deck, 0.04 / (nose - tail), (nose - rearEdge) / (nose - tail),
-    [[0.2, 0.8, 0.2, 0.8, 0.63]], [0, -depth, 0]);
+    [[0.2, 0.8, 0.2, 0.8]], [0, -depth, 0]);
 }
 
 function sideWindows(face: Face, bottom: number, top: number, driverEnd: number, tail: number): WindowSpan[] {
@@ -171,10 +170,51 @@ function sideWindows(face: Face, bottom: number, top: number, driverEnd: number,
   const passengerEnd = tail + 0.42;
   const divide = (passengerStart + passengerEnd) / 2;
   return [
-    [0.013, atZ(driverEnd, bottom), 0.013, atZ(driverEnd, top), 0.32],
-    [atZ(passengerStart, bottom), atZ(divide + 0.047, bottom), atZ(passengerStart, top), atZ(divide + 0.047, top), 0.63],
-    [atZ(divide - 0.047, bottom), atZ(passengerEnd, bottom), atZ(divide - 0.047, top), atZ(passengerEnd, top), 0.63],
+    [0.013, atZ(driverEnd, bottom), 0.013, atZ(driverEnd, top)],
+    [atZ(passengerStart, bottom), atZ(divide + 0.047, bottom), atZ(passengerStart, top), atZ(divide + 0.047, top)],
+    [atZ(divide - 0.047, bottom), atZ(passengerEnd, bottom), atZ(divide - 0.047, top), atZ(passengerEnd, top)],
   ];
+}
+
+interface EntryDoor { front: number; back: number }
+
+/** SH5043 公告照片的左右侧配置。门窗比例为游戏近似值，+z 朝车头。 */
+function motorhomeSideWindows(
+  body: Facets, trim: Facets, glass: Facets, face: Face, side: Side, driverEnd: number, door: EntryDoor, rear: number,
+): void {
+  const noseEdge = side === 1 ? 0 : 1;
+  const tailEdge = 1 - noseEdge;
+  const fromNose = (fraction: number) => lerp(-rear, rear, fraction);
+  const panes = [
+    { front: undefined, back: driverEnd, bottom: 0.075, top: 0.89 },
+    ...(side === -1 ? [
+      { front: door.front - 0.20, back: door.back + 0.17, bottom: 0.085, top: 0.88 },
+      { front: door.back - 0.25, back: door.back - 0.87, bottom: 0.41, top: 0.92 },
+      { front: rear + 1.77, back: rear + 0.43, bottom: 0.17, top: 0.81 },
+    ] : [
+      { front: fromNose(0.43), back: fromNose(0.56), bottom: 0.24, top: 0.85 },
+      { front: fromNose(0.65), back: fromNose(0.75), bottom: 0.41, top: 0.92 },
+      { front: fromNose(0.79), back: fromNose(0.96), bottom: 0.17, top: 0.81 },
+    ]),
+  ];
+  for (const [i, pane] of panes.entries()) {
+    const bayFront = i === 0 ? undefined : (panes[i - 1].back + pane.front!) / 2;
+    const bayBack = i === panes.length - 1 ? undefined : (pane.back + panes[i + 1].front!) / 2;
+    const bay: Face = (u, v) => {
+      const z0 = face(0, v)[2], z1 = face(1, v)[2];
+      const front = bayFront ?? face(noseEdge, v)[2];
+      const back = bayBack ?? face(tailEdge, v)[2];
+      const z = lerp(front, back, side === 1 ? u : 1 - u);
+      return face((z - z0) / (z1 - z0), v);
+    };
+    const edges = (v: number): [number, number] => {
+      const start = bay(0, v)[2], length = bay(1, v)[2] - start;
+      const front = pane.front ?? face(lerp(noseEdge, tailEdge, 0.013), v)[2];
+      const a = (front - start) / length, b = (pane.back - start) / length;
+      return [Math.min(a, b), Math.max(a, b)];
+    };
+    windowRow(body, trim, glass, bay, pane.bottom, pane.top, [[...edges(pane.bottom), ...edges(pane.top)]]);
+  }
 }
 
 function paintLowerSides(
@@ -319,27 +359,54 @@ function frontBumper(body: Facets, trim: Facets, paint: number, half: number, fr
 
 function sideDetails(
   trim: Facets, half: number, belt: number, header: number, windBase: number, driverEnd: number, doorBack: number,
-  front: number, rear: number,
+  front: number, rear: number, entry?: EntryDoor,
 ): void {
-  const doorFront = driverEnd - 0.09;
-  const doorSill = 0.565;
-  const doorTop = 1.33;
   for (const side of SIDES) {
     const panel: Face = (z, y) => [side * (half - 0.009 - 0.04 * Math.max(0, y - 1.32) / (header - 1.32)), y, -side * z];
-    const line = (color: number, from: number, to: number, bottom: number, top: number) => {
+    const line = (color: number, from: number, to: number, bottom: number, top: number, proud = 0) => {
       const a = Math.min(-side * from, -side * to);
       const b = Math.max(-side * from, -side * to);
-      rect(trim, color, panel, a, bottom, b, top);
+      rect(trim, color, (z, y) => {
+        const p = panel(z, y);
+        p[0] += side * proud;
+        return p;
+      }, a, bottom, b, top);
     };
-    line(BELT, rear + 0.11, front - 0.13, belt - 0.037, belt + 0.003);
-    const seam = 0x464f53;
-    line(seam, doorBack, doorFront, doorSill, doorSill + 0.010);
-    for (const z of [doorBack, doorFront - 0.012]) {
-      line(seam, z, z + 0.012, doorSill + 0.010, belt - 0.037);
-      line(seam, z, z + 0.012, belt + 0.003, doorTop);
+    if (entry && side === -1) {
+      const sill = 0.54, top = header - 0.025, jamb = 0.030;
+      for (const [from, to] of [[rear + 0.11, entry.back], [entry.back + jamb, entry.front - jamb], [entry.front, front - 0.13]]) {
+        line(BELT, from, to, belt - 0.037, belt + 0.003);
+      }
+      line(SEAL, entry.back, entry.front, sill, sill + jamb);
+      line(SEAL, entry.back, entry.front, top - jamb, top);
+      for (const z of [entry.back, entry.front - jamb]) {
+        // Split at the shoulder so both sections follow the tapered outer skin.
+        line(SEAL, z, z + jamb, sill + jamb, 1.32);
+        line(SEAL, z, z + jamb, 1.32, top - jamb);
+      }
+      // Vertical latch on the rear edge of the habitation door.
+      line(SEAL, entry.back + 0.068, entry.back + 0.135, 1.04, 1.20, 0.003);
+      line(CHROME, entry.back + 0.086, entry.back + 0.104, 1.075, 1.165, 0.005);
+    } else {
+      line(BELT, rear + 0.11, front - 0.13, belt - 0.037, belt + 0.003);
     }
-    trim.solid(SEAL, block(0.025, 0.044, 0.179, side * (half - 0.015), belt - 0.11, doorFront - 0.154));
-    trim.solid(CHROME, block(0.010, 0.012, 0.113, side * (half - 0.005), belt - 0.104, doorFront - 0.154));
+    if (entry) {
+      // Cab door trailing edge and its own horizontal pull, ahead of the habitation compartment.
+      line(0x464f53, driverEnd, driverEnd + 0.014, 0.65, 1.32, 0.001);
+      line(SEAL, driverEnd + 0.06, driverEnd + 0.21, belt - 0.12, belt - 0.075, 0.003);
+      line(CHROME, driverEnd + 0.08, driverEnd + 0.19, belt - 0.10, belt - 0.088, 0.005);
+    } else {
+      const doorFront = driverEnd - 0.09;
+      const seam = 0x464f53;
+      line(seam, doorBack, doorFront, 0.565, 0.575);
+      for (const z of [doorBack, doorFront - 0.012]) {
+        line(seam, z, z + 0.012, 0.575, belt - 0.037);
+        line(seam, z, z + 0.012, belt + 0.003, 1.33);
+      }
+      const handleZ = doorFront - 0.154;
+      trim.solid(SEAL, block(0.025, 0.044, 0.179, side * (half - 0.015), belt - 0.11, handleZ));
+      trim.solid(CHROME, block(0.010, 0.012, 0.113, side * (half - 0.005), belt - 0.104, handleZ));
+    }
     trim.solid(SEAL, block(0.115, 0.075, 0.12, side * (half - 0.071), 1.426, windBase - 0.167));
     trim.solid(RUBBER, block(0.087, 0.179, 0.169, side * (half - 0.0435), 1.521, windBase - 0.162));
     trim.solid(0x8aacae, block(0.067, 0.135, 0.012, side * (half - 0.0455), 1.521, windBase - 0.245));
@@ -508,14 +575,21 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   band(body, CREAM, belt, hood, [0]);
   bonnet(body, stationFace(belt, hood, 0));
   band(body, CREAM, hood, header, [0, 2, 4, 6]);
-  windowRow(body, trim, glass, stationFace(hood, header, 0), 0.055, 0.945, [[0.032, 0.968, 0.032, 0.968, 0.30]]);
-  windowRow(body, trim, glass, stationFace(hood, header, 4), 0.22, 0.90, [[0.16, 0.84, 0.16, 0.84, 0.67]]);
+  windowRow(body, trim, glass, stationFace(hood, header, 0), 0.055, 0.945, [[0.032, 0.968, 0.032, 0.968]]);
+  windowRow(body, trim, glass, stationFace(hood, header, 4), 0.22, 0.90, [[0.16, 0.84, 0.16, 0.84]]);
   const windowBottom = 0.075;
   const windowTop = 0.89;
   const left = stationFace(hood, header, 2);
-  const windows = sideWindows(left, windowBottom, windowTop, driverEnd, rear);
-  windowRow(body, trim, glass, left, windowBottom, windowTop, windows);
-  windowRow(body, trim, glass, stationFace(hood, header, 6), windowBottom, windowTop, mirrored(windows));
+  const right = stationFace(hood, header, 6);
+  const entry = v.hasBrow ? { front: driverEnd - 0.22, back: driverEnd - 0.92 } : undefined;
+  if (entry) {
+    motorhomeSideWindows(body, trim, glass, left, 1, driverEnd, entry, rear);
+    motorhomeSideWindows(body, trim, glass, right, -1, driverEnd, entry, rear);
+  } else {
+    const windows = sideWindows(left, windowBottom, windowTop, driverEnd, rear);
+    windowRow(body, trim, glass, left, windowBottom, windowTop, windows);
+    windowRow(body, trim, glass, right, windowBottom, windowTop, mirrored(windows));
+  }
 
   let roofBase = header;
   if (v.hasBrow) {
@@ -552,7 +626,7 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   fascia(trim, front, rear);
   const { housings, lenses } = lampFixtures(v, lay);
   for (const housing of housings) trim.quad(SEAL, ...housing);
-  sideDetails(trim, half, beltY, headerY, windBaseZ, driverEnd, lay.rearAxleZ + radius + 0.16, front, rear);
+  sideDetails(trim, half, beltY, headerY, windBaseZ, driverEnd, lay.rearAxleZ + radius + 0.16, front, rear, entry);
   cabin(trim, half, windBaseZ, seatZ, floorY + deckHeight);
   return { body: body.geometry(), trim: trim.geometry(), glass: glass.geometry(), hub: hub.geometry(), lenses };
 }

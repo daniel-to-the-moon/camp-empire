@@ -951,8 +951,8 @@ if (DEV) {
   $('#dev').hidden = false;
   // 调试入口（仅 ?dev），用于车辆截图和撞击效果检查
   (window as unknown as { __campDebug: unknown }).__campDebug = {
-    vehicleShot(angle: 'front34' | 'side' | 'rear34', lit = false): string {
-      const [forward, left] = { front34: [7, -5.5], side: [0, 9], rear34: [-7, 5.5] }[angle];
+    vehicleShot(angle: 'front34' | 'side' | 'entrySide' | 'rear34', lit = false): string {
+      const [forward, left] = { front34: [7, -5.5], side: [0, 9], entrySide: [0, -9], rear34: [-7, 5.5] }[angle];
       const [cx, cy] = bodyCenter(spec, drive.pose);
       const cos = Math.cos(drive.pose.yaw);
       const sin = Math.sin(drive.pose.yaw);
