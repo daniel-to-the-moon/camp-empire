@@ -8,10 +8,10 @@
 //   3. 固定机位截图：桌面营地俯瞰（隐藏界面层，只留画布）、手机竖屏整页（Playwright 设备模拟，非真机），供视觉验收使用。
 // 帧时间只记录不判定：CI 用 SwiftShader 软件渲染，帧时间与真机无关（待核实目标设备实测，#55）。
 import { chromium, devices } from 'playwright';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkBudgets, summarize } from './gates-lib.mjs';
+import { checkBudgets, perfTable, summarize } from './gates-lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const base = process.argv[2] || 'http://127.0.0.1:4173/';
@@ -134,6 +134,7 @@ try {
 }
 results.failures = failures;
 writeFileSync(join(outDir, 'perf.json'), JSON.stringify(results, null, 2));
+if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, perfTable(results.scenes));
 for (const [k, s] of Object.entries(results.scenes)) {
   console.log(`${k}: draw call 中位 ${s.callsMedian} / 最大 ${s.callsMax}；三角形中位 ${s.trisMedian} / 最大 ${s.trisMax}；帧时间中位 ${s.msMedian} ms（软件渲染，仅参考）；${s.frames} 帧`);
 }
