@@ -4,7 +4,7 @@
  * 重写会打断按钮的弹跳动画和指针的转动过渡。
  */
 import { VIEW_LABEL, VIEWS, type View } from '../shared/camview';
-import { DRAWERS, Drawers, needleTurn, SHORTCUTS, type DrawerTab, type Side } from '../shared/hudnav';
+import { DRAWERS, Drawers, needleFrom, SHORTCUTS, type DrawerTab, type Side } from '../shared/hudnav';
 import { ICON } from './icons';
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
@@ -92,16 +92,44 @@ export function setBadge(key: string, text: string, hot = false) {
   if (b.classList.contains('hot') !== hot) b.classList.toggle('hot', hot);
 }
 
-let needleDeg = 0;
+/** 指针动画由 JS 逐帧驱动（不用 CSS 过渡）：随时知道指针此刻的真实角度，连切时从这里走最短弧（GPT 审核 #90） */
+const needle = { shown: 0, from: 0, to: 0, t0: 0, raf: 0 };
+const NEEDLE_MS = 650;
+/** 带一点回弹的缓出（easeOutBack），对应原先 CSS 的 --spring */
+const easeOutBack = (x: number) => 1 + 2.2 * (x - 1) ** 3 + 1.2 * (x - 1) ** 2;
+const reduceMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+
+function drawNeedle(box: HTMLElement) {
+  box.querySelector<HTMLElement>('.needle')!.style.transform = `rotate(${needle.shown}deg)`;
+}
+
+function spinNeedle(box: HTMLElement, to: number) {
+  needle.from = needle.shown;
+  needle.to = to;
+  needle.t0 = performance.now();
+  cancelAnimationFrame(needle.raf);
+  if (reduceMotion()) {
+    needle.shown = to;
+    drawNeedle(box);
+    return;
+  }
+  const step = (now: number) => {
+    const x = Math.min(1, (now - needle.t0) / NEEDLE_MS);
+    needle.shown = needle.from + (needle.to - needle.from) * easeOutBack(x);
+    drawNeedle(box);
+    if (x < 1) needle.raf = requestAnimationFrame(step);
+  };
+  needle.raf = requestAnimationFrame(step);
+}
+
 let shownView: View | null = null;
 
-/** 罗盘指针转到当前视图（走最短的那一边），高亮对应方位 */
 export function syncCompass(cv: View) {
   if (shownView === cv) return;
   shownView = cv;
-  needleDeg = needleTurn(needleDeg, cv);
   const box = $('#views');
-  box.style.setProperty('--needle', `${needleDeg}deg`);
+  // 以指针此刻实际显示的角度为起点（上一段转动可能还没转完），再走最短的一边（GPT 审核 #90）
+  spinNeedle(box, needleFrom(needle.to, needle.shown, cv));
   box.querySelectorAll<HTMLButtonElement>('button[data-act="view"]').forEach((b) => {
     const on = b.dataset.arg === cv;
     b.classList.toggle('on', on);
@@ -122,7 +150,7 @@ export function guideHtml(): string {
   return `
     <div class="guide-head">
       <span class="guide-badge">${ICON.keys}</span>
-      <div><h2>上手只要 30 秒</h2><p class="hint">这些快捷键记几个就够玩了。之后按 <kbd>H</kbd> 或点右上角的键盘图标随时再看。</p></div>
+      <div><h2>快捷键入门</h2><p class="hint">记住几个就能玩。之后按 <kbd>H</kbd> 或点右上角的键盘图标随时再看。</p></div>
     </div>
     <div class="guide-grid">${SHORTCUTS.map(
       (g) => `<section><h3>${g.title}</h3>${g.rows
@@ -132,11 +160,23 @@ export function guideHtml(): string {
     <div class="row"><button class="primary" data-act="guideClose">开始露营</button></div>`;
 }
 
+let guideReturnFocus: HTMLElement | null = null;
+
 export function openGuide() {
   const g = $('#guide');
+  // 记下打开前的焦点，关掉后还回去（顶栏按钮打开时就回到顶栏按钮）
+  const a = document.activeElement;
+  guideReturnFocus = a instanceof HTMLElement && a !== document.body ? a : null;
   g.innerHTML = guideHtml();
   g.hidden = false;
   g.querySelector<HTMLButtonElement>('[data-act="guideClose"]')?.focus({ preventScroll: true });
+}
+
+export function closeGuide() {
+  $('#guide').hidden = true;
+  const back = guideReturnFocus?.isConnected ? guideReturnFocus : null;
+  guideReturnFocus = null;
+  back?.focus({ preventScroll: true });
 }
 
 export const guideOpen = () => !$('#guide').hidden;

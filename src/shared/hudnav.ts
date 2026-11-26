@@ -66,6 +66,16 @@ export function needleTurn(prev: number, v: View): number {
   return prev + d;
 }
 
+/**
+ * 换视图时指针的新累计角度：起点用指针此刻实际显示的角度 visible（-180..180，过渡中途读到的值），
+ * 先把它换成离上一个目标 prevTarget 最近的累计角度，再走最短的一边。读不到实际角度时退回 needleTurn。
+ */
+export function needleFrom(prevTarget: number, visible: number | null, v: View): number {
+  if (visible === null || !Number.isFinite(visible)) return needleTurn(prevTarget, v);
+  const cum = visible + 360 * Math.round((prevTarget - visible) / 360);
+  return needleTurn(cum, v);
+}
+
 // ---------- 首次快捷键引导 ----------
 export const GUIDE_KEY = 'camp-empire.guideSeen';
 

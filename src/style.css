@@ -158,7 +158,7 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 #views .rose i:nth-child(3) { transform: rotate(225deg) translateY(-34px); }
 #views .rose i:nth-child(4) { transform: rotate(315deg) translateY(-34px); }
 #views.wobble .rose { animation: wobble 0.6s ease; }
-#views .needle { position: absolute; inset: 0; transform: rotate(var(--needle, 0deg)); transition: transform 0.7s var(--spring); pointer-events: none; }
+#views .needle { position: absolute; inset: 0; pointer-events: none; } /* 转动由 hud.ts spinNeedle 逐帧驱动 */
 #views .needle b {
   position: absolute; left: calc(50% - 6px); top: 30px; width: 12px; height: 24px;
   background: linear-gradient(var(--canvas), rgba(224, 137, 46, 0.2)); clip-path: polygon(50% 0, 100% 100%, 50% 80%, 0 100%);

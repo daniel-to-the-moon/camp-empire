@@ -78,6 +78,13 @@ try {
     await guide.waitFor({ state: 'visible', timeout: 5_000 });
     await guide.locator('[data-act="guideClose"]').click();
     await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+    // 顶栏按钮打开 → 焦点在“开始露营”上按空格关闭 → 焦点回到顶栏按钮（GPT 审核 #90）
+    await page.locator('#help').click();
+    await guide.waitFor({ state: 'visible', timeout: 5_000 });
+    await page.keyboard.press('Space');
+    await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+    const focused = await page.evaluate(() => document.activeElement?.id);
+    if (focused !== 'help') throw new Error(`关闭引导后焦点没有回到顶栏按钮（现在是 ${focused || 'body'}）`);
   });
 
   const welcome = page.locator('#welcome');
@@ -116,8 +123,8 @@ try {
     before = await coins();
     // 流水只显示最近 6 条、最新在前：比较第一条的内容
     logBefore = (await page.locator('#log li').first().textContent().catch(() => '')) ?? '';
-    // 面板每帧重绘、按钮节点不稳定；点击处理挂在 document 上，直接对当前节点派发点击
-    await page.evaluate(() => document.querySelector('#pending [data-act="collect"]')?.click());
+    // 真实指针点击抽屉里可见的收取按钮（抽屉内容不变就不重绘，节点稳定）
+    await btn.click();
     await page.waitForFunction(() => document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 5_000 })
       .catch(() => { throw new Error('收取后待收取池没有清空（收取按钮仍可点）'); });
     const after = await coins();
@@ -137,11 +144,12 @@ try {
     };
     const selectVariant = async (id) => {
       const chip = `#garage [data-act="variant"][data-arg="${id}"]`;
-      // 车库随 HUD 重绘，直接对当前按钮派发点击。
-      await page.evaluate((selector) => {
-        const button = document.querySelector(selector);
-        if (button && !button.classList.contains('on')) button.click();
-      }, chip);
+      // 玩家路径：点左侧车库图标展开抽屉，再真实点击可见的车型按钮
+      if (await page.locator('#drawer-left').isHidden() || !(await page.locator('#garage.active').count())) {
+        await page.locator('#rail-left [data-arg="garage"]').click();
+      }
+      await page.locator('#garage').waitFor({ state: 'visible', timeout: 5_000 });
+      if (!(await page.locator(`${chip}.on`).count())) await page.locator(chip).click();
       await page.locator(`${chip}.on`).waitFor({ state: 'attached', timeout: 10_000 });
     };
 
@@ -168,6 +176,70 @@ try {
     }
     await selectVariant('SH6591H4DB_2735');
     await saveShot('front34', 'vehicle-no-brow-front34.png');
+  });
+
+  await step('窄屏两侧抽屉互斥：正好 760px 点两侧只开一侧；宽屏双开后缩窄自动收起一侧', async () => {
+    const left = page.locator('#drawer-left');
+    const right = page.locator('#drawer-right');
+    const openTab = async (side, tab) => {
+      if (!(await page.locator(`#rail-${side} [data-arg="${tab}"].on`).count())) await page.locator(`#rail-${side} [data-arg="${tab}"]`).click();
+    };
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 760, height: 800 });
+    await openTab('left', 'garage');
+    await openTab('right', 'daily');
+    if (!(await left.isHidden()) || !(await right.isVisible())) throw new Error('760px 下两侧抽屉同时打开');
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openTab('left', 'garage');
+    await openTab('right', 'daily');
+    if (!(await left.isVisible()) || !(await right.isVisible())) throw new Error('宽屏下两侧抽屉应能同时打开');
+    await page.setViewportSize({ width: 700, height: 800 });
+    await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('缩窄后左侧抽屉没有收起'); });
+    if ((await page.locator('#rail-left [data-arg="garage"]').getAttribute('aria-expanded')) !== 'false') throw new Error('左侧抽屉收起后图标仍是展开状态');
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  await step('罗盘连切：转向南刚起步就按 4，指针从北附近直接转向西，不绕过南', async () => {
+    const angle = () => page.evaluate(() => {
+      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
+      return m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
+    });
+    await page.keyboard.press('1');
+    await page.waitForTimeout(1200);
+    await page.keyboard.press('3');
+    await page.waitForTimeout(60);
+    await page.keyboard.press('4');
+    const seen = [];
+    for (let i = 0; i < 20; i++) { seen.push(await angle()); await page.waitForTimeout(50); }
+    if (seen.some((a) => Math.abs(a) > 150)) throw new Error(`指针绕过了南：${seen.map((a) => a.toFixed(0)).join(', ')}`);
+    if (Math.abs(seen.at(-1) + 90) > 15) throw new Error(`指针没停在西：${seen.at(-1).toFixed(0)}°`);
+    await page.keyboard.press('1');
+  });
+
+  await step('看过引导后重载不再自动弹出', async () => {
+    await page.reload({ waitUntil: 'load' });
+    await page.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    await page.waitForTimeout(1500);
+    if (await page.locator('#guide').isVisible()) throw new Error('关过引导后重载又弹出了');
+  });
+
+  await step('本地存储不可用（读取抛错）时照样启动，引导能打开和关闭', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const p2 = await ctx.newPage();
+    const errs = [];
+    p2.on('pageerror', (e) => errs.push(e.message));
+    await p2.addInitScript(() => {
+      Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('denied', 'SecurityError'); } });
+    });
+    await p2.goto(base, { waitUntil: 'load', timeout: 30_000 });
+    await p2.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    const g = p2.locator('#guide');
+    await g.waitFor({ state: 'visible', timeout: 10_000 });
+    await g.locator('[data-act="guideClose"]').click();
+    await g.waitFor({ state: 'hidden', timeout: 5_000 });
+    await ctx.close();
+    if (errs.length) throw new Error(`存储不可用时页面报错：${errs.join('；')}`);
   });
 
   if (errors.length) throw new Error(`页面出现错误：\n${errors.join('\n')}`);

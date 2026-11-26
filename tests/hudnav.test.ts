@@ -2,7 +2,9 @@
  * 收起式控制面板与首次快捷键引导（hudnav.ts）：抽屉开合、罗盘指针最短转向、引导只自动弹一次、引导里的按键与实际键位一致。
  */
 import { describe, expect, it } from 'vitest';
-import { compassAngle, DRAWERS, Drawers, GUIDE_KEY, guideSeen, isDrawerTab, isGuideKey, markGuideSeen, needleTurn, SHORTCUTS } from '../src/shared/hudnav';
+import { compassAngle, DRAWERS, Drawers, GUIDE_KEY, guideSeen, isDrawerTab, isGuideKey, markGuideSeen, needleFrom, needleTurn, SHORTCUTS } from '../src/shared/hudnav';
+import mainSrc from '../src/client/main.ts?raw';
+import hudSrc from '../src/client/hud.ts?raw';
 import { VIEWS, viewForKey } from '../src/shared/camview';
 import html from '../index.html?raw';
 
@@ -58,6 +60,22 @@ describe('罗盘', () => {
   });
 });
 
+describe('罗盘连切（过渡没转完又换视图）', () => {
+  it('从北转向南刚起步就按 4：从当前实际角度（北附近）直接向西转，不绕过南', () => {
+    // 目标 180°，指针实际才转到 10°
+    const next = needleFrom(180, 10, 'hood');
+    expect(next).toBe(-90);
+    expect(Math.abs(next - 10)).toBeLessThanOrEqual(180);
+  });
+  it('实际角度在 -180..180 内也能接上累计角度', () => {
+    expect(needleFrom(450, 80, 'orbit')).toBe(540); // 累计 450≈东，实际 80°，转到南 = +100°
+    expect(needleFrom(-270, -170, 'overview')).toBe(0); // 实际在 -170°（近南），回北走 +170°
+  });
+  it('读不到实际角度时退回按上一个目标算', () => {
+    expect(needleFrom(270, null, 'overview')).toBe(needleTurn(270, 'overview'));
+  });
+});
+
 describe('首次快捷键引导', () => {
   const mem = () => {
     const m = new Map<string, string>();
@@ -82,6 +100,31 @@ describe('首次快捷键引导', () => {
     expect(isGuideKey({ code: 'Slash', key: '?' })).toBe(true);
     expect(isGuideKey({ code: 'Slash', key: '/' })).toBe(false);
   });
+  it('引导里的每个按键都真的由 main.ts 的键盘处理（或驾驶键表）响应', () => {
+    const NOT_KEYS = new Set(['拖拽', '滚轮', '双指', '点图标']);
+    const codeFor = (k: string): string => {
+      if (/^\d$/.test(k)) return `Digit${k}`;
+      if (/^[A-Z]$/.test(k)) return `Key${k}`;
+      return ({ 空格: 'Space', Shift: 'ShiftLeft', Esc: 'Escape' } as Record<string, string>)[k] ?? k;
+    };
+    const handled = (code: string) => {
+      if (code === '?') return isGuideKey({ code: 'Slash', key: '?' });
+      if (code === 'KeyH') return isGuideKey({ code, key: 'h' });
+      if (/^Digit[1-4]$|^Key[VC]$/.test(code)) return viewForKey(code, 'overview') !== null;
+      return mainSrc.includes(`'${code}'`);
+    };
+    const keys = SHORTCUTS.flatMap((g) => g.rows.flatMap((r) => r.keys)).filter((k) => !NOT_KEYS.has(k));
+    expect(keys.length).toBeGreaterThan(10);
+    for (const k of keys) expect(handled(codeFor(k)), `引导里的 ${k}`).toBe(true);
+    // 拖拽 / 滚轮 / 双指 对应场景画面上的手势监听
+    expect(mainSrc).toMatch(/stage\.addEventListener\(\s*'wheel'/);
+    expect(mainSrc).toContain("stage.addEventListener('pointerdown'");
+  });
+
+  it('标题不做没有依据的时长承诺（CHARTER 证据规则）', () => {
+    expect(hudSrc).not.toMatch(/\d+\s*秒/);
+  });
+
   it('引导里写的镜头键和实际键位一致', () => {
     const cam = SHORTCUTS.find((g) => g.title === '镜头')!;
     expect(cam.rows[0].keys).toEqual(['1', '2', '3', '4']);
