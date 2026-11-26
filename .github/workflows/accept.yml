@@ -6,6 +6,8 @@
 #   Cloudflare 凭据只在 preview，模型 key 只在 judge，写权限只在 report。
 # 评分方：仓库变量 VISUAL_PROVIDER（openai | anthropic，默认 openai）+ VISUAL_MODEL；手动触发可用 provider / model 临时覆盖，
 #   report=false 时只评分不发评论、不发预览（用于试评分方）。
+# 评分标准：judge 的脚本只用 main 的；评分依据 docs/visual/STYLE.md 与 reference.png 是数据，按 inputs.head 从 PR 头部读取
+#   （只读 contents API，不检出、不执行 PR 内容），这样改评分标准的 PR 按它提出的新标准评分；读取失败则保留 main 版本并在摘要注明。
 name: accept
 run-name: accept PR#${{ inputs.pr }} ${{ inputs.provider || vars.VISUAL_PROVIDER || 'openai' }}
 
@@ -113,6 +115,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: 取 PR 头部的评分标准（只当数据，失败则用 main 的）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head }}
+        run: |
+          set -uo pipefail
+          { echo '### 评分标准来源'; } >> "$GITHUB_STEP_SUMMARY"
+          for f in docs/visual/STYLE.md docs/visual/reference.png; do
+            tmp="$RUNNER_TEMP/$(basename "$f").pr"
+            if gh api -H 'Accept: application/vnd.github.raw' "repos/$REPO/contents/$f?ref=$HEAD_SHA" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+              cp "$tmp" "$f"
+              echo "- \`$f\`：PR 头部 ${HEAD_SHA:0:8}" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- \`$f\`：main（PR 头部读取失败）" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
       - name: 下载本 PR 与 main 上一版的截图
         env:
           GH_TOKEN: ${{ github.token }}
