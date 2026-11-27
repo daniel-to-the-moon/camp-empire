@@ -1,8 +1,9 @@
 /**
  * 收起式控制面板与首次快捷键引导（hudnav.ts）：抽屉开合、罗盘指针最短转向、引导只自动弹一次、引导里的按键与实际键位一致。
  */
+import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { compassAngle, DRAWERS, Drawers, GUIDE_KEY, guideSeen, isDrawerTab, isGuideKey, isMenuKey, markGuideSeen, needleTurn, polar, RING_ITEMS, ringSectors, sectorPath, SHORTCUTS } from '../src/shared/hudnav';
+import { cameraHeading, dialTurn, DRAWERS, Drawers, GUIDE_KEY, guideSeen, isDrawerTab, isGuideKey, isMenuKey, markGuideSeen, polar, RING_ITEMS, ringSectors, sectorPath, SHORTCUTS } from '../src/shared/hudnav';
 import mainSrc from '../src/client/main.ts?raw';
 import hudSrc from '../src/client/hud.ts?raw';
 import { VIEWS, viewForKey } from '../src/shared/camview';
@@ -47,32 +48,40 @@ describe('抽屉', () => {
   });
 });
 
-describe('罗盘', () => {
-  it('四个视图依次在 北 / 东 / 南 / 西', () => {
-    expect(VIEWS.map(compassAngle)).toEqual([0, 90, 180, 270]);
+describe('罗盘实时朝向', () => {
+  /** 镜头放在 pos、看向 look 时的朝向四元数（和 scene.ts 一样用 lookAt） */
+  const cam = (pos: [number, number, number], look: [number, number, number]) => {
+    const c = new THREE.PerspectiveCamera();
+    c.position.set(...pos);
+    c.lookAt(...look);
+    return c.quaternion;
+  };
+  it('斜着看：画面朝北（−Z）是 0°、朝东（+X）是 90°、朝南 180°、朝西 270°', () => {
+    expect(cameraHeading(cam([0, 5, 10], [0, 0, 0]))).toBeCloseTo(0);
+    expect(cameraHeading(cam([-10, 5, 0], [0, 0, 0]))).toBeCloseTo(90);
+    expect(cameraHeading(cam([0, 5, -10], [0, 0, 0]))).toBeCloseTo(180);
+    expect(cameraHeading(cam([10, 5, 0], [0, 0, 0]))).toBeCloseTo(270);
   });
-  it('指针走最短的一边：西 → 北是 +90°，不倒转 270°', () => {
-    expect(needleTurn(270, 'overview')).toBe(360);
-    expect(needleTurn(0, 'hood')).toBe(-90);
-    expect(needleTurn(0, 'orbit')).toBe(180);
-    expect(needleTurn(360, 'follow')).toBe(450);
-    expect(needleTurn(-90, 'overview')).toBe(0);
+  it('环绕一圈：朝向随镜头连续变化', () => {
+    for (let a = 0; a < 360; a += 30) {
+      const r = (a * Math.PI) / 180;
+      // 镜头在目标的 a+180° 方向，看向目标：画面朝向 a
+      const h = cameraHeading(cam([-Math.sin(r) * 10, 6, Math.cos(r) * 10], [0, 0, 0]))!;
+      expect(Math.abs(((h - a + 540) % 360) - 180)).toBeLessThan(0.01);
+    }
   });
-});
-
-describe('罗盘连切（转动途中又换视图）', () => {
-  it('同一帧内连按 3、4：指针还在北（0°），直接向西转 90°，不向东绕 270°', () => {
-    expect(needleTurn(0, 'orbit')).toBe(180);
-    // 起点用指针实际显示的角度（还是 0°），不是上一个目标 180°
-    expect(needleTurn(0, 'hood')).toBe(-90);
+  it('几乎正俯视：改用画面上方在地面的方向，不会乱跳', () => {
+    const c = new THREE.PerspectiveCamera();
+    c.position.set(0, 40, 0);
+    c.up.set(1, 0, 0); // 画面上方朝东
+    c.lookAt(0, 0, 0);
+    expect(cameraHeading(c.quaternion)).toBeCloseTo(90);
   });
-  it('转到一半（累计 100°）再按 4：从 100° 走最短弧到西（270°），转 170° 而不是 190°', () => {
-    expect(needleTurn(100, 'hood')).toBe(270);
-    expect(needleTurn(80, 'hood')).toBe(-90);
-  });
-  it('累计角度很大时也走最短弧', () => {
-    expect(needleTurn(725, 'overview')).toBe(720);
-    expect(needleTurn(-445, 'orbit')).toBe(-540);
+  it('盘面转到 −朝向，走最短弧：跨过正北不倒转一圈', () => {
+    expect(dialTurn(0, 90)).toBe(-90);
+    expect(dialTurn(-350, 10)).toBe(-370); // 盘面在 −350°（朝向 350°），朝向转到 10°：只再转 −20°
+    expect(dialTurn(-10, 350)).toBe(10); // 朝向从 10° 转到 350°：盘面 +20°
+    expect(dialTurn(720, 0)).toBe(720);
   });
 });
 
@@ -101,7 +110,7 @@ describe('首次快捷键引导', () => {
     expect(isGuideKey({ code: 'Slash', key: '/' })).toBe(false);
   });
   it('引导里的每个按键都真的由 main.ts 的键盘处理（或驾驶键表）响应', () => {
-    const NOT_KEYS = new Set(['拖拽', '滚轮', '双指', '点罗盘']);
+    const NOT_KEYS = new Set(['拖拽', '滚轮', '双指', '点菜单']);
     const codeFor = (k: string): string => {
       if (/^\d$/.test(k)) return `Digit${k}`;
       if (/^[A-Z]$/.test(k)) return `Key${k}`;
@@ -128,8 +137,8 @@ describe('首次快捷键引导', () => {
 
   it('引导里写的镜头键和实际键位一致', () => {
     const cam = SHORTCUTS.find((g) => g.title === '镜头')!;
-    expect(cam.rows[0].keys).toEqual(['1', '2', '3', '4']);
-    expect(['Digit1', 'Digit2', 'Digit3', 'Digit4'].map((c) => viewForKey(c, 'overview'))).toEqual([...VIEWS]);
+    expect(cam.rows[0].keys).toEqual(['1', '2', '3']);
+    expect(['Digit1', 'Digit2', 'Digit3'].map((c) => viewForKey(c, 'overview'))).toEqual([...VIEWS]);
     expect(viewForKey('KeyV', 'overview')).toBe('next');
     expect(viewForKey('KeyC', 'overview')).toBe('follow');
     // H 没有被镜头占用

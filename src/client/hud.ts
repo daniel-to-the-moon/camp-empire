@@ -1,16 +1,16 @@
 /**
- * 收起式控制面板的界面层：底栏罗盘、点罗盘展开的圆形菜单、抽屉、快捷键引导（规则见 src/shared/hudnav.ts）。
- * 罗盘与圆形菜单只建一次，之后 renderHud 只改类名 / 角标 / 角度，不重写节点：
+ * 收起式控制面板的界面层：底栏指南针、菜单钮展开的圆形菜单、抽屉、快捷键引导（规则见 src/shared/hudnav.ts）。
+ * 指南针、菜单钮与圆形菜单只建一次，之后 renderHud 只改类名 / 角标 / 角度，不重写节点：
  * 重写会打断弹出动画和指针的转动。
  */
 import { VIEW_LABEL, VIEWS, type View } from '../shared/camview';
-import { DRAWERS, Drawers, needleTurn, polar, RING_ITEMS, ringSectors, sectorPath, SHORTCUTS, type DrawerTab } from '../shared/hudnav';
-import { ICON } from './icons';
+import { DRAWERS, Drawers, dialTurn, polar, RING_ITEMS, ringSectors, sectorPath, SHORTCUTS, type DrawerTab } from '../shared/hudnav';
+import { closeButton, ICON } from './icons';
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
 const VIEW_ICON: Record<View, string> = { overview: ICON.overview, follow: ICON.follow, orbit: ICON.orbit, hood: ICON.hood };
-const VIEW_SHORT: Record<View, string> = { overview: '俯瞰', follow: '跟随', orbit: '环绕', hood: '引擎盖' };
+const VIEW_SHORT: Record<View, string> = { overview: '俯瞰', follow: '跟随', orbit: '环绕', hood: '驾驶舱' };
 
 export const drawers = new Drawers();
 
@@ -20,18 +20,22 @@ const R_CENTER = 44;
 const R_VIEW: [number, number] = [50, 108];
 const R_RING: [number, number] = [114, 196];
 
-/** 建底栏罗盘与圆形菜单、顶栏引导按钮（只调一次） */
+/** 建底栏指南针、菜单钮与圆形菜单、顶栏引导按钮（只调一次） */
 export function mountHud() {
   $('#help').innerHTML = ICON.keys;
-  // 底栏罗盘：整个是一个按钮，点一下展开圆形菜单；四个方位的小图标只是示意当前视图
-  $('#views').classList.add('compass');
+  // 页面里写死的右上角关闭钮（卡片、隐私、抽屉）：补上 × 图标
+  document.querySelectorAll<HTMLElement>('.x-close').forEach((b) => (b.innerHTML = ICON.close));
+  // 底栏左边两个独立控件：指南针只显示镜头朝向（不能点）；旁边的菜单钮才展开圆形菜单
   $('#views').innerHTML = `
+    <div id="compass" role="img" aria-label="指南针：红针指北" title="指南针：红针指着营地的北，跟着镜头实时转">
+      <span class="dial" aria-hidden="true">
+        <span class="rose"><i></i><i></i><i></i><i></i></span>
+        <span class="cd cd-n">北</span><span class="cd cd-e">东</span><span class="cd cd-s">南</span><span class="cd cd-w">西</span>
+        <span class="needle"><b></b></span>
+      </span>
+    </div>
     <button id="hub" data-act="menu" aria-haspopup="menu" aria-expanded="false" aria-controls="radial" aria-label="打开菜单（M）" title="菜单（M）">
-      <span class="rose" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-      <span class="needle" aria-hidden="true"><b></b></span>
-      <span class="compass-label" aria-hidden="true"></span>
-      ${VIEWS.map((v, i) => `<span class="pt pt-${i}" data-arg="${v}" aria-hidden="true">${VIEW_ICON[v]}</span>`).join('')}
-      <kbd aria-hidden="true">M</kbd><i class="hub-dot" hidden></i>
+      ${ICON.menu}<span class="hub-label">菜单</span><kbd aria-hidden="true">M</kbd><i class="hub-dot" hidden></i>
     </button>`;
 
   const outer = ringSectors(RING_ITEMS.length);
@@ -124,14 +128,14 @@ export function menuArrow(code: string): boolean {
   return true;
 }
 
-/** 键盘从菜单里选了抽屉：焦点交给抽屉里第一个能点的控件（没有就交给“完成”），Tab 不用绕过无关控件（Codex 审核 #102） */
+/** 键盘从菜单里选了抽屉：焦点交给抽屉里第一个能点的控件（没有就交给右上角的关闭钮），Tab 不用绕过无关控件（Codex 审核 #102） */
 export function focusDrawer(tab: DrawerTab) {
   const panel = $(`#drawer-${DRAWERS[tab].side}`);
   if (panel.hidden) return;
   const first = panel.querySelector<HTMLElement>(
     `section[data-tab="${tab}"] :is(button, a[href], input, select, textarea):not([disabled])`,
   );
-  (first ?? panel.querySelector<HTMLElement>('.sheet-close'))?.focus({ preventScroll: true });
+  (first ?? panel.querySelector<HTMLElement>('.x-close'))?.focus({ preventScroll: true });
 }
 
 /** 按 drawers 的状态开合抽屉、高亮菜单里对应的格子 */
@@ -139,7 +143,7 @@ export function syncDrawers() {
   for (const side of ['left', 'right'] as const) {
     const open = drawers.open[side];
     const panel = $(`#drawer-${side}`);
-    // 收起时焦点还在抽屉里（键盘用户）：还回罗盘，不丢到页面开头
+    // 收起时焦点还在抽屉里（键盘用户）：还回菜单钮，不丢到页面开头
     if (!open && !panel.hidden && panel.contains(document.activeElement)) $('#hub').focus({ preventScroll: true });
     if (panel.hidden !== !open) panel.hidden = !open;
     panel.querySelectorAll<HTMLElement>('section[data-tab]').forEach((s) => {
@@ -171,74 +175,40 @@ export function setBadge(key: string, text: string, hot = false) {
   if (b.textContent !== text) b.textContent = text;
   if (b.hidden !== !text) b.hidden = !text;
   if (b.classList.contains('hot') !== hot) b.classList.toggle('hot', hot);
-  // 罗盘上的小红点：菜单里有要处理的事（跳动的角标或“!”）就亮，提示点开看看
+  // 菜单钮上的小红点：菜单里有要处理的事（跳动的角标或“!”）就亮，提示点开看看
   const dot = document.querySelector<HTMLElement>('#hub .hub-dot');
   if (!dot) return;
   const need = [...document.querySelectorAll<HTMLElement>('#radial .badge')].some((x) => !x.hidden && (x.classList.contains('hot') || x.textContent === '!'));
   if (dot.hidden !== !need) dot.hidden = !need;
 }
 
-/** 指针动画由 JS 逐帧驱动（不用 CSS 过渡）：随时知道指针此刻的真实角度，连切时从这里走最短弧（GPT 审核 #90） */
-const needle = { shown: 0, from: 0, to: 0, t0: 0, raf: 0 };
-const NEEDLE_MS = 650;
-/** 带一点回弹的缓出（easeOutBack），对应原先 CSS 的 --spring */
-const easeOutBack = (x: number) => 1 + 2.2 * (x - 1) ** 3 + 1.2 * (x - 1) ** 2;
-const reduceQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null;
-const reduceMotion = () => reduceQuery?.matches ?? false;
-// 转动途中开启“减少动态效果”：立即停下并对齐目标（GPT 审核 #90 第 2 轮）
-reduceQuery?.addEventListener?.('change', (e) => {
-  if (!e.matches || !needle.raf) return;
-  cancelAnimationFrame(needle.raf);
-  needle.raf = 0;
-  needle.shown = needle.to;
-  const box = document.querySelector<HTMLElement>('#views');
-  if (box) drawNeedle(box);
-});
+/**
+ * 指南针实时朝向：每帧由 main.ts 传入镜头方位角，盘面（刻度 + “北”字）和北针一起转到 −heading，
+ * 红针始终指着营地的北。按累计角度走最短弧，跨过正北时不倒转一圈；变化不到 0.3° 不写样式，省重排。
+ */
+let dialShown = 0;
+let dialEl: HTMLElement | null = null;
 
-function drawNeedle(box: HTMLElement) {
-  box.querySelector<HTMLElement>('.needle')!.style.transform = `rotate(${needle.shown}deg)`;
-}
-
-function spinNeedle(box: HTMLElement, to: number) {
-  needle.from = needle.shown;
-  needle.to = to;
-  needle.t0 = performance.now();
-  cancelAnimationFrame(needle.raf);
-  if (reduceMotion()) {
-    needle.shown = to;
-    drawNeedle(box);
-    return;
-  }
-  const step = (now: number) => {
-    // 每帧都查一次：转动途中开启“减少动态效果”，下一帧就对齐目标（不只依赖 change 事件）
-    const x = reduceMotion() ? 1 : Math.min(1, (now - needle.t0) / NEEDLE_MS);
-    needle.shown = needle.from + (needle.to - needle.from) * easeOutBack(x);
-    drawNeedle(box);
-    needle.raf = x < 1 ? requestAnimationFrame(step) : 0;
-  };
-  needle.raf = requestAnimationFrame(step);
+export function setHeading(heading: number | null) {
+  if (heading === null) return;
+  const next = dialTurn(dialShown, heading);
+  if (Math.abs(next - dialShown) < 0.3 && dialEl) return;
+  dialShown = next;
+  dialEl ??= document.querySelector<HTMLElement>('#compass .dial');
+  if (dialEl) dialEl.style.transform = `rotate(${dialShown.toFixed(1)}deg)`;
 }
 
 let shownView: View | null = null;
 
-export function syncCompass(cv: View) {
+/** 圆形菜单内圈标出当前视图（视图只在菜单里切换，指南针不管视图） */
+export function syncViews(cv: View) {
   if (shownView === cv) return;
   shownView = cv;
-  const box = $('#views');
-  // 以指针此刻实际显示的角度为起点（上一段转动可能还没转完），再走最短的一边（GPT 审核 #90）
-  spinNeedle(box, needleTurn(needle.shown, cv));
-  box.querySelectorAll<HTMLElement>('.pt').forEach((p) => p.classList.toggle('on', p.dataset.arg === cv));
   document.querySelectorAll<HTMLElement>('#radial [data-act="view"]').forEach((b) => {
     const on = b.dataset.arg === cv;
     b.classList.toggle('on', on);
     if (b instanceof HTMLButtonElement) b.setAttribute('aria-checked', String(on));
   });
-  const label = box.querySelector<HTMLElement>('.compass-label')!;
-  label.textContent = VIEW_LABEL[cv];
-  // 换视图时罗盘轻轻一晃
-  box.classList.remove('wobble');
-  void box.offsetWidth;
-  box.classList.add('wobble');
 }
 
 // ---------- 快捷键引导 ----------
@@ -246,9 +216,10 @@ export function guideHtml(): string {
   let n = 0;
   const key = (k: string) => `<kbd style="--k:${n++}">${k}</kbd>`;
   return `
+    ${closeButton('guideClose')}
     <div class="guide-head">
       <span class="guide-badge">${ICON.keys}</span>
-      <div><h2>快捷键入门</h2><p class="hint">记住几个就能玩。所有菜单都收在底栏罗盘里，点一下就展开。之后按 <kbd>H</kbd> 或点右上角的键盘图标随时再看。</p></div>
+      <div><h2>快捷键入门</h2><p class="hint">记住几个就能玩。所有菜单都收在底栏的菜单钮里（指南针右边），点一下或按 <kbd>M</kbd> 就展开。之后按 <kbd>H</kbd> 或点右上角的键盘图标随时再看。</p></div>
     </div>
     <div class="guide-grid">${SHORTCUTS.map(
       (g) => `<section><h3>${g.title}</h3>${g.rows
@@ -267,7 +238,7 @@ export function openGuide() {
   guideReturnFocus = a instanceof HTMLElement && a !== document.body ? a : null;
   g.innerHTML = guideHtml();
   g.hidden = false;
-  g.querySelector<HTMLButtonElement>('[data-act="guideClose"]')?.focus({ preventScroll: true });
+  g.querySelector<HTMLButtonElement>('.primary[data-act="guideClose"]')?.focus({ preventScroll: true });
 }
 
 export function closeGuide() {

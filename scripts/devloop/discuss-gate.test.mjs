@@ -65,14 +65,17 @@ test('gpt-discuss.yml：评审任务只读、发评论任务不跑模型，并�
   assert.match(review, /^ {6}contents: read$/m);
   assert.match(review, /^ {6}issues: read$/m);
   assert.doesNotMatch(review, /: write$/m);
-  assert.match(review, /permission-profile: ':read-only'/);
+  // 直接调 Responses API（gpt-agent.mjs read 模式：只读工具），不经 codex-action（#104：runner 上沙箱启动失败）
+  assert.match(review, /node scripts\/devloop\/gpt-agent\.mjs --mode read /);
+  assert.match(review, /--schema scripts\/devloop\/discuss-schema\.json/);
   assert.match(review, /node scripts\/devloop\/discuss-gate\.mjs/);
-  assert.match(review, /uses: openai\/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 /); // 固定为 v1.13 指向的提交
+  assert.doesNotMatch(yml, /uses: openai\/codex-action/);
   // 整次运行按 issue 串行、保留全部排队：重复的首次评审被去重，@gpt 点名不被挤掉
   assert.match(yml, /^concurrency:\n {2}group: gpt-discuss-\$\{\{ github\.event\.issue\.number \|\| inputs\.issue \}\}\n {2}cancel-in-progress: false\n {2}queue: max$/m);
   assert.match(yml, /^ {2}issues:\n {4}types: \[labeled\]$/m); // 不处理 opened
   assert.match(review, /node scripts\/devloop\/discuss-build\.mjs/);
-  assert.match(review, /responses-api-endpoint: \$\{\{ vars\.GPT_RESPONSES_ENDPOINT \}\}/);
+  assert.match(review, /GPT_RESPONSES_ENDPOINT: \$\{\{ vars\.GPT_RESPONSES_ENDPOINT \}\}/);
+  assert.match(review, /MODEL: \$\{\{ vars\.GPT_DESIGN_MODEL \|\| vars\.GPT_MODEL \}\}/);
   assert.match(post, /^ {6}issues: write$/m);
   assert.doesNotMatch(post, /uses: openai\/codex-action/);
 });

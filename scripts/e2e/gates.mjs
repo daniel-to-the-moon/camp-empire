@@ -64,7 +64,7 @@ async function closeGuide(p) {
   const g = p.locator('#guide');
   await g.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await g.isVisible()) {
-    await g.locator('[data-act="guideClose"]').click();
+    await g.locator('.primary[data-act="guideClose"]').click();
     await g.waitFor({ state: 'hidden', timeout: 5_000 });
   }
 }
@@ -86,7 +86,7 @@ try {
   const welcome = page.locator('#welcome');
   await welcome.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await welcome.isVisible()) {
-    await welcome.locator('[data-act="closeWelcome"]').click();
+    await welcome.locator('.x-close').click();
     await welcome.waitFor({ state: 'hidden', timeout: 5_000 });
   }
   await closeGuide(page); // 引导在回访面板关掉之后才弹
@@ -108,15 +108,15 @@ try {
     results.shots.push(file);
   }
 
-  // 默认视图已改为环绕（issue #82）；性能与截图场景仍固定为“营地俯瞰”“跟随行驶”，与预算基线、main 上一版截图同口径
-  await page.keyboard.press('Digit1');
-  await page.locator('#views [data-arg="overview"].on').waitFor({ timeout: 5_000 });
+  // 默认视图是跟随（2026-11-27）；性能与截图场景仍固定为“营地俯瞰”“跟随行驶”，与预算基线、main 上一版截图同口径
+  await page.keyboard.press('Digit3');
+  await page.locator('#radial button[data-arg="overview"].on').waitFor({ state: 'attached', timeout: 5_000 });
   await sample('camp');
   await canvasShot('shot-camp.png');
   // 开出去：O 键（停在家位时可用）；行驶几秒再采样
   await page.keyboard.press('KeyO');
-  await page.keyboard.press('Digit2');
-  await page.locator('#views [data-arg="follow"].on').waitFor({ timeout: 5_000 });
+  await page.keyboard.press('Digit1');
+  await page.locator('#radial button[data-arg="follow"].on').waitFor({ state: 'attached', timeout: 5_000 });
   await page.keyboard.down('KeyW');
   await sample('driving', 1500, 60);
   await page.keyboard.up('KeyW');
@@ -132,7 +132,7 @@ try {
   await m.locator('#stage canvas').waitFor({ timeout: 20_000 });
   const mw = m.locator('#welcome');
   await mw.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
-  if (await mw.isVisible()) await mw.locator('[data-act="closeWelcome"]').click().catch(() => {});
+  if (await mw.isVisible()) await mw.locator('.x-close').click().catch(() => {});
   await closeGuide(m);
   await m.waitForTimeout(2500);
   await m.screenshot({ path: join(outDir, 'shot-mobile.png') });
