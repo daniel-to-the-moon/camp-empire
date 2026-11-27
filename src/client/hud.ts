@@ -124,11 +124,23 @@ export function menuArrow(code: string): boolean {
   return true;
 }
 
+/** 键盘从菜单里选了抽屉：焦点交给抽屉里第一个能点的控件（没有就交给“完成”），Tab 不用绕过无关控件（Codex 审核 #102） */
+export function focusDrawer(tab: DrawerTab) {
+  const panel = $(`#drawer-${DRAWERS[tab].side}`);
+  if (panel.hidden) return;
+  const first = panel.querySelector<HTMLElement>(
+    `section[data-tab="${tab}"] :is(button, a[href], input, select, textarea):not([disabled])`,
+  );
+  (first ?? panel.querySelector<HTMLElement>('.sheet-close'))?.focus({ preventScroll: true });
+}
+
 /** 按 drawers 的状态开合抽屉、高亮菜单里对应的格子 */
 export function syncDrawers() {
   for (const side of ['left', 'right'] as const) {
     const open = drawers.open[side];
     const panel = $(`#drawer-${side}`);
+    // 收起时焦点还在抽屉里（键盘用户）：还回罗盘，不丢到页面开头
+    if (!open && !panel.hidden && panel.contains(document.activeElement)) $('#hub').focus({ preventScroll: true });
     if (panel.hidden !== !open) panel.hidden = !open;
     panel.querySelectorAll<HTMLElement>('section[data-tab]').forEach((s) => {
       const on = s.dataset.tab === open;

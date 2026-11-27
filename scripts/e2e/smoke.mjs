@@ -397,7 +397,10 @@ try {
     if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'daily'))) throw new Error('M 展开后右方向键没有移到每日');
     await page.keyboard.press('Space');
     await page.locator('#daily.active').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('鼠标点过之后，M → 方向键 → 空格没有选中每日'); });
+    // 键盘选的抽屉：焦点跟进抽屉；Esc 收起后焦点回到罗盘（Codex 审核 #102）
+    if (!(await page.evaluate(() => !!document.activeElement?.closest('#drawer-right')))) throw new Error('键盘选了抽屉后焦点没进抽屉');
     await page.keyboard.press('Escape');
+    if (!(await page.evaluate(() => document.activeElement?.id === 'hub'))) throw new Error('Esc 收起抽屉后焦点没回到罗盘');
     await tabTo('#hub');
     await page.keyboard.press('Space');
     await page.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('空格没有展开圆形菜单'); });

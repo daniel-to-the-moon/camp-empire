@@ -45,7 +45,7 @@ import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
-import { closeGuide, closeMenu, drawers, menuArrow, menuOpen, mountHud, openGuide, guideOpen, openMenu, setBadge, syncCompass, syncDrawers } from './hud';
+import { closeGuide, closeMenu, drawers, focusDrawer, menuArrow, menuOpen, mountHud, openGuide, guideOpen, openMenu, setBadge, syncCompass, syncDrawers } from './hud';
 import { guideSeen, isDrawerTab, isGuideKey, isMenuKey, markGuideSeen, NARROW_PX } from '../shared/hudnav';
 import { ENDPOINT, successEvent, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
@@ -722,7 +722,11 @@ document.addEventListener('click', (e) => {
   // 统计不在这里发：点击不等于成功，各操作确认成功后自己上报（GPT 审核 #66 第 2 轮）
   // 罗盘没有 data-arg：用 click 的 detail 区分键盘触发（detail 为 0）和指针点击
   const arg = act === 'menu' && e.detail === 0 ? 'kbd' : el.dataset.arg ?? '';
-  void Promise.resolve(actions[act]?.(arg)).finally(renderHud);
+  void Promise.resolve(actions[act]?.(arg)).finally(() => {
+    renderHud();
+    // 键盘在菜单里选了抽屉：焦点跟进抽屉（renderHud 之后，内容已经画好）
+    if (act === 'drawer' && e.detail === 0 && isDrawerTab(arg) && drawers.isOpen(arg)) focusDrawer(arg);
+  });
 });
 
 // ---------- 键盘 ----------
