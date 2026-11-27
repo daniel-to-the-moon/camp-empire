@@ -64,7 +64,7 @@ async function closeGuide(p) {
   const g = p.locator('#guide');
   await g.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await g.isVisible()) {
-    await g.locator('[data-act="guideClose"]').click();
+    await g.locator('.primary[data-act="guideClose"]').click();
     await g.waitFor({ state: 'hidden', timeout: 5_000 });
   }
 }
@@ -86,7 +86,7 @@ try {
   const welcome = page.locator('#welcome');
   await welcome.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await welcome.isVisible()) {
-    await welcome.locator('[data-act="closeWelcome"]').click();
+    await welcome.locator('.x-close').click();
     await welcome.waitFor({ state: 'hidden', timeout: 5_000 });
   }
   await closeGuide(page); // 引导在回访面板关掉之后才弹
@@ -132,7 +132,7 @@ try {
   await m.locator('#stage canvas').waitFor({ timeout: 20_000 });
   const mw = m.locator('#welcome');
   await mw.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
-  if (await mw.isVisible()) await mw.locator('[data-act="closeWelcome"]').click().catch(() => {});
+  if (await mw.isVisible()) await mw.locator('.x-close').click().catch(() => {});
   await closeGuide(m);
   await m.waitForTimeout(2500);
   await m.screenshot({ path: join(outDir, 'shot-mobile.png') });

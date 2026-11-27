@@ -31,4 +31,10 @@ export const ICON = {
   orbit: svg('<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>'),
   /** 视图：引擎盖（方向盘） */
   hood: svg('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/><path d="M4.5 10.5l5.6 1M19.5 10.5l-5.6 1M12 14v6"/>'),
+  /** 关闭：× */
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
 } as const;
+
+/** 右上角的醒目关闭钮（所有弹窗、面板共用；Esc 同样能关） */
+export const closeButton = (act: string, label = '关闭') =>
+  `<button class="x-close" data-act="${act}" aria-label="${label}（Esc）" title="${label}（Esc）">${ICON.close}</button>`;

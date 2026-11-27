@@ -2,10 +2,9 @@
  * 收起式控制面板与首次快捷键引导（纯逻辑，界面见 src/client/hud.ts）。
  * - 所有菜单收进底栏的罗盘：点罗盘（或按 M）展开一个圆形菜单，内圈四个视图、外圈其余功能，平均分在各扇区。
  *   选中抽屉类功能后圆形菜单收起、抽屉打开（手机是底部 action sheet，PC 是浮层），一次只开一个；Esc 收起。
- * - 罗盘的指针转到当前视图。
+ * - 罗盘实时感应镜头朝向：盘面和指针跟着镜头转，红色指针始终指向营地的北（cameraHeading / dialTurn）。
  * - 首次打开显示快捷键引导；看过后记在 localStorage，之后可用顶栏的 ? 按钮或 H / ? 键再打开。
  */
-import { VIEWS, type View } from './camview';
 
 export type Side = 'left' | 'right';
 export type DrawerTab = 'garage' | 'shop' | 'pending' | 'spots' | 'daily' | 'log';
@@ -51,19 +50,29 @@ export class Drawers {
   }
 }
 
-/** 罗盘：四个视图依次在 北 / 东 / 南 / 西；指针角度（度，顺时针，0 = 北） */
-export const compassAngle = (v: View): number => VIEWS.indexOf(v) * 90;
-
 /**
- * 指针从 prev（累计角度；转动途中传指针此刻实际显示的角度，可以带小数）转到 v 的方位，走最短的那一边（±180° 内），
- * 返回新的累计角度：CSS 过渡按累计角度插值，所以从西转到北是 +90°，不会倒转 270°。
+ * 罗盘实时朝向：镜头此刻“画面上方”对着的地面方位角（度，顺时针，0 = 北 = three 的 −Z，90 = 东 = +X）。
+ * q 为镜头的朝向四元数 { x, y, z, w }。镜头斜着看时取前方（−Z 轴）在地面的投影；
+ * 几乎正俯视时前方投影太短，改用镜头上方（+Y 轴）的投影，也就是画面上方在地面的方向。两者都退化时返回 null。
  */
-export function needleTurn(prev: number, v: View): number {
-  const target = compassAngle(v);
-  const cur = ((prev % 360) + 360) % 360;
-  let d = target - cur;
-  if (d > 180) d -= 360;
-  if (d <= -180) d += 360;
+export function cameraHeading(q: { x: number; y: number; z: number; w: number }): number | null {
+  const { x, y, z, w } = q;
+  // 四元数旋转后的 −Z 轴与 +Y 轴，只取地面分量（x、z）
+  const fx = -2 * (x * z + w * y);
+  const fz = -(1 - 2 * (x * x + y * y));
+  const ux = 2 * (x * y - w * z);
+  const uz = 2 * (y * z + w * x);
+  const [gx, gz] = Math.hypot(fx, fz) >= 0.2 ? [fx, fz] : [ux, uz];
+  if (Math.hypot(gx, gz) < 1e-6) return null;
+  const deg = (Math.atan2(gx, -gz) * 180) / Math.PI;
+  return (deg + 360) % 360;
+}
+
+/** 罗盘盘面的转角：镜头朝向 h 时，正北在画面上偏 −h；累计角度走最短弧，跨过 0° / 360° 时不倒转一整圈 */
+export function dialTurn(prev: number, heading: number): number {
+  const target = -heading;
+  let d = (((target - prev) % 360) + 540) % 360 - 180;
+  if (d === -180) d = 180;
   return prev + d;
 }
 

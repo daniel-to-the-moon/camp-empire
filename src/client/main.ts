@@ -45,8 +45,9 @@ import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
-import { closeGuide, closeMenu, drawers, focusDrawer, menuArrow, menuOpen, mountHud, openGuide, guideOpen, openMenu, setBadge, syncCompass, syncDrawers } from './hud';
-import { guideSeen, isDrawerTab, isGuideKey, isMenuKey, markGuideSeen, NARROW_PX } from '../shared/hudnav';
+import { closeButton } from './icons';
+import { closeGuide, closeMenu, drawers, focusDrawer, menuArrow, menuOpen, mountHud, openGuide, guideOpen, openMenu, setBadge, setHeading, syncCompass, syncDrawers } from './hud';
+import { cameraHeading, guideSeen, isDrawerTab, isGuideKey, isMenuKey, markGuideSeen, NARROW_PX } from '../shared/hudnav';
 import { ENDPOINT, successEvent, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
@@ -184,6 +185,7 @@ function showReturnPanel(events: CampEvent[], gift: DailyGift | null) {
   const p = returnPanel(events, gift, pendingView(state.ledger.pending, awningOut(state)));
   if (!p) return;
   $('#welcome').innerHTML = `
+    ${closeButton('closeWelcome')}
     <h2>欢迎回到营地</h2>
     ${p.lines.map((l) => `<p>${l}</p>`).join('')}
     <div class="row">
@@ -586,7 +588,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   // 底栏罗盘：点一下展开 / 收起圆形菜单
   menu(arg) {
     // 键盘（空格 / 回车）点罗盘：和按 M 一样，焦点进菜单第一格，方向键可绕圈（Codex 审核 #102）
-    if (!closeMenu()) openMenu(arg === 'kbd');
+    if (!closeMenu()) openMenuOverDialogs(arg === 'kbd');
   },
   menuClose() {
     closeMenu();
@@ -611,6 +613,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   // 露营卡片（#30）：只在玩家点按钮时生成，不自动弹出、不接分享渠道、无分享奖励
   async card() {
+    closeOtherDialogs('#camp-card');
     await cardFlow.generate();
   },
   cardDownload() {
@@ -625,6 +628,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   // 车型图鉴（#31）：只读面板，打开期间随 renderHud 刷新
   dex() {
     track(successEvent.dexOpen($('#dex').hidden));
+    closeOtherDialogs('#dex');
     $('#dex').hidden = false;
   },
   dexClose() {
@@ -633,6 +637,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   // T1 隐私与统计面板
   privacy() {
     renderPrivacy();
+    closeOtherDialogs('#privacy');
     $('#privacy').hidden = false;
   },
   privacyToggle() {
@@ -750,14 +755,15 @@ window.addEventListener('keydown', (e) => {
   keys.add(e.code);
   if (e.repeat) return;
   if (e.code === 'Escape') {
-    // Esc 先关引导，再收圆形菜单，再收抽屉
+    // Esc 关掉最上层的那一个：引导 → 卡片 / 图鉴 / 隐私 → 回访面板 → 圆形菜单 → 抽屉（每按一次只关一层）
     if (guideOpen()) void actions.guideClose('');
+    else if (closeTopDialog()) renderHud();
     else if (closeMenu()) return;
     else if (drawers.closeAll()) syncDrawers();
     return;
   }
   if (isMenuKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    if (!closeMenu()) openMenu(true);
+    if (!closeMenu()) openMenuOverDialogs(true);
     return;
   }
   if (isGuideKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -791,6 +797,23 @@ document.addEventListener('focusin', (e) => {
 });
 function isKeyboardFocusedButton(t: EventTarget | null): boolean {
   return t instanceof HTMLButtonElement && keyboardFocused.has(t);
+}
+/** 弹窗（层级从上到下）与各自的关闭动作：Esc 和右上角的 × 走同一个动作 */
+const DIALOGS: [string, string][] = [['#camp-card', 'cardClose'], ['#dex', 'dexClose'], ['#privacy', 'privacyClose'], ['#welcome', 'closeWelcome']];
+/** 卡片、图鉴、隐私同一层级（z-index 相同）：一次只开一个，打开一个先关掉另外两个，Esc 关的就是看得见的那个（Codex 审核 #103） */
+function closeOtherDialogs(keep: string) {
+  for (const [sel, act] of DIALOGS.slice(0, 3)) if (sel !== keep && !$(sel).hidden) void actions[act]('');
+}
+/** 展开圆形菜单时先关掉卡片 / 图鉴 / 隐私：菜单是导航入口，不和弹窗叠在一起（菜单层级在弹窗之下） */
+function openMenuOverDialogs(viaKeyboard: boolean) {
+  closeOtherDialogs('');
+  openMenu(viaKeyboard);
+}
+function closeTopDialog(): boolean {
+  const top = DIALOGS.find(([sel]) => !$(sel).hidden);
+  if (!top) return false;
+  void actions[top[1]]('');
+  return true;
 }
 const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
 
@@ -991,6 +1014,8 @@ function frame(t: number) {
   const boosting = mode === 'driving' && boost;
   $('#speed').textContent = `${Math.abs(drive.speed * 3.6).toFixed(0)} km/h${drive.speed < -0.05 ? ' 倒车' : ''}${boosting ? ' · 加速挡' : ''}`;
   view.render(dt);
+  // 罗盘实时感应：镜头每帧的朝向（画面上方对着的地面方位）驱动盘面转动
+  setHeading(cameraHeading(view.camera.quaternion));
 }
 
 // ---------- 界面 ----------
