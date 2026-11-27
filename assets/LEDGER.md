@@ -24,7 +24,7 @@ CC0 不要求署名；仍建议在游戏「致谢」里写 Kenney、Quaternius�
 
 | 文件 | 用途 | 来源 |
 |---|---|---|
-| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供；**GPT Image 生成**（用户 2026-11-26 确认）。生成渠道：**OpenAI API**（用户 2026-11-27 确认），适用 Business Terms，见下节。生成者使用服务时的居住地：待用户说明（居住在 EEA 或瑞士时合同方为 OpenAI Ireland Ltd.）。生成输入（提示词或参考图）：待用户说明（须确认不含 MXGARAGE 旧 GLB、旧 viewer 截图或其渲染图，CHARTER 第三节第 1 条）。条款见下节。只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。 |
+| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供；**GPT Image 生成**（用户 2026-11-26 确认）。生成渠道：**OpenAI API**（用户 2026-11-27 确认），适用 OpenAI Services Agreement，见下节。生成者使用服务时的居住地：待用户说明（决定合同方与适用法律）。生成输入（提示词或参考图）：待用户说明（须确认不含 MXGARAGE 旧 GLB、旧 viewer 截图或其渲染图，CHARTER 第三节第 1 条）。条款见下节。只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。 |
 
 ### GPT Image 条款核实（2026-11-26，Claude 读取官方页面）
 
@@ -36,15 +36,15 @@ CC0 不要求署名；仍建议在游戏「致谢」里写 Kenney、Quaternius�
 - 相关限制：不得「Represent that Output was human-generated when it was not」；不得「Use Output to develop models that compete with OpenAI」；不得侵犯他人权利；另须遵守 Usage Policies 与 Sharing & Publication Policy（**未读，待核实**）。
 - 本节摘录的个人服务条款**不适用于本图**（本图经 API 生成，见下节）；保留作对照。
 
-### OpenAI Business Terms 核实（2026-11-27，Claude 读取官方页面）
+### OpenAI Services Agreement 核实（2026-11-27，Claude 读取官方页面）
 
-来源：[OpenAI Business Terms](https://openai.com/policies/business-terms/)（页面未标生效日期）。适用范围：「These OpenAI Business Terms govern use of our APIs, ChatGPT Enterprise, ChatGPT Team, and other services for businesses and developers.」
+来源：[OpenAI Services Agreement](https://openai.com/policies/services-agreement/)（「Updated: December 1, 2025」「Effective: January 1, 2026」）。适用范围：「This OpenAI Services Agreement only applies to use of OpenAI's APIs, ChatGPT Enterprise, ChatGPT Business, … and other services for customers who are businesses and developers」。本图经 API 生成，适用本协议。旧版 [Business Terms](https://openai.com/policies/business-terms/) 页面仍可访问但无生效日期，不作依据。
 
-- 归属（3.1）：「you (a) retain all ownership rights in Input and (b) own all Output.」「We hereby assign to you all our right, title, and interest, if any, in and to Output.」（前提：「As between you and OpenAI, and to the extent permitted by applicable law」）
-- 责任（3.3）：「You are solely responsible for all use of the Outputs and evaluating the Output for accuracy and appropriateness for your use case.」
-- 不唯一（3.4）：「Output may not be unique and other users may receive similar content from our services.」
-- 相关限制（第 2 节）：不得用 Output 开发与 OpenAI 竞争的 AI 模型；不得违反法律或 OpenAI Policies；不得侵犯第三方权利。是否须标明 AI 生成：页面未说明。Usage Policies 与 Sharing & Publication Policy 以引用方式并入，**未读，待核实**。
+- 归属（4.1）：「Customer: (a) retains all ownership rights in Input; and (b) owns all Output. OpenAI hereby assigns to Customer all OpenAI's right, title, and interest, if any, in and to Output.」（前提：「As between Customer and OpenAI, to the extent permitted by applicable law」）
+- 责任（4.3）：「Customer is solely responsible for all use of the Outputs and for evaluating the accuracy and appropriateness of Output for Customer's use case.」
+- 不唯一（4.4）：「Output may not be unique, and other users may receive similar content from OpenAI's services.」
+- 相关限制（3.3(e)）：除 Permitted Exception 外，不得「use Output to develop artificial intelligence models that compete with OpenAI's products and services」。是否须标明 AI 生成：本次读取的部分未见。Usage Policies 与 Sharing & Publication Policy **未读，待核实**。
 - 商用：页面未单独说明。
-- 地区：「If you reside within a European Economic Area country or Switzerland, your agreement is with OpenAI Ireland Ltd.」；否则为 OpenAI, L.L.C.；适用加州法律。
+- 合同方与适用法律（16.3、16.5）：本次只取得页面摘要、未取得原文，**待核实**。摘要称 EEA 或瑞士客户的合同方为 OpenAI Ireland Ltd.、其余为 OpenAI OpCo, LLC；EEA、瑞士、英国适用爱尔兰法律，其余适用加州法律。
 
-对本图的适用性：**待核实**。渠道已确认为 API，适用 Business Terms；仍缺生成者居住地、生成输入是否含 MXGARAGE 素材两项，Usage Policies 与 Sharing & Publication Policy 也未读。在补齐前沿用上表限制：只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。
+对本图的适用性：**待核实**。渠道已确认为 API，适用 Services Agreement；仍缺生成者居住地、生成输入是否含 MXGARAGE 素材两项，Usage Policies 与 Sharing & Publication Policy 也未读。在补齐前沿用上表限制：只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。
