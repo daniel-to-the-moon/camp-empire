@@ -23,6 +23,10 @@ const server = createServer((req, res) => {
       res.writeHead(code, { 'content-type': 'application/json' });
       res.end(JSON.stringify(obj));
     };
+    if (req.url === '/user/tokens/verify' && req.method === 'GET') {
+      if (req.headers.authorization !== 'Bearer tok' || state.d1.verifyDenied) return send(401, { success: false, errors: [{ code: 9109, message: 'omit-from-log' }] });
+      return send(200, { success: true, result: { status: 'active', expires_on: '2027-01-01T00:00:00Z', id: 'omit-from-log' } });
+    }
     if (!req.url.startsWith('/accounts/')) {
       // 假的 pages.dev 站点：按 Host 判断是否被 Access 保护
       const host = (req.headers.host || '').split(':')[0];
@@ -37,7 +41,9 @@ const server = createServer((req, res) => {
     // 假 D1：state.d1 为 { dbs: [{name, uuid}], listFails, queryFails, queries: [] }
     const d = req.url.match(/^\/accounts\/([^/]+)\/d1\/database(?:\/([^/?]+)\/query)?(?:\?(.*))?$/);
     if (d) {
-      if (d[1] !== ACCOUNT || req.headers.authorization !== 'Bearer tok' || state.d1.listFails) return send(403, { success: false, errors: [{ message: 'no D1 permission' }] });
+      if (d[1] !== ACCOUNT || req.headers.authorization !== 'Bearer tok' || state.d1.listFails || (d[3] && state.d1.filteredListFails)) {
+        return send(403, { success: false, errors: [{ code: 10000, message: 'omit-from-log' }, { code: 'omit-from-log' }] });
+      }
       if (req.method === 'GET' && !d[2]) {
         const name = new URLSearchParams(d[3] ?? '').get('name') ?? '';
         // 与真实 API 一样按名字模糊匹配：返回包含该名字的所有库
@@ -136,7 +142,7 @@ function setup({ projects = [], createFails = false, latest = 'sha1', dist = tru
       let err = '';
       p.stdout.on('data', (d) => (out += d));
       p.stderr.on('data', (d) => (err += d));
-      p.on('exit', (code) => resolve({ code, out, err }));
+      p.on('close', (code) => resolve({ code, out, err }));
     });
   const fdir = join(dir, 'functions');
   mkdirSync(join(fdir, 'api'), { recursive: true });
@@ -329,7 +335,8 @@ test('公开发布（PUBLIC=true）：正式站公开且预览受保护，上传
 test('上传后正式站或预览不符时明确验收失败，摘要保留已上传事实', async () => {
   const access = { 'camp-empire.pages.dev': 'open', '*': 'redirect' };
   for (const [afterUploadAccess, err] of [
-    [{ '*': 'redirect' }, /发布后验收.*正式站.*HTTP 200/],
+    [{ '*': 'redirect' }, /发布后验收.*正式站.*HTTP 200.*HTTP 302/],
+    [{ 'camp-empire.pages.dev': 'forbidden', '*': 'redirect' }, /发布后验收.*正式站.*HTTP 200.*HTTP 403/],
     [{ '*': 'open' }, /发布后验收.*预览.*Access/],
   ]) {
     const t = setup({ projects: ['camp-empire'], access, afterUploadAccess });
@@ -338,7 +345,8 @@ test('上传后正式站或预览不符时明确验收失败，摘要保留已�
     assert.match(r.err, err);
     assert.match(t.wrangler(), /pages deploy/);
     assert.match(t.summary(), /已上传/);
-    assert.doesNotMatch(t.summary(), /验收通过/);
+    assert.match(t.summary(), err);
+    assert.doesNotMatch(t.summary(), /验收通过|redirect_url/);
   }
   const privateSite = setup({ projects: ['camp-empire'], afterUploadAccess: { 'camp-empire.pages.dev': 'open', '*': 'redirect' } });
   const privateResult = await privateSite.run({ DEPLOY: 'true' });
@@ -393,9 +401,32 @@ test('匿名统计：缺 D1 权限、SQL 失败、缺 functions、保留天数�
     const r = await t.run({ DEPLOY: 'true', ANALYTICS: 'on', FUNCTIONS_DIR: t.fdir, ...env });
     assert.notEqual(r.code, 0, JSON.stringify(env));
     assert.match(r.err, re);
-    if (opt.d1?.listFails) assert.match(t.summary(), /查询 D1 数据库失败.*HTTP 403/);
+    if (opt.d1?.listFails) {
+      assert.match(t.summary(), /查询 D1 数据库失败.*HTTP 403.*错误码 10000/);
+      assert.match(r.err, /令牌校验.*HTTP 200.*"status":"active".*"expires_on":"2027-01-01T00:00:00Z"/);
+      assert.match(r.err, /账户 ID 末 4 位 …c123/);
+      assert.match(r.err, /不带参数列 D1.*HTTP 403.*错误码 10000/);
+      assert.doesNotMatch(r.out + r.err + t.summary(), /omit-from-log|\btok\b|acc123/);
+    }
     assert.equal(t.wrangler(), '');
   }
+});
+
+test('D1 10000：即使令牌校验被拒而不带参数列库成功，仍按原查询失败，不写库或上传', async () => {
+  const t = setup({ projects: ['camp-empire'], d1: { filteredListFails: true, verifyDenied: true, dbs: [{ name: 'omit-from-log' }] } });
+  const r = await t.run({ DEPLOY: 'true', ANALYTICS: 'on', FUNCTIONS_DIR: t.fdir });
+  assert.notEqual(r.code, 0);
+  assert.deepEqual(state.calls.slice(-3), [
+    `GET /accounts/${ACCOUNT}/d1/database?name=camp-empire-analytics&per_page=100`,
+    'GET /user/tokens/verify',
+    `GET /accounts/${ACCOUNT}/d1/database`,
+  ]);
+  assert.ok(!state.calls.some((c) => c.startsWith('POST')));
+  assert.match(t.summary(), /查询 D1 数据库失败.*HTTP 403.*错误码 10000/);
+  assert.match(r.err, /令牌校验.*HTTP 401.*错误码 9109/);
+  assert.match(r.err, /不带参数列 D1.*HTTP 200/);
+  assert.doesNotMatch(r.out + r.err + t.summary(), /omit-from-log|\btok\b|acc123/);
+  assert.equal(t.wrangler(), '');
 });
 
 test('统计关闭：不碰 D1，当前目录有 functions 也只发布静态产物', async () => {
@@ -500,7 +531,7 @@ test('PR 预览（PREVIEW_BRANCH）：发到 pr-<编号> 分支、不查 main �
   for (const bad of ['main', 'pr-0', 'pr-1;rm', 'feature']) {
     const b = setup({ projects: ['camp-empire'] });
     assert.notEqual((await b.run({ DEPLOY: 'true', PREVIEW_BRANCH: bad })).code, 0, bad);
-    assert.equal(b.wrangler(), '', bad);
+    assert.equal(b.wrangler(), '');
   }
 });
 
@@ -532,7 +563,7 @@ test('一键回滚（rollback.sh）：以当前生效发布为准回到它的上
     assert.equal(state.rolledBack, undefined);
   }
   const same = setup({ projects: ['camp-empire'] });
-  state.deploys = [{ id: 'd3', ok: true }, { id: 'd1', ok: true }];
+  state.deploys = [{ id: 'd3', ok: true }];
   state.active = 'd3';
   assert.equal((await same.run({ TARGET: 'd3' }, 'rollback.sh')).code, 0);
   assert.equal(state.rolledBack, undefined, '目标就是当前发布：不调用回滚');

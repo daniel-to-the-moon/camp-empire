@@ -25,9 +25,12 @@ set -euo pipefail
 : "${RETENTION_DAYS:=180}"
 : "${DEPLOY:=}" "${PUBLIC:=}" "${ANALYTICS:=}"
 
-fail() {
+report_failure() {
   printf '%s\n' "::error::$1" >&2
   printf '\n- 失败：%s\n' "$1" >> "$SUMMARY"
+}
+fail() {
+  report_failure "$1"
   exit 1
 }
 
@@ -42,20 +45,46 @@ printf '### 发布配置\n- PAGES_DEPLOY: %s\n- PAGES_PUBLIC: %s\n- ANALYTICS: %
 [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || fail '缺少 secret CLOUDFLARE_ACCOUNT_ID'
 case "$PROJECT" in '' | *[!a-z0-9-]*) fail '项目名只能是小写字母、数字、连字符。' ;; esac
 
-cf() { # cf <METHOD> <路径> [JSON 正文] → 输出响应正文；HTTP 状态写到 $tmp/status
+cf_request() { # <METHOD> <API 路径> [JSON 正文]；状态与正文留在临时目录，不输出
   local method=$1 path=$2 body=${3:-}
-  curl -sS --max-time 30 -o "$tmp/resp" -w '%{http_code}' -X "$method" \
+  curl -s --max-time 30 -o "$tmp/resp" -w '%{http_code}' -X "$method" \
     -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'Content-Type: application/json' \
-    ${body:+--data "$body"} "$CF_API/accounts/$CLOUDFLARE_ACCOUNT_ID$path" > "$tmp/status" \
+    ${body:+--data "$body"} "$CF_API$path" > "$tmp/status"
+}
+cf() { # <METHOD> <账户下路径> [JSON 正文] → 输出响应正文；连接失败则停止发布
+  cf_request "$1" "/accounts/$CLOUDFLARE_ACCOUNT_ID$2" "${3:-}" \
     || fail '连接 Cloudflare API 失败或超时。请检查 Actions runner 的网络后再试。'
   cat "$tmp/resp"
 }
+cf_status() { # 仅报告最近一次请求的 HTTP 状态和数值错误码
+  local codes
+  codes=$(jq -r '[.errors[]? | .code | numbers] | join(", ")' "$tmp/resp" 2>/dev/null) || codes=''
+  printf 'HTTP %s%s' "$(<"$tmp/status")" "${codes:+，Cloudflare 错误码 $codes}"
+}
 
-cf_fail() { # 输出 HTTP 状态和数值错误码，省略原始响应和凭据
-  local status codes
-  status=$(<"$tmp/status")
-  codes=$(jq -r '[.errors[]? | .code | numbers] | join(", ")' <<< "$2" 2>/dev/null) || codes=''
-  fail "$1（HTTP $status${codes:+，Cloudflare 错误码 $codes}）。$3"
+# #67：按名字查询 D1 失败后，用只读请求区分令牌失效、账户不符与 D1 权限问题。
+# 诊断请求也可能被拒绝；不回显响应、库名或完整账户 ID，不用诊断结果替代原错误。
+d1_diagnose() {
+  local token_info
+  if cf_request GET '/user/tokens/verify'; then
+    token_info=$(jq -c '
+      select(.success == true) | .result | {
+        status: (.status | if . == "active" or . == "disabled" or . == "expired" then . else null end),
+        expires_on: ((.expires_on | strings | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"))) // null)
+      }' "$tmp/resp" 2>/dev/null) || token_info=''
+    printf '排查：令牌校验 /user/tokens/verify → %s%s\n' "$(cf_status)" "${token_info:+，$token_info}"
+  else
+    echo '排查：令牌校验 /user/tokens/verify → 连接失败'
+  fi
+  if [[ "$CLOUDFLARE_ACCOUNT_ID" =~ .([[:xdigit:]]{4})$ ]]; then
+    printf '排查：账户 ID 末 4 位 …%s（同一账户的 Pages 项目查询已成功）\n' "${BASH_REMATCH[1]}"
+  fi
+  if cf_request GET "/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database"; then
+    echo "排查：不带参数列 D1 → $(cf_status)"
+  else
+    echo '排查：不带参数列 D1 → 连接失败'
+  fi
+  echo '排查：若令牌有效且确有 Account → D1 → Edit，仍回 10000，请在 Cloudflare 控制台确认目标账户已能使用 D1。'
 }
 
 tmp=$(mktemp -d)
@@ -71,7 +100,7 @@ fi
 subdomain=$(jq -r --arg project "$PROJECT" 'select(.success == true and .result.name == $project) | .result.subdomain // empty' <<< "$info" 2>/dev/null) \
   || subdomain=''
 if [[ ! "$subdomain" =~ ^[a-z0-9][a-z0-9-]*\.pages\.dev$ ]]; then
-  cf_fail "$pages_operation 失败" "$info" '若为 401 或 403，请检查令牌有效期、目标账户和 Account → Cloudflare Pages → Edit 权限。'
+  fail "$pages_operation 失败（$(cf_status)）。若为 401 或 403，请检查令牌有效期、目标账户和 Account → Cloudflare Pages → Edit 权限。"
 fi
 {
   echo "### Cloudflare Pages 项目：$PROJECT"
@@ -129,7 +158,9 @@ protected() { # protected <主机名>
 
 public_home() {
   local r
+  public_response='探测请求失败'
   r=$(probe "$1") || return 1
+  public_response="HTTP ${r%% *}"
   [ "${r%% *}" = '200' ]
 }
 
@@ -172,13 +203,16 @@ if [ "$ANALYTICS" = "on" ]; then
   [ -f "${FUNCTIONS_DIR:-}/api/ev.js" ] && [ -f "$FUNCTIONS_DIR/schema.sql" ] || fail '缺少 functions 目录（api/ev.js、schema.sql）。'
   dbname="$PROJECT-analytics"
   list=$(cf GET "/d1/database?name=$dbname&per_page=100")
-  [ "$(jq -r '.success' <<< "$list" 2>/dev/null)" = "true" ] \
-    || cf_fail '查询 D1 数据库失败' "$list" '请检查令牌有效期、目标账户和 Account → D1 → Edit 权限。'
+  if [ "$(jq -r '.success' <<< "$list" 2>/dev/null)" != 'true' ]; then
+    report_failure "查询 D1 数据库失败（$(cf_status)）。请检查令牌有效期、目标账户和 Account → D1 → Edit 权限。"
+    d1_diagnose >&2
+    exit 1
+  fi
   dbid=$(jq -r --arg n "$dbname" '[.result[]? | select(.name == $n)][0].uuid // empty' <<< "$list")
   if [ -z "$dbid" ]; then
     made=$(cf POST "/d1/database" "$(jq -nc --arg n "$dbname" '{name: $n}')")
     dbid=$(jq -r --arg n "$dbname" 'select(.success == true and .result.name == $n) | .result.uuid // empty' <<< "$made" 2>/dev/null || true)
-    [ -n "$dbid" ] || cf_fail "创建 D1 数据库 $dbname 失败" "$made" '请检查目标账户和 Account → D1 → Edit 权限。'
+    [ -n "$dbid" ] || fail "创建 D1 数据库 $dbname 失败（$(cf_status)）。请检查目标账户和 Account → D1 → Edit 权限。"
     echo "已创建 D1 数据库 $dbname" | tee -a "$SUMMARY"
   fi
   case "$dbid" in *[!0-9a-f-]*) fail 'D1 返回了格式异常的数据库 ID。' ;; esac
@@ -186,7 +220,7 @@ if [ "$ANALYTICS" = "on" ]; then
     local r
     r=$(cf POST "/d1/database/$dbid/query" "$1")
     [ "$(jq -r '.success' <<< "$r" 2>/dev/null)" = "true" ] \
-      || cf_fail 'D1 执行失败' "$r" '请检查 D1 权限、统计表结构及 Cloudflare 错误码。'
+      || fail "D1 执行失败（$(cf_status)）。请检查 D1 权限、统计表结构及 Cloudflare 错误码。"
   }
   # schema.sql 按分号拆成单条语句逐条执行（均为 IF NOT EXISTS，可重复执行）
   while IFS= read -r stmt; do
@@ -217,7 +251,7 @@ fi
 upload "$site" main
 echo "已上传 ${SHA:0:8} → https://$subdomain" | tee -a "$SUMMARY"
 if [ "$PUBLIC" = 'true' ]; then
-  confirm public_home "$subdomain" || fail "发布后验收失败：正式站 $subdomain 未返回 HTTP 200。请核对正式站 Access 规则和站点响应。"
+  confirm public_home "$subdomain" || fail "发布后验收失败：正式站 $subdomain 未返回 HTTP 200（最后一次探测：$public_response）。请核对正式站 Access 规则和站点响应。"
   production_result='正式站匿名访问返回 HTTP 200'
 else
   confirm protected "$subdomain" || fail "发布后验收失败：正式站 $subdomain 未确认受 Cloudflare Access 保护。"
