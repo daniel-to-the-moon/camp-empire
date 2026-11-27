@@ -68,6 +68,30 @@ try {
     if (colors < 8) throw new Error(`场景画布只有 ${colors} 种颜色，疑似没有渲染`);
   });
 
+  await step('首次打开：快捷键引导出现，Esc 关掉；H 重开、按钮关掉', async () => {
+    const guide = page.locator('#guide');
+    // 首次打开先出回访面板（每日礼物），引导要等它关掉才弹，不能叠在它上面
+    const wel = page.locator('#welcome');
+    await wel.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await guide.isVisible()) throw new Error('回访面板开着时引导也弹出来了');
+    await wel.locator('[data-act="closeWelcome"]').click();
+    await guide.waitFor({ state: 'visible', timeout: 10_000 });
+    await page.screenshot({ path: join(outDir, 'ui-guide.png') });
+    await page.keyboard.press('Escape');
+    await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+    await page.keyboard.press('KeyH');
+    await guide.waitFor({ state: 'visible', timeout: 5_000 });
+    await guide.locator('[data-act="guideClose"]').click();
+    await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+    // 顶栏按钮打开 → 焦点在“开始露营”上按空格关闭 → 焦点回到顶栏按钮（GPT 审核 #90）
+    await page.locator('#help').click();
+    await guide.waitFor({ state: 'visible', timeout: 5_000 });
+    await page.keyboard.press('Space');
+    await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+    const focused = await page.evaluate(() => document.activeElement?.id);
+    if (focused !== 'help') throw new Error(`关闭引导后焦点没有回到顶栏按钮（现在是 ${focused || 'body'}）`);
+  });
+
   const welcome = page.locator('#welcome');
   /** 回访面板（每日礼物、离线汇总）只关掉、不在里面收取：收取一律走待收取区，才能单独核对收取入账 */
   async function closeWelcome() {
@@ -88,7 +112,10 @@ try {
   });
 
   const btn = page.locator('#pending [data-act="collect"]');
-  await step('待收取池有钱', async () => {
+  await step('待收取池有钱（右侧图标列展开待收取抽屉）', async () => {
+    await page.screenshot({ path: join(outDir, 'ui-collapsed.png') });
+    await page.locator('#rail-right [data-arg="pending"]').click();
+    await page.locator('#drawer-right').waitFor({ state: 'visible', timeout: 5_000 });
     await btn.waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => !document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 10_000 });
   });
@@ -101,8 +128,8 @@ try {
     before = await coins();
     // 流水只显示最近 6 条、最新在前：比较第一条的内容
     logBefore = (await page.locator('#log li').first().textContent().catch(() => '')) ?? '';
-    // 面板每帧重绘、按钮节点不稳定；点击处理挂在 document 上，直接对当前节点派发点击
-    await page.evaluate(() => document.querySelector('#pending [data-act="collect"]')?.click());
+    // 真实指针点击抽屉里可见的收取按钮（抽屉内容不变就不重绘，节点稳定）
+    await btn.click();
     await page.waitForFunction(() => document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 5_000 })
       .catch(() => { throw new Error('收取后待收取池没有清空（收取按钮仍可点）'); });
     const after = await coins();
@@ -122,11 +149,12 @@ try {
     };
     const selectVariant = async (id) => {
       const chip = `#garage [data-act="variant"][data-arg="${id}"]`;
-      // 车库随 HUD 重绘，直接对当前按钮派发点击。
-      await page.evaluate((selector) => {
-        const button = document.querySelector(selector);
-        if (button && !button.classList.contains('on')) button.click();
-      }, chip);
+      // 玩家路径：点左侧车库图标展开抽屉，再真实点击可见的车型按钮
+      if (await page.locator('#drawer-left').isHidden() || !(await page.locator('#garage.active').count())) {
+        await page.locator('#rail-left [data-arg="garage"]').click();
+      }
+      await page.locator('#garage').waitFor({ state: 'visible', timeout: 5_000 });
+      if (!(await page.locator(`${chip}.on`).count())) await page.locator(chip).click();
       await page.locator(`${chip}.on`).waitFor({ state: 'attached', timeout: 10_000 });
     };
 
@@ -154,6 +182,269 @@ try {
     }
     await selectVariant('SH6591H4DB_2735');
     await saveShot('front34', 'vehicle-no-brow-front34.png');
+  });
+
+  await step('窄屏 action sheet：默认收起；点图标从底部弹出，点遮罩 / 完成 / Esc 收起，一次只开一个', async () => {
+    const left = page.locator('#drawer-left');
+    const right = page.locator('#drawer-right');
+    const bd = page.locator('#sheet-backdrop');
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 760, height: 800 });
+    if (!(await left.isHidden()) || !(await right.isHidden()) || !(await bd.isHidden())) throw new Error('窄屏默认应全部收起');
+    await page.locator('#rail-left [data-arg="garage"]').click();
+    await left.waitFor({ state: 'visible', timeout: 3_000 });
+    await bd.waitFor({ state: 'visible', timeout: 3_000 });
+    await page.waitForTimeout(450); // 等 sheet 滑上来
+    const box = await left.boundingBox();
+    if (!box || Math.abs(box.y + box.height - 800) > 2 || box.width < 750) throw new Error(`action sheet 应贴底铺满宽度：${JSON.stringify(box)}`);
+    // 遮罩盖住画面：点遮罩收起
+    await page.mouse.click(380, 40);
+    await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点遮罩没有收起 action sheet'); });
+    await page.locator('#rail-right [data-arg="daily"]').click();
+    await right.waitFor({ state: 'visible', timeout: 3_000 });
+    if (!(await left.isHidden())) throw new Error('760px 下两侧抽屉同时打开');
+    await right.locator('.sheet-close').click();
+    await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点“完成”没有收起 action sheet'); });
+    await page.locator('#rail-left [data-arg="shop"]').click();
+    await left.waitFor({ state: 'visible', timeout: 3_000 });
+    await page.keyboard.press('Escape');
+    await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('Esc 没有收起 action sheet'); });
+    // 宽屏能两侧同开；缩窄后自动收起一侧
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.locator('#rail-left [data-arg="garage"]').click();
+    await page.locator('#rail-right [data-arg="daily"]').click();
+    if (!(await left.isVisible()) || !(await right.isVisible())) throw new Error('宽屏下两侧抽屉应能同时打开');
+    await page.setViewportSize({ width: 700, height: 800 });
+    await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('缩窄后左侧抽屉没有收起'); });
+    if ((await page.locator('#rail-left [data-arg="garage"]').getAttribute('aria-expanded')) !== 'false') throw new Error('左侧抽屉收起后图标仍是展开状态');
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  await step('PC popover：默认收起；点图标就在图标旁弹出，顶边对齐图标', async () => {
+    await page.keyboard.press('Escape');
+    if (!(await page.locator('#drawer-left').isHidden()) || !(await page.locator('#drawer-right').isHidden())) throw new Error('PC 默认应全部收起');
+    for (const [side, tab] of [['left', 'shop'], ['right', 'spots']]) {
+      const icon = page.locator(`#rail-${side} [data-arg="${tab}"]`);
+      await icon.click();
+      const panel = page.locator(`#drawer-${side}`);
+      await panel.waitFor({ state: 'visible', timeout: 3_000 });
+      await page.waitForTimeout(400); // 等弹出动画
+      const ib = await icon.boundingBox();
+      const pb = await panel.boundingBox();
+      if (!ib || !pb || Math.abs(pb.y - (ib.y - 14)) > 4) throw new Error(`${side} popover 没有对齐图标：icon ${ib?.y} panel ${pb?.y}`);
+      const gap = side === 'left' ? pb.x - (ib.x + ib.width) : ib.x - (pb.x + pb.width);
+      if (gap < 0 || gap > 24) throw new Error(`${side} popover 离图标太远或盖住了图标：${gap}px`);
+      if (await page.locator('#sheet-backdrop').isVisible()) throw new Error('PC 不应显示 action sheet 遮罩');
+      await page.screenshot({ path: join(outDir, `ui-popover-${side}.png`) });
+      await page.keyboard.press('Escape');
+    }
+  });
+
+  await step('手机 390×844：action sheet 里能真实点到“收取”，金币增加', async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.keyboard.press('Escape');
+    await page.screenshot({ path: join(outDir, 'ui-mobile-collapsed.png') });
+    // 开发面板只用于造数据：直接触发快进
+    await page.evaluate(() => document.querySelector('#dev [data-act="dev"][data-arg="86400000"]').click());
+    await page.waitForTimeout(500);
+    await closeWelcome();
+    await page.keyboard.press('Escape');
+    await page.locator('#rail-right [data-arg="pending"]').click();
+    const b = page.locator('#pending [data-act="collect"]');
+    await page.waitForFunction(() => !document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 10_000 });
+    await page.waitForTimeout(400);
+    const bb = await b.boundingBox();
+    if (!bb || bb.y + bb.height > 844 || bb.height < 36) throw new Error(`手机上收取按钮不在可视区或太小：${JSON.stringify(bb)}`);
+    await page.screenshot({ path: join(outDir, 'ui-mobile-sheet.png') });
+    const c0 = await coins();
+    await b.click();
+    await page.waitForFunction(() => document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 5_000 })
+      .catch(() => { throw new Error('手机上点收取没有生效'); });
+    if (!((await coins()) > c0)) throw new Error('手机上收取后金币没有增加');
+    await page.locator('#drawer-right .sheet-close').click();
+    await page.locator('#drawer-right').waitFor({ state: 'hidden', timeout: 3_000 });
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  await step('罗盘连切：转向南途中按 4，指针从当时的实际角度走最短弧转到西', async () => {
+    const angle = () => page.evaluate(() => {
+      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
+      return m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
+    });
+    await page.keyboard.press('1');
+    await page.waitForTimeout(1200);
+    // 按 3 后等两帧（指针刚起步），记下此刻实际角度，再立刻按 4；跑得快慢不同的机器上起点不同，所以断言相对起点
+    const start = await page.evaluate(async () => {
+      const key = (code, key) => window.dispatchEvent(new KeyboardEvent('keydown', { code, key }));
+      key('Digit3', '3');
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
+      const a = m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
+      key('Digit4', '4');
+      return a;
+    });
+    const seen = [start];
+    for (let i = 0; i < 20; i++) { await page.waitForTimeout(50); seen.push(await angle()); }
+    // 展开成连续角度，看总共转了多远
+    const cum = [start];
+    for (let i = 1; i < seen.length; i++) cum.push(cum[i - 1] + ((((seen[i] - seen[i - 1]) % 360) + 540) % 360) - 180);
+    const shortest = Math.abs(((((-90 - start) % 360) + 540) % 360) - 180);
+    const far = Math.max(...cum.map((a) => Math.abs(a - start)));
+    if (far > shortest * 1.1 + 5) throw new Error(`指针没走最短弧：起点 ${start.toFixed(0)}°，最短 ${shortest.toFixed(0)}°，实际转到 ${far.toFixed(0)}°（${seen.map((a) => a.toFixed(0)).join(', ')}）`);
+    if (Math.abs(seen.at(-1) + 90) > 15) throw new Error(`指针没停在西：${seen.at(-1).toFixed(0)}°`);
+    for (const k of ['Digit3', 'Digit4']) await page.evaluate((code) => window.dispatchEvent(new KeyboardEvent('keyup', { code })), k);
+    await page.keyboard.press('1');
+  });
+
+  await step('看过引导后重载不再自动弹出', async () => {
+    await page.reload({ waitUntil: 'load' });
+    await page.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    await page.waitForTimeout(1500);
+    if (await page.locator('#guide').isVisible()) throw new Error('关过引导后重载又弹出了');
+  });
+
+  await step('本地存储不可用（读取抛错）时照样启动，引导能打开和关闭', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const p2 = await ctx.newPage();
+    const errs = [];
+    p2.on('pageerror', (e) => errs.push(e.message));
+    await p2.addInitScript(() => {
+      Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('denied', 'SecurityError'); } });
+    });
+    await p2.goto(base, { waitUntil: 'load', timeout: 30_000 });
+    await p2.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    const g = p2.locator('#guide');
+    await g.waitFor({ state: 'visible', timeout: 10_000 });
+    await g.locator('[data-act="guideClose"]').click();
+    await g.waitFor({ state: 'hidden', timeout: 5_000 });
+    await ctx.close();
+    if (errs.length) throw new Error(`存储不可用时页面报错：${errs.join('；')}`);
+  });
+
+  await step('键盘：Tab 聚焦图标按空格展开抽屉、聚焦罗盘按空格换视图', async () => {
+    await page.keyboard.press('Escape');
+    const tabTo = async (sel) => {
+      for (let i = 0; i < 40; i++) {
+        await page.keyboard.press('Tab');
+        if (await page.evaluate((q) => document.activeElement?.matches(q), sel)) return;
+      }
+      throw new Error(`Tab 走不到 ${sel}`);
+    };
+    await tabTo('#rail-left [data-arg="garage"]');
+    await page.keyboard.press('Space');
+    await page.locator('#garage.active').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('空格没有展开车库抽屉'); });
+    await tabTo('#views [data-arg="hood"]');
+    await page.keyboard.press('Space');
+    await page.locator('#views [data-arg="hood"].on').waitFor({ timeout: 3_000 }).catch(() => { throw new Error('空格没有切到引擎盖视图'); });
+    await page.evaluate(() => document.activeElement?.blur());
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('1');
+    // 鼠标点过的图标留着焦点：先按 W 再按空格，空格仍是刹车，不会再点一次图标把抽屉收起
+    await page.locator('#rail-right [data-arg="daily"]').click();
+    await page.keyboard.press('KeyW');
+    await page.keyboard.press('Space');
+    if (!(await page.locator('#daily.active').isVisible())) throw new Error('鼠标点过的图标被空格再次触发（抽屉收起了）');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => document.activeElement?.blur());
+  });
+
+  await step('减少动态效果：途中开启立即停在目标；开启后换视图不转动画', async () => {
+    const angle = () => page.evaluate(() => {
+      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
+      return m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
+    });
+    await page.waitForTimeout(900);
+    await page.keyboard.press('3');
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    const a1 = await angle();
+    if (Math.abs(Math.abs(a1) - 180) > 2) throw new Error(`途中开启减少动态后指针没对齐南：${a1.toFixed(0)}°`);
+    await page.keyboard.press('2');
+    await page.waitForTimeout(30);
+    const a2 = await angle();
+    if (Math.abs(a2 - 90) > 2) throw new Error(`减少动态下换视图仍在转动：${a2.toFixed(0)}°`);
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.keyboard.press('1');
+  });
+
+  await step('矮横屏 667×280：点图标打开抽屉，能点到里面的按钮', async () => {
+    await page.setViewportSize({ width: 667, height: 280 });
+    await page.keyboard.press('Escape');
+    await page.locator('#rail-left [data-arg="garage"]').click();
+    const chip = page.locator('#garage [data-act="variant"][data-arg="SH5043XLJH9DB-C_3116"]');
+    await chip.click();
+    await page.locator('#garage [data-arg="SH5043XLJH9DB-C_3116"].on').waitFor({ state: 'attached', timeout: 5_000 });
+    await page.keyboard.press('Escape');
+    // 右侧最后一个图标在矮屏下要滚到才能点
+    await page.locator('#rail-right [data-arg="log"]').click();
+    await page.locator('#log').waitFor({ state: 'visible', timeout: 3_000 });
+    await page.screenshot({ path: join(outDir, 'ui-short-landscape.png') });
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  await step('?dev 下本地存储方法抛错（getItem / setItem / removeItem）照样启动', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const p3 = await ctx.newPage();
+    const errs = [];
+    p3.on('pageerror', (e) => errs.push(e.message));
+    await p3.addInitScript(() => {
+      for (const m of ['getItem', 'setItem', 'removeItem']) Storage.prototype[m] = () => { throw new DOMException('denied', 'SecurityError'); };
+    });
+    await p3.goto(url.toString(), { waitUntil: 'load', timeout: 30_000 });
+    await p3.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    await p3.locator('#guide').waitFor({ state: 'visible', timeout: 10_000 });
+    await ctx.close();
+    if (errs.length) throw new Error(`存储方法抛错时 ?dev 页面报错：${errs.join('；')}`);
+  });
+
+  await step('只有 localStorage 旧档且暂时读不到：只读、不写新档；恢复后旧档被导入', async () => {
+    // 用当前页的 v3 存档当作“旧版 localStorage 存档”的内容
+    const legacy = await page.evaluate(() => new Promise((res, rej) => {
+      const r = indexedDB.open('camp-empire', 1);
+      r.onerror = () => rej(r.error);
+      r.onsuccess = () => {
+        const g = r.result.transaction('kv', 'readonly').objectStore('kv').get('save.v3');
+        g.onsuccess = () => res(g.result);
+        g.onerror = () => rej(g.error);
+      };
+    }));
+    if (typeof legacy !== 'string') throw new Error('取不到当前存档做旧档样本');
+    const wantCoins = await coins();
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const seed = await ctx.newPage();
+    await seed.goto(new URL('/favicon.ico', base).toString()).catch(() => {});
+    await seed.evaluate((v) => localStorage.setItem('camp-empire.save.v2', v), legacy);
+    await seed.close();
+    const blocked = await ctx.newPage();
+    await blocked.addInitScript(() => {
+      Storage.prototype.getItem = () => { throw new DOMException('denied', 'SecurityError'); };
+    });
+    await blocked.goto(base, { waitUntil: 'load', timeout: 30_000 });
+    await blocked.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    await blocked.locator('#readonly').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => { throw new Error('旧档读不到时没有进入只读'); });
+    await blocked.waitForTimeout(1500);
+    const v3 = await blocked.evaluate(() => new Promise((res) => {
+      const r = indexedDB.open('camp-empire', 1);
+      r.onsuccess = () => {
+        const g = r.result.transaction('kv', 'readonly').objectStore('kv').get('save.v3');
+        g.onsuccess = () => res(g.result ?? null);
+      };
+    }));
+    await blocked.close();
+    if (v3 !== null) throw new Error('旧档读不到时仍写入了新存档');
+    const ok = await ctx.newPage();
+    await ok.goto(base, { waitUntil: 'load', timeout: 30_000 });
+    await ok.locator('#stage canvas').waitFor({ timeout: 20_000 });
+    await ok.waitForTimeout(1500);
+    const t = (await ok.locator('#coins').textContent()) ?? '';
+    const got = Number(t.replace(/[^\d.-]/g, ''));
+    const left = await ok.evaluate(() => localStorage.getItem('camp-empire.save.v2'));
+    await ctx.close();
+    // 迁移后可能再领一次当日礼物，金币只会多不会少
+    if (!(got >= wantCoins)) throw new Error(`恢复后旧档没有导入：金币 ${got}，旧档 ${wantCoins}`);
+    if (left !== null) throw new Error('导入后旧档没有从 localStorage 删除');
   });
 
   if (errors.length) throw new Error(`页面出现错误：\n${errors.join('\n')}`);

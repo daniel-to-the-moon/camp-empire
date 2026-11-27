@@ -172,6 +172,15 @@ export async function migrateSave(store: AtomicStore, legacy: string | null): Pr
   return null;
 }
 
+/**
+ * 本地存储读不到（被禁用或读取抛错）时，那里可能还有没迁移的旧存档。
+ * IndexedDB 里还没有存档（v3 为空，v2 也没迁过来）就不能当作新玩家开局写入，否则存储恢复后旧档再也不会被导入：
+ * 返回 true 时调用方整页只读（GPT 审核 #90 第 2 轮）。已有 IndexedDB 存档时旧档不再需要，照常开局。
+ */
+export function legacyMayBeHidden(hasIdbSave: boolean, legacyReadable: boolean): boolean {
+  return !hasIdbSave && !legacyReadable;
+}
+
 /** Web Locks 的最小接口（便于测试替身） */
 export interface LocksLike {
   request(name: string, options: { ifAvailable?: boolean; steal?: boolean }, cb: (lock: unknown) => unknown): Promise<unknown>;
