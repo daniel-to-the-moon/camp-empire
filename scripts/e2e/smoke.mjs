@@ -390,6 +390,14 @@ try {
       }
       throw new Error(`Tab 走不到 ${sel}`);
     };
+    // 先用鼠标点过画面，再纯键盘：M 展开 → 右方向键到“每日” → 空格选中（Codex 审核 #102）
+    await page.mouse.click(640, 300);
+    await page.keyboard.press('KeyM');
+    await page.keyboard.press('ArrowRight');
+    if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'daily'))) throw new Error('M 展开后右方向键没有移到每日');
+    await page.keyboard.press('Space');
+    await page.locator('#daily.active').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('鼠标点过之后，M → 方向键 → 空格没有选中每日'); });
+    await page.keyboard.press('Escape');
     await tabTo('#hub');
     await page.keyboard.press('Space');
     await page.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('空格没有展开圆形菜单'); });

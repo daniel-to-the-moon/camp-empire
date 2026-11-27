@@ -774,7 +774,8 @@ const keyboardFocused = new WeakSet<EventTarget>();
 let pointerFocus = false;
 window.addEventListener('pointerdown', () => (pointerFocus = true), true);
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Tab') pointerFocus = false;
+  // Tab、M（展开菜单并聚焦第一格）、菜单里的方向键都是键盘挪焦点：之后的焦点算键盘焦点，空格按原生方式点它（Codex 审核 #102）
+  if (e.key === 'Tab' || e.code === 'KeyM' || (e.code.startsWith('Arrow') && menuOpen())) pointerFocus = false;
 }, true);
 document.addEventListener('focusin', (e) => {
   if (!e.target) return;
