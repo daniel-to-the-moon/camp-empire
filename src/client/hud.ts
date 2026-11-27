@@ -10,7 +10,7 @@ import { closeButton, ICON } from './icons';
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
 const VIEW_ICON: Record<View, string> = { overview: ICON.overview, follow: ICON.follow, orbit: ICON.orbit, hood: ICON.hood };
-const VIEW_SHORT: Record<View, string> = { overview: '俯瞰', follow: '跟随', orbit: '环绕', hood: '引擎盖' };
+const VIEW_SHORT: Record<View, string> = { overview: '俯瞰', follow: '跟随', orbit: '环绕', hood: '驾驶舱' };
 
 export const drawers = new Drawers();
 

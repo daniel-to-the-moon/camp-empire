@@ -137,8 +137,8 @@ describe('首次快捷键引导', () => {
 
   it('引导里写的镜头键和实际键位一致', () => {
     const cam = SHORTCUTS.find((g) => g.title === '镜头')!;
-    expect(cam.rows[0].keys).toEqual(['1', '2', '3', '4']);
-    expect(['Digit1', 'Digit2', 'Digit3', 'Digit4'].map((c) => viewForKey(c, 'overview'))).toEqual([...VIEWS]);
+    expect(cam.rows[0].keys).toEqual(['1', '2', '3']);
+    expect(['Digit1', 'Digit2', 'Digit3'].map((c) => viewForKey(c, 'overview'))).toEqual([...VIEWS]);
     expect(viewForKey('KeyV', 'overview')).toBe('next');
     expect(viewForKey('KeyC', 'overview')).toBe('follow');
     // H 没有被镜头占用

@@ -12,8 +12,13 @@ import type { Variant } from '../data/models';
 import { computeLayout } from '../geometry/layout';
 
 export type View = 'overview' | 'follow' | 'orbit' | 'hood';
-export const VIEWS: readonly View[] = ['overview', 'follow', 'orbit', 'hood'];
-export const VIEW_LABEL: Record<View, string> = { overview: '俯瞰', follow: '跟随', orbit: '环绕', hood: '引擎盖' };
+/**
+ * 菜单与 1–3 键可选的视图（用户 2026-11-27：默认跟随、加驾驶舱视图，环绕拖拽是默认就有的功能）：
+ * 跟随（默认）· 驾驶舱 · 俯瞰。环绕不再单独作为一个视图来选：任何视图里在画面上拖拽 / 滚轮 / 双指，
+ * 镜头就从当前位置接着转（进入 orbit 状态），按 1–3 或 V 回到选的视图。
+ */
+export const VIEWS: readonly View[] = ['follow', 'hood', 'overview'];
+export const VIEW_LABEL: Record<View, string> = { overview: '俯瞰', follow: '跟随', orbit: '自由环绕', hood: '驾驶舱' };
 
 export type V3 = [number, number, number];
 
@@ -98,6 +103,18 @@ export function smoothOrbit(current: Orbit, target: Orbit, dt: number): Orbit {
     pitch: current.pitch + (target.pitch - current.pitch) * weight,
     dist: current.dist + (target.dist - current.dist) * weight,
   });
+}
+
+/**
+ * 从镜头当前的位置起转（任何视图里一拖就转，不跳）：由 three 坐标的相机位置反推环绕参数，再夹到上下限。
+ * 俯瞰 / 驾驶舱离环绕的范围较远，夹完会有一点位移，但方位保持一致。
+ */
+export function orbitFrom(pos: V3, t: Pick<Target, 'x' | 'y'>): Orbit {
+  const dx = pos[0] - t.x;
+  const dy = -pos[2] - t.y;
+  const up = pos[1] - ORBIT_LOOK_H;
+  const horiz = Math.hypot(dx, dy);
+  return clampOrbit({ azimuth: Math.atan2(dy, dx), pitch: Math.atan2(up, horiz), dist: Math.hypot(horiz, up) });
 }
 
 /** 进入环绕时的初始角度：在车后方、与跟随视图相近 */
@@ -194,11 +211,11 @@ export function camFor(view: View, t: Target, o: Orbit, m: HoodMount): CamWant {
   }
 }
 
-/** 默认视图：环绕（用户 2026-11-25，issue #82：“交互默认是‘环绕’模式”） */
-export const DEFAULT_VIEW: View = 'orbit';
+/** 默认视图：跟随（用户 2026-11-27 改：“默认跟随模式和驾驶舱视图；环绕拖拽是默认的功能”，取代 #82 的默认环绕） */
+export const DEFAULT_VIEW: View = 'follow';
 
 /**
- * 当前生效的视图（issue #82）：进入游戏、停回家位时都回到默认的环绕；
+ * 当前生效的视图：进入游戏、停回家位时都回到默认的跟随；
  * 玩家手动选了别的视图（停着或行驶中都算）就按玩家选的来，直到下次停回家位。
  * `parked` 参数保留给调用方，生效规则已与停 / 开无关。
  */
@@ -213,7 +230,7 @@ export class ViewChoice {
     this.chosen = v;
   }
 
-  /** 停回家位那一刻调用：回到默认视图（环绕） */
+  /** 停回家位那一刻调用：回到默认视图（跟随） */
   onParked(): void {
     this.chosen = DEFAULT_VIEW;
   }
@@ -222,16 +239,16 @@ export class ViewChoice {
     return this.chosen;
   }
 
-  /** V 键：按 VIEWS 顺序切到下一个 */
+  /** V 键：按 VIEWS 顺序切到下一个；正在自由环绕时回到第一个（跟随） */
   next(parked: boolean): View {
     const cur = this.effective(parked);
     return VIEWS[(VIEWS.indexOf(cur) + 1) % VIEWS.length];
   }
 }
 
-/** 键位：1–4 直选，V 循环；C 保留旧习惯（俯瞰 ↔ 跟随） */
+/** 键位：1–3 直选（跟随 · 驾驶舱 · 俯瞰），V 循环；C 保留旧习惯（俯瞰 ↔ 跟随） */
 export function viewForKey(code: string, cur: View): View | 'next' | null {
-  const i = ['Digit1', 'Digit2', 'Digit3', 'Digit4'].indexOf(code);
+  const i = ['Digit1', 'Digit2', 'Digit3'].indexOf(code);
   if (i >= 0) return VIEWS[i];
   if (code === 'KeyV') return 'next';
   if (code === 'KeyC') return cur === 'overview' ? 'follow' : 'overview';
@@ -240,7 +257,7 @@ export function viewForKey(code: string, cur: View): View | 'next' | null {
 
 /**
  * 场景画面上的指针手势（触屏与鼠标共用）。规则（#44 用户裁决“与驾驶操作不冲突”）：
- * - 只在环绕视图下生效；其他视图里拖拽、缩放都不响应。
+ * - 任何视图都生效（2026-11-27 起环绕拖拽是默认功能）：一拖就从镜头当前位置进入自由环绕（orbitFrom）。
  * - 手势只来自场景画面（#stage）；驾驶用键盘或底栏 / 面板按钮，它们不在场景画面上，所以拖拽不会误触驾驶，按按钮也不会转相机。
  * - 单指（或鼠标左键）拖拽：水平方向改方位角、竖直方向改俯仰；
  * - 双指：只按两指间距缩放（张开拉近），双指期间不旋转；从双指抬起一指后，剩下那指重新起算，不会跳。

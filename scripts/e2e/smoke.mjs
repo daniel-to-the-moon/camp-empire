@@ -169,12 +169,12 @@ try {
     await saveShot('entrySide', 'vehicle-entry-side.png');
     for (const angle of ['front34', 'rear34']) await saveShot(angle, `vehicle-${angle}-lit.png`, true);
 
-    // front34 高度 2.6 m，低于这款车的平顶；另用玩家可操作的环绕视图拍天窗。
-    await page.keyboard.press('3');
-    await page.locator('#radial button[data-arg="orbit"].on').waitFor({ state: 'attached' });
+    // front34 高度 2.6 m，低于这款车的平顶；另用玩家的拖拽环绕拍天窗（从跟随视图一拖就进入环绕）。
+    await page.keyboard.press('1');
+    await page.locator('#radial button[data-arg="follow"].on').waitFor({ state: 'attached' });
     const style = await hideHud();
     try {
-      // 固定视口，环绕从车后 28° 起步：−310 px 绕向右前，+80 px 把仰角抬到约 65°。
+      // 固定视口，环绕从跟随镜头的位置（车后约 27°）起步：−310 px 绕向右前，+80 px 把仰角抬到约 65°。
       await page.mouse.move(800, 300);
       await page.mouse.down();
       await page.mouse.move(490, 380);
@@ -200,7 +200,7 @@ try {
     if ((await hub.getAttribute('aria-expanded')) !== 'true') throw new Error('菜单钮的 aria-expanded 没有跟着变');
     await page.waitForTimeout(700); // 等弹出动画
     await page.screenshot({ path: join(outDir, 'ui-radial-pc.png') });
-    // 外圈 9 格、内圈 4 格：图标到圆心的距离一致、相邻两格夹角一致
+    // 外圈 9 格、内圈 3 格（跟随 · 驾驶舱 · 俯瞰）：图标到圆心的距离一致、相邻两格夹角一致
     const geo = await page.evaluate(() => {
       const w = document.querySelector('#radial .wheel').getBoundingClientRect();
       const cx = w.left + w.width / 2, cy = w.top + w.height / 2;
@@ -211,7 +211,7 @@ try {
       });
       return { outer: ring('#radial .rbtn:not(.vbtn)'), inner: ring('#radial .vbtn'), size: w.width };
     });
-    for (const [name, list, n] of [['外圈', geo.outer, 9], ['内圈', geo.inner, 4]]) {
+    for (const [name, list, n] of [['外圈', geo.outer, 9], ['内圈', geo.inner, 3]]) {
       if (list.length !== n) throw new Error(`${name}应有 ${n} 格，实际 ${list.length}`);
       const ds = list.map((x) => x.d);
       if (Math.max(...ds) - Math.min(...ds) > 3) throw new Error(`${name}图标到圆心的距离不一致：${ds.map((d) => d.toFixed(0))}`);
@@ -382,15 +382,16 @@ try {
     await page.locator('#radial').waitFor({ state: 'hidden', timeout: 3_000 });
   });
 
-  await step('指南针实时感应：环绕视图拖动画面，盘面跟着镜头朝向实时转；拖回来又转回去', async () => {
+  await step('指南针实时感应：跟随视图里直接拖动画面环绕，盘面跟着镜头朝向实时转；拖回来又转回去', async () => {
     const dial = () => page.evaluate(() => {
       const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#compass .dial')).transform);
       return m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
     });
     const diff = (a, b) => Math.abs(((((a - b) % 360) + 540) % 360) - 180);
     await page.keyboard.press('Escape');
-    await page.keyboard.press('3');
-    await page.locator('#radial button[data-arg="orbit"].on').waitFor({ state: 'attached', timeout: 3_000 });
+    // 跟随视图里直接拖：拖拽环绕是默认功能，不用先切视图
+    await page.keyboard.press('1');
+    await page.locator('#radial button[data-arg="follow"].on').waitFor({ state: 'attached', timeout: 3_000 });
     await page.waitForTimeout(1500);
     const a0 = await dial();
     await page.locator('#compass').screenshot({ path: join(outDir, 'ui-compass-live-1.png') });
@@ -405,6 +406,8 @@ try {
     await page.waitForTimeout(1200);
     const a1 = await dial();
     await page.locator('#compass').screenshot({ path: join(outDir, 'ui-compass-live-2.png') });
+    if (await page.locator('#radial .vbtn.on').count()) throw new Error('拖拽后应进入自由环绕（内圈三个视图都不亮）');
+    if (!(await page.locator('#controls').textContent())?.includes('自由环绕中')) throw new Error('拖拽后底栏没提示自由环绕');
     if (diff(aMid, a0) < 5) throw new Error(`拖动途中指南针没动：${a0.toFixed(0)}° → ${aMid.toFixed(0)}°`);
     if (diff(a1, a0) < 20) throw new Error(`拖完指南针转得太少：${a0.toFixed(0)}° → ${a1.toFixed(0)}°`);
     // 拖回原处：指南针回到原来的朝向
@@ -423,6 +426,20 @@ try {
     await page.locator('#stage canvas').waitFor({ timeout: 20_000 });
     await page.waitForTimeout(1500);
     if (await page.locator('#guide').isVisible()) throw new Error('关过引导后重载又弹出了');
+    // 默认视图是跟随（用户 2026-11-27）；只点一下画面不算拖拽，不切到自由环绕
+    if (!(await page.locator('#radial button[data-arg="follow"].on').count())) throw new Error('进入游戏默认不是跟随视图');
+    await page.mouse.click(640, 300);
+    await page.waitForTimeout(300);
+    if (!(await page.locator('#radial button[data-arg="follow"].on').count())) throw new Error('只点一下画面就离开了跟随视图');
+    // 菜单内圈：跟随 · 驾驶舱 · 俯瞰，没有单独的环绕
+    const labels = await page.locator('#radial .vbtn').evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-label')));
+    if (labels.join() !== '跟随（1）,驾驶舱（2）,俯瞰（3）') throw new Error(`内圈视图不对：${labels}`);
+    await page.keyboard.press('2');
+    await page.waitForTimeout(800);
+    await page.locator('#stage canvas').first().screenshot({ path: join(outDir, 'ui-view-cockpit.png') });
+    await page.keyboard.press('1');
+    await page.waitForTimeout(1500);
+    await page.locator('#stage canvas').first().screenshot({ path: join(outDir, 'ui-view-follow.png') });
   });
 
   await step('本地存储不可用（读取抛错）时照样启动，引导能打开和关闭', async () => {
@@ -482,7 +499,7 @@ try {
     await page.keyboard.press('KeyM');
     await tabTo('#radial button[data-arg="hood"]');
     await page.keyboard.press('Space');
-    await page.locator('#radial button[data-arg="hood"].on').waitFor({ state: 'attached', timeout: 3_000 }).catch(() => { throw new Error('空格没有切到引擎盖视图'); });
+    await page.locator('#radial button[data-arg="hood"].on').waitFor({ state: 'attached', timeout: 3_000 }).catch(() => { throw new Error('空格没有切到驾驶舱视图'); });
     await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press('Escape');
     await page.keyboard.press('1');
