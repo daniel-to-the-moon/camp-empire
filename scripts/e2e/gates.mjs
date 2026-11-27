@@ -8,10 +8,10 @@
 //   3. 固定机位截图：桌面营地俯瞰（隐藏界面层，只留画布）、手机竖屏整页（Playwright 设备模拟，非真机），供视觉验收使用。
 // 帧时间只记录不判定：CI 用 SwiftShader 软件渲染，帧时间与真机无关（待核实目标设备实测，#55）。
 import { chromium, devices } from 'playwright';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkBudgets, summarize } from './gates-lib.mjs';
+import { checkBudgets, perfTable, summarize } from './gates-lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const base = process.argv[2] || 'http://127.0.0.1:4173/';
@@ -59,6 +59,16 @@ function hookGl() {
   window.__gates = { take: () => frames.splice(0, frames.length) };
 }
 
+/** 首次打开的快捷键引导（#guide）：等它出现再关掉，免得挡住回访面板和截图 */
+async function closeGuide(p) {
+  const g = p.locator('#guide');
+  await g.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
+  if (await g.isVisible()) {
+    await g.locator('[data-act="guideClose"]').click();
+    await g.waitFor({ state: 'hidden', timeout: 5_000 });
+  }
+}
+
 const errors = [];
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
 const results = { scenes: {}, shots: [], budgets };
@@ -74,10 +84,12 @@ try {
   await page.goto(url.toString(), { waitUntil: 'load', timeout: 30_000 });
   await page.locator('#stage canvas').waitFor({ timeout: 20_000 });
   const welcome = page.locator('#welcome');
+  await welcome.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await welcome.isVisible()) {
     await welcome.locator('[data-act="closeWelcome"]').click();
     await welcome.waitFor({ state: 'hidden', timeout: 5_000 });
   }
+  await closeGuide(page); // 引导在回访面板关掉之后才弹
   /** 等镜头稳定后采样 n 帧 */
   async function sample(name, settleMs = 2500, n = 60) {
     await page.waitForTimeout(settleMs);
@@ -96,10 +108,15 @@ try {
     results.shots.push(file);
   }
 
+  // 默认视图已改为环绕（issue #82）；性能与截图场景仍固定为“营地俯瞰”“跟随行驶”，与预算基线、main 上一版截图同口径
+  await page.keyboard.press('Digit1');
+  await page.locator('#views [data-arg="overview"].on').waitFor({ timeout: 5_000 });
   await sample('camp');
   await canvasShot('shot-camp.png');
   // 开出去：O 键（停在家位时可用）；行驶几秒再采样
   await page.keyboard.press('KeyO');
+  await page.keyboard.press('Digit2');
+  await page.locator('#views [data-arg="follow"].on').waitFor({ timeout: 5_000 });
   await page.keyboard.down('KeyW');
   await sample('driving', 1500, 60);
   await page.keyboard.up('KeyW');
@@ -114,7 +131,9 @@ try {
   await m.goto(base, { waitUntil: 'load', timeout: 30_000 });
   await m.locator('#stage canvas').waitFor({ timeout: 20_000 });
   const mw = m.locator('#welcome');
+  await mw.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await mw.isVisible()) await mw.locator('[data-act="closeWelcome"]').click().catch(() => {});
+  await closeGuide(m);
   await m.waitForTimeout(2500);
   await m.screenshot({ path: join(outDir, 'shot-mobile.png') });
   results.shots.push('shot-mobile.png');
@@ -129,6 +148,7 @@ try {
 }
 results.failures = failures;
 writeFileSync(join(outDir, 'perf.json'), JSON.stringify(results, null, 2));
+if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, perfTable(results.scenes));
 for (const [k, s] of Object.entries(results.scenes)) {
   console.log(`${k}: draw call 中位 ${s.callsMedian} / 最大 ${s.callsMax}；三角形中位 ${s.trisMedian} / 最大 ${s.trisMax}；帧时间中位 ${s.msMedian} ms（软件渲染，仅参考）；${s.frames} 帧`);
 }

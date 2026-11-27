@@ -18,6 +18,7 @@ import {
   ORBIT,
   OrbitGesture,
   orbitBehind,
+  DEFAULT_VIEW,
   orbitCam,
   smoothOrbit,
   VIEWS,
@@ -35,7 +36,7 @@ import { idealLapS, simulateLaps } from '../src/shared/lapsim';
 import { BlinkClock, blinkOn, LIGHTS, lightsFor, manualBraking } from '../src/shared/lights';
 import { uniform } from '../src/shared/rng';
 import { computeLayout } from '../src/geometry/layout';
-import { buildPlaceholderVehicle, lampLayout, LAMP_COLORS, setLamps } from '../src/geometry/placeholder';
+import { buildPlaceholderVehicle } from '../src/geometry/placeholder';
 
 const s = specOf(findVariant('SH5043XLJH9DB-C_3116')!);
 const drive = (st: DriveState, throttle: number, boost: boolean, n: number, dt = 1 / 60) => {
@@ -160,7 +161,7 @@ describe('车灯（自动）', () => {
     expect(lightsFor({ ...base, speed: -1 }).reverse).toBe(true);
     expect(lightsFor(base).reverse).toBe(false);
   });
-  it('停回家位：全部熄灭', () => {
+  it('停回家位：驾驶信号全部熄灭', () => {
     expect(lightsFor({ mode: 'parked', steer: 1, speed: -1, braking: true })).toEqual({ left: false, right: false, brake: false, reverse: false });
   });
   it('自动驾驶：按路径曲率亮转向灯，直线不亮', () => {
@@ -184,43 +185,7 @@ describe('车灯（自动）', () => {
   });
 });
 
-describe('车灯几何', () => {
-  it.each(ALL_VARIANTS.map((v) => [v.id, v] as const))('%s：灯片在公告三围内、互不重叠，每车只多 1 个 draw call', (_id, v) => {
-    const lay = computeLayout(v);
-    const q = lampLayout(v);
-    expect(q.filter((l) => l.facing === 1).map((l) => l.role).sort()).toEqual(['turnL', 'turnR']);
-    expect(q.filter((l) => l.facing === -1)).toHaveLength(6);
-    for (const l of q) {
-      expect(Math.abs(l.x) + l.w / 2).toBeLessThanOrEqual(v.widthM / 2);
-      expect(l.z).toBeLessThanOrEqual(lay.zFront);
-      expect(l.z).toBeGreaterThanOrEqual(lay.zRear);
-      expect(l.y - l.h / 2).toBeGreaterThan(0.62); // 在前下包围 / 后保险杠之上
-      expect(l.y + l.h / 2).toBeLessThan(1.08); // 在机盖高度之下
-    }
-    // 左侧（+x）是左转向灯
-    for (const l of q) if (l.role === 'turnL') expect(l.x).toBeGreaterThan(0);
-    // 同一面上的灯片在 x 方向不重叠
-    for (const f of [1, -1]) {
-      const iv = q.filter((l) => l.facing === f).map((l) => [l.x - l.w / 2, l.x + l.w / 2]).sort((a, b) => a[0] - b[0]);
-      for (let i = 1; i < iv.length; i++) expect(iv[i][0]).toBeGreaterThanOrEqual(iv[i - 1][1]);
-    }
-  });
-  it('setLamps 只改对应灯的顶点颜色', () => {
-    const { root } = buildPlaceholderVehicle(ALL_VARIANTS[0]);
-    setLamps(root, { turnL: true, turnR: false, brake: true, reverse: false });
-    const m = root.getObjectByName('lamps') as THREE.Mesh;
-    const roles = m.geometry.userData.roles as string[];
-    const col = m.geometry.getAttribute('color');
-    const c = new THREE.Color();
-    roles.forEach((r, i) => {
-      const want = r === 'turnL' || r === 'brake' ? LAMP_COLORS[r as 'turnL'].on : LAMP_COLORS[r as 'turnL'].off;
-      c.setHex(want);
-      expect(col.getX(i * 6)).toBeCloseTo(c.r, 5);
-      expect(col.getZ(i * 6 + 5)).toBeCloseTo(c.b, 5);
-    });
-  });
-});
-
+// 车灯几何、昼夜与顶点色回归见 lampFixtures.test.ts。
 describe('视图切换', () => {
   it('四种视图；1–4 直选，V 循环，C 俯瞰 ↔ 跟随', () => {
     expect(VIEWS).toEqual(['overview', 'follow', 'orbit', 'hood']);
@@ -231,20 +196,25 @@ describe('视图切换', () => {
     expect(viewForKey('KeyC', 'hood')).toBe('overview');
     expect(viewForKey('KeyW', 'follow')).toBeNull();
   });
-  it('驾驶时用玩家选的视图；停回家位回到俯瞰；停着时再选就按玩家选的；开出去恢复驾驶视图', () => {
-    const v = new ViewChoice('follow');
-    expect(v.effective(false)).toBe('follow');
+  it('默认环绕（#82）：进入游戏与停回家位都是环绕；玩家手动选的视图停着、行驶都生效，直到下次停回家位', () => {
+    expect(DEFAULT_VIEW).toBe('orbit');
+    const v = new ViewChoice();
+    expect(v.effective(true)).toBe('orbit');
+    expect(v.effective(false)).toBe('orbit');
     v.select('hood', false);
     expect(v.effective(false)).toBe('hood');
     v.onParked();
-    expect(v.effective(true)).toBe('overview');
-    v.select('orbit', true);
     expect(v.effective(true)).toBe('orbit');
     expect(v.effective(false)).toBe('orbit');
-    v.onParked();
+    v.select('overview', true);
     expect(v.effective(true)).toBe('overview');
-    expect(v.next(true)).toBe('follow');
-    expect(v.next(false)).toBe('hood'); // 驾驶中仍是上次选的环绕，V 切到引擎盖
+    expect(v.effective(false)).toBe('overview');
+    v.select('follow', false);
+    expect(v.effective(false)).toBe('follow');
+    v.onParked();
+    expect(v.effective(true)).toBe('orbit');
+    expect(v.next(true)).toBe('hood');
+    expect(v.next(false)).toBe('hood'); // 停回家位后开出去仍是默认环绕，V 切到引擎盖
   });
   it('切换视图只换相机，不改车的位姿与速度（camFor 是纯函数，输入不变）', () => {
     const t: Target = { x: 3, y: -4, yaw: 0.7, h: 1.5 };
@@ -476,8 +446,10 @@ describe('底栏窄屏布局（GPT 审核 #48）', () => {
     expect(dock).toMatch(/max-width:\s*calc\(100vw - \d+px\)/);
     expect(dock).toMatch(/flex-wrap:\s*wrap/);
   });
-  it('视图按钮组与驾驶控件组都能换行；快捷键提示不再禁止换行', () => {
-    expect(rule('#views')).toMatch(/flex-wrap:\s*wrap/);
+  it('视图罗盘固定尺寸不撑宽底栏；驾驶控件组能换行；快捷键提示不再禁止换行', () => {
+    const w = Number(rule('#views').match(/width:\s*(\d+)px/)?.[1]);
+    expect(w).toBeGreaterThan(0);
+    expect(w).toBeLessThanOrEqual(120);
     expect(rule('#controls')).toMatch(/flex-wrap:\s*wrap/);
     expect(rule('.keys')).not.toMatch(/nowrap/);
   });

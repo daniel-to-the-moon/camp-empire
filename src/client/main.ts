@@ -6,8 +6,10 @@ import '../style.css';
 import { CATALOG, findVariant } from '../data/models';
 import { stallById, stallRect, staticShapes } from '../shared/camp';
 import { ECONOMY, FRAME_MAX_DT_S, NPC, PENDING, SIDE_AWNING } from '../shared/config';
-import { camFor, hoodMount, OrbitGesture, orbitBehind, smoothOrbit, VIEW_LABEL, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
+import { camFor, hoodMount, OrbitGesture, orbitBehind, smoothOrbit, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
 import { BlinkClock, lightsFor, manualBraking } from '../shared/lights';
+import { runningLights } from '../shared/runningLights';
+import type { LampState } from '../geometry/placeholder';
 import { pointInPoly, type Shape } from '../shared/geom2d';
 import { resolveDrive, type Impact } from '../shared/collision';
 import { displayGold } from '../shared/ledger';
@@ -16,7 +18,7 @@ import { feeCents, type CampEvent } from '../shared/npc';
 import { parkedPose, planNpcArrival, planNpcDeparture, planParkIn, type PathPose } from '../shared/parking';
 import { hash32 } from '../shared/rng';
 import { devCommand, DevClock, freshGameAt, isDevEntry, resetSave } from '../shared/devgate';
-import { IdbStore, migrateSave, requestWriter, SAVE_KEY, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
+import { IdbStore, legacyMayBeHidden, migrateSave, requestWriter, SAVE_KEY, sameVersion, SaveSlot, SaveSupersededError, serialQueue, type LocksLike } from '../shared/save';
 import {
   arriveHome,
   awningOut,
@@ -43,6 +45,8 @@ import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
+import { closeGuide, closeMenu, drawers, focusDrawer, menuArrow, menuOpen, mountHud, openGuide, guideOpen, openMenu, setBadge, syncCompass, syncDrawers } from './hud';
+import { guideSeen, isDrawerTab, isGuideKey, isMenuKey, markGuideSeen, NARROW_PX } from '../shared/hudnav';
 import { ENDPOINT, successEvent, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
@@ -52,13 +56,7 @@ const DEV_KEY = 'camp-empire.devOffsetMs';
 const LOCK_NAME = 'camp-empire.writer';
 const DEV = isDevEntry(location.search);
 
-/** 开发快进偏移只对记录它的那一局生效（issue #11）；普通入口不读不写 */
-const devClock = new DevClock(DEV ? localStorage : null, DEV_KEY, () => Date.now());
-const now = () => devClock.now(state.sid);
-
-const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
-
-// ---------- T1 匿名统计（规则见 src/shared/analytics.ts，说明见 docs/ANALYTICS.md） ----------
+/** 浏览器本地存储；拿不到（隐私模式、被禁用）时为 null，读写都走下面的安全包装，不能让启动中断（GPT 审核 #90） */
 const prefs = (() => {
   try {
     return window.localStorage;
@@ -66,6 +64,55 @@ const prefs = (() => {
     return null;
   }
 })();
+/** 读一个键：读到（含“没有这个键”的 null）返回 { ok: true }；本地存储拿不到或读取抛错返回 { ok: false } */
+const tryGet = (k: string): { ok: true; value: string | null } | { ok: false } => {
+  try {
+    if (!prefs) return { ok: false };
+    return { ok: true, value: prefs.getItem(k) };
+  } catch {
+    return { ok: false };
+  }
+};
+const safeRemove = (k: string) => {
+  try {
+    prefs?.removeItem(k);
+  } catch {
+    /* 存储不可用：旧存档留着也不影响 IndexedDB 存档 */
+  }
+};
+/** 给开发快进用的存储适配器：每个方法单独兜底，存储方法抛错不让 ?dev 启动或重开中断（GPT 审核 #90 第 2 轮） */
+const safeStorage = {
+  getItem: (k: string) => {
+    const r = tryGet(k);
+    return r.ok ? r.value : null;
+  },
+  setItem: (k: string, v: string) => {
+    try {
+      prefs?.setItem(k, v);
+    } catch {
+      /* 写不进去就只在本页内存里生效 */
+    }
+  },
+  removeItem: safeRemove,
+};
+
+/** 开发快进偏移只对记录它的那一局生效（issue #11）；普通入口不读不写 */
+const devClock = new DevClock(DEV ? safeStorage : null, DEV_KEY, () => Date.now());
+const now = () => devClock.now(state.sid);
+
+const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
+// 图标列、罗盘先建好：之后任何 renderHud 都只更新它们
+mountHud();
+/** 与 style.css 窄屏断点同一条媒体查询；变窄时若两侧都开着，只留右侧（Codex 审核 #90） */
+const narrowQuery = window.matchMedia(`(max-width: ${NARROW_PX}px)`);
+narrowQuery.addEventListener('change', (e) => {
+  if (e.matches && drawers.open.left && drawers.open.right) {
+    drawers.open.left = null;
+    syncDrawers();
+  }
+});
+
+// ---------- T1 匿名统计（规则见 src/shared/analytics.ts，说明见 docs/ANALYTICS.md） ----------
 /** 本次会话的关闭状态：存储写入失败（如已满）时也立即停止发送 */
 let sessionOptOut = isOptedOut(prefs);
 /** ev 为 null（操作没成功）时不发 */
@@ -94,7 +141,9 @@ const locks = (navigator as unknown as { locks?: LocksLike }).locks;
 const store = typeof indexedDB === 'undefined' ? null : await IdbStore.open(indexedDB, DB_NAME).catch(() => null);
 const slot = store ? new SaveSlot(store, SAVE_KEY) : null;
 // v3 槽位为空时导入 v2 槽位或 localStorage 旧存档（v2 槽位保留给仍开着的旧版本标签页，见 save.ts SAVE_KEY）
-if (store && (await migrateSave(store, localStorage.getItem(LEGACY_SAVE_KEY)).catch(() => null)) === 'legacy') localStorage.removeItem(LEGACY_SAVE_KEY);
+// 旧存档读不到（存储被禁用或读取抛错）和“没有旧档”要分开：读不到时不能当作新玩家写入新档，否则恢复后再也不会迁移（GPT 审核 #90 第 2 轮）
+const legacyRead = tryGet(LEGACY_SAVE_KEY);
+if (store && (await migrateSave(store, legacyRead.ok ? legacyRead.value : null).catch(() => null)) === 'legacy') safeRemove(LEGACY_SAVE_KEY);
 const newSeed = () => hash32(`${Date.now()}:${Math.random()}`);
 function clearDevOffset() {
   devClock.clear();
@@ -107,9 +156,14 @@ function freshGame(): GameState {
   clearDevOffset();
   return freshGameAt(Date.now(), newSeed());
 }
-let state: GameState = (slot && (await slot.read().catch(() => null))) ?? freshGame();
+const saved = slot ? await slot.read().catch(() => null) : null;
+let state: GameState = saved ?? freshGame();
 /** 没有可靠的原子写入或单写者机制：整页只读，提示原因（GPT 审核 #4 第 2 轮第 1 条） */
-const unsupported = !slot ? '这个浏览器打不开 IndexedDB（可能是隐私模式），无法可靠保存，本页只读。' : !locks ? '这个浏览器不支持 Web Locks，无法保证只有一个标签页写存档，本页只读。' : null;
+const unsupported = !slot
+  ? '这个浏览器打不开 IndexedDB（可能是隐私模式），无法可靠保存，本页只读。'
+  : legacyMayBeHidden(!!saved, legacyRead.ok)
+    ? '读不到浏览器本地存储，那里可能还有你的旧存档。为了不覆盖它，本页先只读；请允许本站使用存储后刷新。'
+    : !locks ? '这个浏览器不支持 Web Locks，无法保证只有一个标签页写存档，本页只读。' : null;
 /** 本标签页是否持有写权；拿到锁之前一律只读 */
 let writer = false;
 /** 同一标签页内的存档读写按顺序执行 */
@@ -145,6 +199,7 @@ const home = stallById('home');
 
 let spec = specOf(currentVariant(state));
 let player: VehicleView = makeVehicle(currentVariant(state));
+let playerLights: LampState = {};
 /** 画面玩家车（spec / player）对应的车型；与 state.variantId 不同说明换车后的画面重建还没执行 */
 let playerVariantId = state.variantId;
 view.scene.add(player.root);
@@ -164,7 +219,7 @@ const AUTO_SPEED = 6;
 let parkedDirty = false;
 
 // ---------- 视图（issue #44：俯瞰 / 跟随 / 环绕 / 引擎盖） ----------
-const views = new ViewChoice('follow');
+const views = new ViewChoice(); // 默认环绕（issue #82）
 let orbit: Orbit = orbitBehind(drive.pose.yaw);
 let displayedOrbit: Orbit | null = null;
 let hood = hoodMount(currentVariant(state));
@@ -192,6 +247,7 @@ function rebuildPlayer() {
   disposeTree(player.root);
   spec = specOf(currentVariant(state));
   player = makeVehicle(currentVariant(state));
+  player.setLights(playerLights);
   playerVariantId = state.variantId;
   hood = hoodMount(currentVariant(state));
   view.scene.add(player.root);
@@ -333,6 +389,13 @@ function act<R extends { events: CampEvent[] }>(fn: (s: GameState) => R, opts: {
   });
 }
 
+/** 停回家位：视图回到默认环绕，从车后方起转（issue #82） */
+function resetViewOnPark() {
+  views.onParked();
+  orbit = orbitBehind(drive.pose.yaw);
+  displayedOrbit = null;
+}
+
 /** 按权威状态整体重建画面（玩家车 + 全部 NPC），用于采纳其他标签页写入的存档 */
 function resyncView() {
   autoRun = null;
@@ -340,9 +403,9 @@ function resyncView() {
   autoReplan = null;
   const wasParked = mode === 'parked';
   mode = state.player.parkedHome ? 'parked' : 'driving';
-  if (mode === 'parked' && !wasParked) views.onParked();
   const s = specOf(currentVariant(state));
   drive = { pose: state.player.parkedHome || !state.player.pose ? parkedPose(s, home) : state.player.pose, speed: 0, curvature: 0 };
+  if (mode === 'parked' && !wasParked) resetViewOnPark();
   rebuildPlayer();
   clearNpcs();
   syncNpcs([], false);
@@ -369,9 +432,30 @@ function adoptState(s: GameState) {
 
 /** 拿到写权后：离线回放 + 每日礼物 */
 async function startSession() {
-  const r = await act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
-  if (!r) return;
-  showReturnPanel(r.events, r.gift);
+  try {
+    const r = await act((s) => claimDailyGift(s, now()), { animate: false, announce: false });
+    if (!r) return;
+    showReturnPanel(r.events, r.gift);
+  } finally {
+    maybeAutoGuide();
+  }
+}
+
+/**
+ * 首次快捷键引导：开局处理结束后再决定（Codex 审核 #90）。回访面板开着就等它关掉再弹，免得两层叠在屏幕中央。
+ * 只读标签页（没有开局处理）在拿不到写权时弹。只自动弹一次。
+ */
+let autoGuideDone = false;
+function maybeAutoGuide() {
+  if (autoGuideDone) return;
+  autoGuideDone = true;
+  if (guideSeen(prefs)) return;
+  if ($('#welcome').hidden) return openGuide();
+  new MutationObserver((_, obs) => {
+    if (!$('#welcome').hidden) return;
+    obs.disconnect();
+    if (!guideSeen(prefs) && !guideOpen()) openGuide();
+  }).observe($('#welcome'), { attributes: true, attributeFilter: ['hidden'] });
 }
 
 function setWriter(w: boolean) {
@@ -380,6 +464,7 @@ function setWriter(w: boolean) {
   $('#readonly').hidden = w;
   if (w !== was) void adoptLatest(); // 交接写权时都以存档为准
   if (w && !was) void startSession();
+  else if (!w) maybeAutoGuide();
   renderHud();
 }
 
@@ -467,7 +552,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
             seed: newSeed(),
             replace: (fresh) => slot.reset(fresh),
             clearDevState: () => {
-              localStorage.removeItem(LEGACY_SAVE_KEY);
+              safeRemove(LEGACY_SAVE_KEY);
               clearDevOffset();
             },
           });
@@ -497,6 +582,32 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   },
   closeWelcome() {
     $('#welcome').hidden = true;
+  },
+  // 底栏罗盘：点一下展开 / 收起圆形菜单
+  menu(arg) {
+    // 键盘（空格 / 回车）点罗盘：和按 M 一样，焦点进菜单第一格，方向键可绕圈（Codex 审核 #102）
+    if (!closeMenu()) openMenu(arg === 'kbd');
+  },
+  menuClose() {
+    closeMenu();
+  },
+  // 圆形菜单里选了抽屉类功能：打开它（一次只开一个）
+  drawer(tab) {
+    if (isDrawerTab(tab)) drawers.toggle(tab, true);
+    syncDrawers();
+  },
+  // action sheet 的“完成”按钮和遮罩、popover 外点：收起全部
+  drawerClose() {
+    if (drawers.closeAll()) syncDrawers();
+  },
+  // 快捷键引导：顶栏按钮 / H / ? 打开；关掉即记为看过
+  guide() {
+    if (guideOpen()) return actions.guideClose('');
+    openGuide();
+  },
+  guideClose() {
+    closeGuide();
+    markGuideSeen(prefs);
   },
   // 露营卡片（#30）：只在玩家点按钮时生成，不自动弹出、不接分享渠道、无分享奖励
   async card() {
@@ -593,9 +704,9 @@ async function settleHome() {
     modeLock.busy = false;
   }
   mode = 'parked';
-  views.onParked(); // 停回家位：回到俯瞰（与改动前一致），停着时可再选别的视图
   boostLatch = false;
   drive = { pose: parkedPose(spec, home), speed: 0, curvature: 0 };
+  resetViewOnPark(); // 停回家位：回到默认环绕（issue #82），停着时可再选别的视图
   placeVehicle(player.root, spec, drive.pose);
   player.setAwning(awningOut(state));
   toast('已停回家位');
@@ -606,17 +717,53 @@ document.addEventListener('click', (e) => {
   if (!el || (el as HTMLButtonElement).disabled) return;
   renderHud();
   const act = el.dataset.act!;
+  // 圆形菜单里选了任何一格（视图或功能）都先收起菜单；选了抽屉时焦点交给抽屉，不还回罗盘
+  if (act !== 'menu' && act !== 'menuClose' && el.closest('#radial')) closeMenu(act !== 'drawer');
   // 统计不在这里发：点击不等于成功，各操作确认成功后自己上报（GPT 审核 #66 第 2 轮）
-  void Promise.resolve(actions[act]?.(el.dataset.arg ?? '')).finally(renderHud);
+  // 罗盘没有 data-arg：用 click 的 detail 区分键盘触发（detail 为 0）和指针点击
+  const arg = act === 'menu' && e.detail === 0 ? 'kbd' : el.dataset.arg ?? '';
+  void Promise.resolve(actions[act]?.(arg)).finally(() => {
+    renderHud();
+    // 键盘在菜单里选了抽屉：焦点跟进抽屉（renderHud 之后，内容已经画好）
+    if (act === 'drawer' && e.detail === 0 && isDrawerTab(arg) && drawers.isOpen(arg)) focusDrawer(arg);
+  });
 });
 
 // ---------- 键盘 ----------
 const keys = new Set<string>();
 const DRIVE_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'];
 window.addEventListener('keydown', (e) => {
+  // 焦点在引导里的按钮上时，空格 / 回车按原生方式点按钮，不当作驾驶输入（GPT 审核 #90）
+  if (guideOpen() && (e.target as HTMLElement | null)?.closest?.('#guide')) {
+    if (e.code === 'Escape' || (isGuideKey(e) && !e.repeat)) void actions.guideClose('');
+    return;
+  }
+  // 键盘聚焦在按钮上时，空格 / 回车按原生方式点这个按钮，不当作刹车（GPT 审核 #90 第 2 轮）；
+  // 鼠标点过的按钮焦点不让出，空格照样刹车（见 isKeyboardFocusedButton）
+  if ((e.code === 'Space' || e.code === 'Enter') && isKeyboardFocusedButton(e.target)) return;
+  // 圆形菜单开着、焦点在菜单里：方向键绕圈挪焦点，不当作驾驶
+  if (menuOpen() && (e.target as HTMLElement | null)?.closest?.('#radial') && menuArrow(e.code)) {
+    e.preventDefault();
+    return;
+  }
   if (DRIVE_KEYS.includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (e.repeat) return;
+  if (e.code === 'Escape') {
+    // Esc 先关引导，再收圆形菜单，再收抽屉
+    if (guideOpen()) void actions.guideClose('');
+    else if (closeMenu()) return;
+    else if (drawers.closeAll()) syncDrawers();
+    return;
+  }
+  if (isMenuKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (!closeMenu()) openMenu(true);
+    return;
+  }
+  if (isGuideKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    void actions.guide('');
+    return;
+  }
   const v = viewForKey(e.code, currentView());
   if (v) selectView(v === 'next' ? views.next(mode === 'parked') : v);
   if (e.code === 'KeyP') void actions.park('');
@@ -626,11 +773,32 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keys.delete(e.code));
 window.addEventListener('blur', () => keys.clear());
+/**
+ * 焦点来源：鼠标 / 触摸点过的按钮焦点不算键盘焦点，按空格仍是刹车；只有 Tab 走到的按钮才让空格按原生方式点它。
+ * 不用 :focus-visible 判断——鼠标点过的按钮在按下任意键后也会变成 focus-visible（Codex 审核 #90）。
+ */
+const keyboardFocused = new WeakSet<EventTarget>();
+let pointerFocus = false;
+window.addEventListener('pointerdown', () => (pointerFocus = true), true);
+window.addEventListener('keydown', (e) => {
+  // Tab、M（展开菜单并聚焦第一格）、菜单里的方向键都是键盘挪焦点：之后的焦点算键盘焦点，空格按原生方式点它（Codex 审核 #102）
+  if (e.key === 'Tab' || e.code === 'KeyM' || (e.code.startsWith('Arrow') && menuOpen())) pointerFocus = false;
+}, true);
+document.addEventListener('focusin', (e) => {
+  if (!e.target) return;
+  if (pointerFocus) keyboardFocused.delete(e.target);
+  else keyboardFocused.add(e.target);
+});
+function isKeyboardFocusedButton(t: EventTarget | null): boolean {
+  return t instanceof HTMLButtonElement && keyboardFocused.has(t);
+}
 const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
 
 // ---------- 场景画面手势（环绕视图；规则见 src/shared/camview.ts OrbitGesture） ----------
 const stage = $('#stage');
 stage.addEventListener('pointerdown', (e) => {
+  // 点场景画面就收起抽屉，把画面还给营地
+  if (drawers.closeAll()) syncDrawers();
   if (currentView() !== 'orbit' || (e.pointerType === 'mouse' && e.button !== 0)) return;
   stage.setPointerCapture(e.pointerId);
   gesture.down(e.pointerId, e.clientX, e.clientY);
@@ -768,6 +936,7 @@ function frame(t: number) {
   }
   placeVehicle(player.root, spec, drive.pose);
 
+  const running = runningLights(now());
   for (const a of traffic) {
     if (a === playerAgent) continue;
     const c = a as NpcCar;
@@ -779,6 +948,7 @@ function frame(t: number) {
       continue;
     }
     c.view.root.visible = !c.pending;
+    c.view.setLights(running);
     placeVehicle(c.view.root, c.spec, c.pose);
   }
 
@@ -810,7 +980,8 @@ function frame(t: number) {
   }
   const ls = lightsFor({ mode, steer: steerIn, curvature: autoCurv, speed: lightSpeed, braking: brakingIn });
   const bl = blink.update(ls, t / 1000);
-  player.setLights({ turnL: bl.left, turnR: bl.right, brake: ls.brake, reverse: ls.reverse });
+  playerLights = { ...running, turnL: bl.left, turnR: bl.right, brake: ls.brake, reverse: ls.reverse };
+  player.setLights(playerLights);
 
   const [cx, cy] = bodyCenter(spec, drive.pose);
   const activeView = currentView();
@@ -827,6 +998,14 @@ const fmtDur = (min: number) => `${Math.floor(min / 60)} 小时 ${String(min % 6
 const clock = (ms: number) =>
   new Date(ms).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' });
 
+/** 内容没变就不重写：每秒的 HUD 刷新不再替换抽屉里的按钮节点，玩家点击（和 e2e 的真实点击）不会点到被换掉的节点（GPT 审核 #90） */
+function setHtml(sel: string, html: string) {
+  const el = $(sel);
+  if (el.dataset.html === html) return;
+  el.innerHTML = html;
+  el.dataset.html = html;
+}
+
 function renderHud() {
   const v = currentVariant(state);
   const t = now();
@@ -836,7 +1015,11 @@ function renderHud() {
   const parkedHome = mode === 'parked';
   const ts = todayStats(state, t);
   const dv = dexView(state.dex);
-  $('#dex-entry').textContent = `车型图鉴 ${dv.lit} / ${dv.total}`;
+  const dexLabel = `车型图鉴 ${dv.lit} / ${dv.total}`;
+  if ($('#dex-entry').getAttribute('aria-label') !== dexLabel) {
+    $('#dex-entry').setAttribute('aria-label', dexLabel);
+  }
+  setBadge('dex', dv.lit ? `${dv.lit}` : '');
   if (!$('#dex').hidden) {
     // 内容没变就不重写，避免每秒刷新打断滚动
     const html = dexHtml(dv);
@@ -845,7 +1028,7 @@ function renderHud() {
       $('#dex').dataset.html = html;
     }
   }
-  $('#garage').innerHTML = `
+  setHtml('#garage', `
     <h2>车库</h2>
     <p class="hint">${parkedHome ? '选一辆你的车（尺寸为公告三围，占位外观）' : '停回家位后才能换车'}</p>
     <ul class="models">${CATALOG.map(
@@ -854,10 +1037,10 @@ function renderHud() {
         <div class="chips">${m.variants
           .map((x) => `<button class="chip ${x.id === v.id ? 'on' : ''}" data-act="variant" data-arg="${x.id}" ${parkedHome ? '' : 'disabled'}>${x.roofLabel}</button>`)
           .join('')}</div></li>`,
-    ).join('')}</ul>`;
+    ).join('')}</ul>`);
 
   const out = awningOut(state);
-  $('#shop').innerHTML = `
+  setHtml('#shop', `
     <h2>营地小卖部</h2>
     <div class="card">
       <div class="row"><b>侧边帐</b><span class="coin">${SIDE_AWNING.priceGold}</span></div>
@@ -868,9 +1051,9 @@ function renderHud() {
              <p class="fine">${out ? '已展开，正在吸引露营者' : state.awningWanted ? '车不在家位，开回去自动展开' : '已收起'}</p>`
           : `<button data-act="buy" ${state.ledger.balance < SIDE_AWNING.priceGold * 100 ? 'disabled' : ''}>购买</button>`
       }
-    </div>`;
+    </div>`);
 
-  $('#spots').innerHTML = `
+  setHtml('#spots', `
     <h2>我的营地车位</h2>
     <p class="hint">露营者自己开来、自己离开，离开时付停车费进入待收取：${NPC.rateCentsPerHour / 100} 金 / 小时，单次最多 ${NPC.capMinutes / 60} 小时。爱心车位免费给露营者停。</p>
     ${state.camp.spots
@@ -886,11 +1069,16 @@ function renderHud() {
       })
       .join('')}
     <p class="fine">今天到访 ${ts.visitors} 位露营者，爱心车位公益停靠 ${fmtMinutes(ts.loveMinutes)}（上海日，露营卡片同源）</p>
-    <p class="fine">爱心车位累计公益停靠 ${fmtDur(state.camp.loveMinutes)}</p>`;
+    <p class="fine">爱心车位累计公益停靠 ${fmtDur(state.camp.loveMinutes)}</p>`);
 
   const pv = pendingView(state.ledger.pending, out);
   const pl = pendingLines(pv);
-  $('#pending').innerHTML = `
+  // 图标角标：待收取金额（有钱就跳）、车位占用、买得起侧边帐、礼物未领
+  setBadge('pending', pv.pending > 0 ? displayGold(pv.pending).toLocaleString('zh-CN') : '', pv.pending > 0);
+  const busy = state.camp.spots.filter((sp) => sp.stay).length;
+  setBadge('spots', busy ? `${busy}/${state.camp.spots.length}` : '');
+  setBadge('shop', !state.awningOwned && state.ledger.balance >= SIDE_AWNING.priceGold * 100 ? '!' : '');
+  setHtml('#pending', `
     <h2>待收取</h2>
     <div class="card">
       <div class="row"><b>停车费</b><span class="coin">${displayGold(pv.pending).toLocaleString('zh-CN')}</span></div>
@@ -899,18 +1087,19 @@ function renderHud() {
       ${pl.lost ? `<p class="lost">${pl.lost}</p>` : ''}
       <button data-act="collect" ${pv.pending > 0 ? '' : 'disabled'}>收取</button>
     </div>
-    <p class="fine">上限 = ${PENDING.capHours} 小时的期望停车收入（${PENDING.capGold} 金，提案值）。收取的金额按收取当天计入每日软上限。</p>`;
+    <p class="fine">上限 = ${PENDING.capHours} 小时的期望停车收入（${PENDING.capGold} 金，提案值）。收取的金额按收取当天计入每日软上限。</p>`);
 
   const sv = giftStreakView(state, now());
-  $('#daily').innerHTML = `
+  setBadge('daily', sv.claimedToday ? '' : '!', true);
+  setHtml('#daily', `
     <h2>每日</h2>
     <p class="hint">每天首次登录，营地管理员巡视送礼。连续登录 7 日梯度（金额固定，无抽取，第 8 天起循环）：</p>
     <ol class="ladder">${LADDER.map((gold, i) => `<li class="${i + 1 === sv.today ? 'today' : ''}"><span>第 ${i + 1} 天</span><b>${gold}</b></li>`).join('')}</ol>
     <p>今天第 ${sv.today} 天（连续 ${sv.streak} 天）${sv.claimedToday ? `，已领 ${sv.claimedGold} 金` :`，可领 ${sv.todayGold} 金`}；明天继续登录可领 ${sv.tomorrowGold} 金。</p>
     <p class="fine">断签只回到第 1 天，已领的金币不扣、不清零。连续 7 天共 ${LADDER.reduce((s, g) => s + g, 0)} 金，平均每天 ${ladderMeanGold().toFixed(1)} 金（提案值）。日界为上海时间 0 点。</p>
-    <p class="fine">今日已入账 ${displayGold(ts.issuedCents)} 金；当日收入超过 ${ECONOMY.softCapThresholdGold} 金的部分按 ${ECONOMY.softCapRateAbove * 100}% 发放。</p>`;
+    <p class="fine">今日已入账 ${displayGold(ts.issuedCents)} 金；当日收入超过 ${ECONOMY.softCapThresholdGold} 金的部分按 ${ECONOMY.softCapRateAbove * 100}% 发放。</p>`);
 
-  $('#log').innerHTML = state.ledger.entries
+  setHtml('#log', state.ledger.entries
     .slice(-6)
     .reverse()
     .map((e) => {
@@ -918,7 +1107,7 @@ function renderHud() {
       const where = e.kind === 'npc_parking' ? `${stallById(e.key.split('#')[0]).label} · ` : '';
       return `<li><span class="when">${clock(e.atMs)}</span>${where}${e.note}<b class="${e.amount < 0 ? 'neg' : ''}">${e.amount >= 0 ? '+' : ''}${displayGold(e.amount)}</b>${capped}</li>`;
     })
-    .join('');
+    .join(''));
 
   $('#controls').innerHTML =
     mode === 'parked'
@@ -926,27 +1115,32 @@ function renderHud() {
       : mode === 'driving'
         ? `<button class="primary" data-act="park">自动泊回家位 <kbd>P</kbd></button><button class="boost ${boostLatch ? 'on' : ''}" data-act="boost" aria-pressed="${boostLatch}">加速挡 <kbd>Shift</kbd></button><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶 · <kbd>空格</kbd> 刹车</span>`
         : `<span class="keys">自动驾驶中…</span>`;
-  // 视图切换（#44）：四个按钮 + 1–4 / V 键，当前视图高亮；环绕视图下提示手势
+  // 罗盘（#44 的四个视图 + 1–4 / V 键）：节点只建一次，这里只转指针；环绕视图下提示手势
   const cv = currentView();
-  $('#views').innerHTML =
-    VIEWS.map((v, i) => `<button class="${v === cv ? 'on' : ''}" data-act="view" data-arg="${v}" aria-pressed="${v === cv}">${VIEW_LABEL[v]} <kbd>${i + 1}</kbd></button>`).join('') +
-    (cv === 'orbit' ? `<span class="keys">拖拽画面环绕 · 滚轮 / 双指缩放</span>` : '');
+  syncCompass(cv);
+  if (cv === 'orbit') $('#controls').insertAdjacentHTML('beforeend', `<span class="keys">拖拽画面环绕 · 滚轮 / 双指缩放</span>`);
 }
 
 if (DEV) {
   $('#dev').hidden = false;
   // 调试入口（仅 ?dev），用于车辆截图和撞击效果检查
   (window as unknown as { __campDebug: unknown }).__campDebug = {
-    vehicleShot(angle: 'front34' | 'side' | 'rear34'): string {
-      const [forward, left] = { front34: [7, -5.5], side: [0, 9], rear34: [-7, 5.5] }[angle];
+    vehicleShot(angle: 'front34' | 'side' | 'entrySide' | 'rear34', lit = false): string {
+      const [forward, left] = { front34: [7, -5.5], side: [0, 9], entrySide: [0, -9], rear34: [-7, 5.5] }[angle];
       const [cx, cy] = bodyCenter(spec, drive.pose);
       const cos = Math.cos(drive.pose.yaw);
       const sin = Math.sin(drive.pose.yaw);
-      return view.snapshot(
-        toThree(cx + forward * cos - left * sin, cy + forward * sin + left * cos, 2.6),
-        toThree(cx, cy, 1.2),
-        1280, 800, { fog: false, labels: false },
-      ).toDataURL('image/png');
+      // 固定灯态，让两张截图的区别不依赖 runner 时间。即使截图失败也恢复玩家车。
+      player.setLights({ head: lit, tail: lit, marker: lit, turnL: lit, turnR: lit, reverse: lit, brake: lit });
+      try {
+        return view.snapshot(
+          toThree(cx + forward * cos - left * sin, cy + forward * sin + left * cos, 2.6),
+          toThree(cx, cy, 1.2),
+          1280, 800, { fog: false, labels: false },
+        ).toDataURL('image/png');
+      } finally {
+        player.setLights(playerLights);
+      }
     },
     setTimeScale(v: number) {
       timeScale = v;
@@ -978,3 +1172,6 @@ if (unsupported) {
   setWriter(false);
 } else requestWriter(locks, LOCK_NAME, false, setWriter);
 requestAnimationFrame(frame);
+// 首次打开：快捷键引导（看过就不再自动弹，H / ? / 顶栏按钮可再开）
+// 首次快捷键引导在 maybeAutoGuide 里弹：等开局处理（每日礼物 / 回访面板）结束之后
+setTimeout(maybeAutoGuide, 4000); // 兜底：拿写权或开局迟迟没结束时也要弹

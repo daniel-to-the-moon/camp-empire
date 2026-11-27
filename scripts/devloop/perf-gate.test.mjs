@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { checkBudgets, summarize } from '../e2e/gates-lib.mjs';
+import { checkBudgets, perfTable, summarize } from '../e2e/gates-lib.mjs';
 
 const frames = (n, calls, tris = 100) => Array.from({ length: n }, (_, i) => ({ calls, tris, ms: i ? 16 : 0 }));
 
@@ -14,6 +14,13 @@ test('summarize：中位数、最大值；第一帧不计帧时间', () => {
   assert.equal(s.trisMax, 300);
   assert.equal(s.msMedian, 16);
   assert.deepEqual(summarize([]), { frames: 0, callsMedian: 0, callsMax: 0, trisMedian: 0, trisMax: 0, msMedian: 0 });
+});
+
+test('CI 摘要列本次采样，不用预算或零值补缺失的场景与帧时间', () => {
+  const camp = summarize([...frames(32, 10), ...frames(30, 20, 300)]);
+  assert.ok(perfTable({ camp }).includes('| camp | 62 | 10 / 20 | 100 | 16 |'));
+  assert.ok(perfTable({ camp }).includes('| driving | 未采到 | — | — | — |'));
+  assert.ok(perfTable({ driving: summarize(frames(1, 7)) }).includes('| driving | 1 | 7 / 7 | 100 | — |'));
 });
 
 test('checkBudgets：超预算、缺场景、帧数不足、0 draw call 都失败', () => {

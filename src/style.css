@@ -43,13 +43,32 @@ kbd {
   border-radius: 50%; background: var(--coin); box-shadow: inset 0 0 0 2px #b88a1f;
 }
 
-.panel {
-  position: fixed; top: 56px; bottom: 84px; width: 286px; z-index: 4; overflow-y: auto;
-  padding: 2px 14px 12px; background: var(--pine); border: 1px solid var(--line); border-radius: 12px;
-  backdrop-filter: blur(6px);
+/* ---------- 收起式控制面板：图标列 + 抽屉（src/client/hud.ts） ---------- */
+:root { --spring: cubic-bezier(0.34, 1.56, 0.64, 1); }
+.help {
+  pointer-events: auto; width: 32px; height: 32px; padding: 0; display: grid; place-items: center;
+  border-radius: 50%; border: 1px solid var(--line); background: var(--pine); transition: transform 0.25s var(--spring), background 0.2s;
 }
-.panel.left { left: 12px; }
-.panel.right { right: 12px; width: 310px; }
+.help:hover { transform: rotate(-10deg) scale(1.1); background: var(--pine-2); }
+.help svg { width: 18px; height: 18px; }
+.badge {
+  position: absolute; top: -5px; right: -6px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  font: 700 10px/18px var(--mono); font-style: normal; color: var(--ink); background: var(--coin); box-shadow: 0 0 0 2px var(--ink);
+}
+.badge.hot { animation: hop 1.6s ease-in-out infinite; }
+.panel {
+  position: fixed; top: 60px; max-height: calc(100vh - 60px - 150px); width: 300px; z-index: 4; overflow-y: auto;
+  padding: 2px 14px 12px; background: var(--pine); border: 1px solid var(--line); border-radius: 14px;
+  backdrop-filter: blur(6px); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  animation: drawer-pop 0.32s var(--spring) both;
+}
+.panel.left, .panel.right { width: 340px; transform-origin: top center; }
+.panel > section { display: none; border-bottom: 0; }
+.panel > section.active { display: block; animation: section-in 0.25s ease both; }
+@keyframes drawer-pop { from { opacity: 0; transform: scale(0.85) translateY(-6px); } }
+@keyframes section-in { from { opacity: 0; transform: translateY(6px); } }
+@keyframes wiggle { 30% { transform: rotate(-12deg); } 60% { transform: rotate(9deg); } }
+@keyframes hop { 0%, 70%, 100% { transform: translateY(0); } 80% { transform: translateY(-4px); } 90% { transform: translateY(0); } }
 section { padding: 10px 0 12px; border-bottom: 1px solid var(--line); }
 section:last-child { border-bottom: 0; }
 h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss); font-weight: 700; }
@@ -91,8 +110,8 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 
 .dock {
   position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 5;
-  display: flex; align-items: center; gap: 14px; padding: 10px 14px;
-  background: var(--pine); border: 1px solid var(--line); border-radius: 14px;
+  display: flex; align-items: center; gap: 14px; padding: 8px 16px 8px 8px;
+  background: var(--pine); border: 1px solid var(--line); border-radius: 60px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
   /* 窄屏（手机竖屏）：底栏不超出视口，放不下就换行；页面 overflow:hidden 不能滚动找回，所以宁可分行（GPT 审核 #48） */
   width: max-content; max-width: calc(100vw - 16px); flex-wrap: wrap; justify-content: center; row-gap: 8px;
   max-height: 50vh; overflow-y: auto;
@@ -102,10 +121,93 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 .keys { font-size: 12px; color: rgba(236, 230, 214, 0.75); }
 #speed { font-family: var(--mono); font-weight: 700; min-width: 72px; }
 #bump { color: #ffb3a1; font-weight: 700; }
-/* 视图切换（#44）：当前视图高亮；加速挡按钮按下时高亮 */
-#views { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px; }
-#views button, #controls .boost { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); white-space: nowrap; }
-#views button.on, #controls .boost.on { background: var(--moss); color: var(--ink); border-color: var(--moss); font-weight: 700; }
+/* 底栏罗盘（#44）：整个是一个按钮，点一下展开圆形菜单；指针转到当前视图（src/client/hud.ts syncCompass） */
+#views { position: relative; flex: none; width: 96px; height: 96px; }
+#hub {
+  position: absolute; inset: 0; padding: 0; border-radius: 50%; border: 1px solid var(--line); color: var(--birch);
+  background: radial-gradient(circle, var(--pine-2) 40%, rgba(0, 0, 0, 0.35)); cursor: pointer;
+  box-shadow: 0 0 0 0 rgba(224, 137, 46, 0.5); transition: transform 0.3s var(--spring), box-shadow 0.3s, border-color 0.2s;
+}
+#hub:hover { transform: scale(1.06) rotate(-6deg); border-color: var(--canvas); }
+#hub:active { transform: scale(0.92); }
+#hub[aria-expanded="true"] { border-color: var(--canvas); box-shadow: 0 0 0 5px rgba(224, 137, 46, 0.3); }
+#hub .rose { position: absolute; inset: 12px; border-radius: 50%; border: 1px dashed rgba(236, 230, 214, 0.25); }
+#hub .rose i { position: absolute; left: 50%; top: 50%; width: 2px; height: 6px; margin: -3px 0 0 -1px; background: rgba(236, 230, 214, 0.35); }
+#hub .rose i:nth-child(1) { transform: rotate(45deg) translateY(-30px); }
+#hub .rose i:nth-child(2) { transform: rotate(135deg) translateY(-30px); }
+#hub .rose i:nth-child(3) { transform: rotate(225deg) translateY(-30px); }
+#hub .rose i:nth-child(4) { transform: rotate(315deg) translateY(-30px); }
+#views.wobble .rose { animation: wobble 0.6s ease; }
+#hub .needle { position: absolute; inset: 0; pointer-events: none; } /* 转动由 hud.ts spinNeedle 逐帧驱动 */
+#hub .needle b {
+  position: absolute; left: calc(50% - 6px); top: 24px; width: 12px; height: 24px;
+  background: linear-gradient(var(--canvas), rgba(224, 137, 46, 0.2)); clip-path: polygon(50% 0, 100% 100%, 50% 80%, 0 100%);
+}
+#hub .compass-label {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin-top: 8px; pointer-events: none; white-space: nowrap;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em; padding: 0 5px; border-radius: 6px; background: rgba(15, 26, 21, 0.8);
+}
+#hub .pt { position: absolute; width: 16px; height: 16px; display: grid; place-items: center; opacity: 0.45; transition: opacity 0.2s, color 0.2s, transform 0.3s var(--spring); }
+#hub .pt svg { width: 14px; height: 14px; }
+#hub .pt.on { opacity: 1; color: var(--moss); transform: scale(1.2); }
+#hub .pt-0 { left: 40px; top: 2px; }
+#hub .pt-1 { right: 2px; top: 40px; }
+#hub .pt-2 { left: 40px; bottom: 2px; }
+#hub .pt-3 { left: 2px; top: 40px; }
+#hub kbd { position: absolute; right: 2px; bottom: 2px; padding: 0 4px; font-size: 9px; line-height: 1.5; background: var(--ink); color: var(--birch); }
+#hub .hub-dot { position: absolute; right: 8px; top: 8px; width: 12px; height: 12px; border-radius: 50%; background: var(--coin); box-shadow: 0 0 0 2px var(--ink); animation: hop 1.6s ease-in-out infinite; }
+
+/* ---------- 圆形菜单：内圈四个视图、外圈全部功能，平均分扇区（src/client/hud.ts mountHud） ---------- */
+#radial { position: fixed; inset: 0; z-index: 8; }
+#radial[hidden] { display: none; }
+#radial .radial-backdrop { position: absolute; inset: 0; background: radial-gradient(circle, rgba(5, 10, 8, 0.35), rgba(5, 10, 8, 0.7)); animation: fade-in 0.2s ease both; }
+#radial .wheel {
+  position: absolute; inset: 0; margin: auto; width: min(420px, 94vw, calc(100vh - 72px)); aspect-ratio: 1; height: auto; max-height: calc(100vh - 72px);
+  container-type: inline-size; animation: wheel-in 0.42s var(--spring) both; transform-origin: 50% 85%;
+}
+#radial .wheel > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+#radial .wheel-bg { fill: rgba(15, 26, 21, 0.55); }
+#radial .sec {
+  fill: #182921; stroke: rgba(236, 230, 214, 0.14); stroke-width: 1; cursor: pointer;
+  transition: fill 0.18s, transform 0.25s var(--spring); transform-origin: 200px 200px; transform-box: view-box;
+  animation: sec-in 0.4s var(--spring) both; animation-delay: calc(80ms + var(--i) * 28ms);
+}
+#radial .sec-view { fill: var(--pine-2); animation-delay: calc(30ms + var(--i) * 40ms); }
+#radial .sec:hover, #radial .sec.hl { fill: #2f4a3b; transform: scale(1.035); }
+#radial .sec.on { fill: rgba(224, 137, 46, 0.85); }
+#radial .sec-view.on { fill: var(--moss); }
+#radial .sec-center { fill: var(--ink); stroke: var(--line); cursor: pointer; }
+#radial .rbtn {
+  position: absolute; transform: translate(-50%, -50%); padding: 0; border: 0; background: none; color: var(--birch);
+  display: grid; justify-items: center; gap: 3px; font-size: clamp(10px, 3.1cqw, 13px); line-height: 1.2; cursor: pointer;
+  animation: label-in 0.4s var(--spring) both; animation-delay: calc(120ms + var(--i) * 28ms);
+}
+#radial .rbtn svg { width: clamp(18px, 6.4cqw, 26px); height: clamp(18px, 6.4cqw, 26px); transition: transform 0.3s var(--spring); }
+#radial .rbtn:hover svg, #radial .rbtn:focus-visible svg { transform: scale(1.18) rotate(-8deg); }
+#radial .rbtn:focus-visible { outline: none; }
+#radial .rbtn .tip { white-space: nowrap; font-weight: 700; letter-spacing: 0.04em; }
+#radial .rbtn.on { color: var(--ink); }
+#radial .vbtn { font-size: clamp(9px, 2.7cqw, 12px); }
+#radial .vbtn svg { width: clamp(16px, 5.2cqw, 22px); height: clamp(16px, 5.2cqw, 22px); }
+#radial .vbtn kbd { margin-left: 3px; padding: 0 3px; font-size: 0.8em; line-height: 1.3; background: var(--ink); color: var(--birch); }
+#radial .rbtn .badge { top: -8px; right: -14px; }
+#radial .radial-center {
+  position: absolute; left: 50%; top: 50%; width: 20%; height: 20%; transform: translate(-50%, -50%); border-radius: 50%;
+  padding: 0; border: 0; background: none; color: var(--birch); display: grid; place-items: center; cursor: pointer;
+  transition: transform 0.3s var(--spring);
+}
+#radial .radial-center:hover { transform: translate(-50%, -50%) rotate(90deg); }
+@container (max-width: 300px) { #radial .rbtn .tip { display: none; } }
+@keyframes wheel-in { from { opacity: 0; transform: scale(0.25) rotate(-40deg); } }
+@keyframes sec-in { from { opacity: 0; transform: scale(0.6); } }
+@keyframes label-in { from { opacity: 0; transform: translate(-50%, -50%) scale(0.3); } }
+@keyframes wobble { 30% { transform: rotate(8deg); } 60% { transform: rotate(-5deg); } }
+/* 加速挡按钮按下时高亮 */
+#controls .boost { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); white-space: nowrap; }
+#controls .boost.on { background: var(--moss); color: var(--ink); border-color: var(--moss); font-weight: 700; }
+#controls .primary { border-radius: 999px; transition: transform 0.25s var(--spring); }
+#controls .primary:hover { transform: scale(1.05); }
+#controls .primary:active { transform: scale(0.94); }
 /* 场景画面的拖拽 / 双指交给环绕相机，不让浏览器滚动或缩放页面 */
 #stage { touch-action: none; }
 
@@ -125,7 +227,6 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 #welcome button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
 #welcome button.primary { background: var(--canvas); color: var(--ink); border: 0; font-weight: 700; }
 /* 露营卡片（#30）：玩家点按钮才出现的预览框 */
-.card-entry button { width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--canvas); background: rgba(224, 137, 46, 0.18); font-weight: 700; }
 #camp-card {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 9; width: min(360px, 90vw);
   padding: 12px; border-radius: 12px; background: var(--pine); border: 1px solid var(--canvas); backdrop-filter: blur(6px);
@@ -134,7 +235,6 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 #camp-card .row { gap: 8px; margin-top: 10px; }
 #camp-card button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
 #camp-card button.primary { background: var(--canvas); color: var(--ink); border: 0; font-weight: 700; }
-.card-entry { display: grid; gap: 6px; }
 #dex, #privacy {
   position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 9; width: min(560px, 92vw); max-height: 82vh; overflow-y: auto;
   padding: 12px 16px; border-radius: 12px; background: var(--pine); border: 1px solid var(--moss); backdrop-filter: blur(6px);
@@ -162,12 +262,85 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 }
 #dev button { padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
 
-@media (max-width: 1100px) {
-  .panel { width: 240px; }
-  .panel.right { width: 260px; }
+/* 窄屏：两侧抽屉互斥（hudnav.ts NARROW_PX）；顶栏收紧成一行 */
+@media (max-width: 760px) {
+  .dock { border-radius: 20px; }
+  .top { gap: 10px; padding: 0 12px; }
+  .brand { font-size: 15px; letter-spacing: 0.04em; white-space: nowrap; }
+  .clock { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .wallet { font-size: 17px; white-space: nowrap; }
+}
+
+/* 矮视口（宽屏但很矮）：抽屉改为盖在底栏之上的整高浮层；抽屉高度由视口决定，不再固定扣除底栏（GPT 审核 #90 第 2 轮） */
+@media (max-height: 520px) {
+  .panel.left, .panel.right { top: 8px; bottom: auto; left: calc(50% - 170px); max-height: calc(100vh - 16px); z-index: 6; }
+}
+
+/* ---------- 抽屉头部：标题 + “完成”（PC 浮层和手机 action sheet 共用） ---------- */
+.sheet-head {
+  display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 1;
+  padding: 10px 0 8px; margin: 0 -2px; background: var(--pine);
+}
+.sheet-title { font-size: 12px; letter-spacing: 0.18em; color: var(--moss); }
+.sheet-close { padding: 3px 12px; font-size: 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--pine-2); color: var(--birch); }
+.panel > section.active > h2:first-child { display: none; } /* 标题已在头部 */
+#sheet-backdrop { display: none; }
+
+/* ---------- PC：浮层（默认收起；从罗盘的圆形菜单选中后，在底栏上方居中弹出） ---------- */
+@media (min-width: 761px) and (min-height: 521px) {
+  .panel.left, .panel.right {
+    top: auto; bottom: 150px; left: calc(50% - 170px); max-height: calc(100vh - 210px); transform-origin: bottom center;
+  }
+}
+
+/* ---------- 移动端（窄屏）：底部 action sheet（默认收起；遮罩点一下或“完成”收起；两侧互斥） ---------- */
+@media (max-width: 760px) {
+  #sheet-backdrop { display: block; position: fixed; inset: 0; z-index: 7; background: rgba(5, 10, 8, 0.5); animation: fade-in 0.2s ease both; }
+  .panel.left, .panel.right {
+    left: 0; right: 0; top: auto; bottom: 0; width: auto; z-index: 8;
+    max-height: min(72vh, calc(100vh - 48px)); border-radius: 18px 18px 0 0; border-bottom: 0;
+    padding: 0 16px calc(14px + env(safe-area-inset-bottom, 0px));
+    animation: sheet-up 0.34s cubic-bezier(0.2, 0.9, 0.3, 1.08) both; transform-origin: bottom center;
+  }
+  .sheet-head { padding: 14px 0 8px; }
+  .sheet-head::before {
+    content: ''; position: absolute; left: 50%; top: 5px; width: 40px; height: 4px; margin-left: -20px; border-radius: 2px; background: rgba(236, 230, 214, 0.3);
+  }
+  .sheet-title { font-size: 15px; letter-spacing: 0.04em; color: var(--birch); }
+  .sheet-close { padding: 6px 14px; border: 0; background: var(--canvas); color: var(--ink); font-weight: 700; }
+  .panel .card > button, .panel .primary { padding: 12px; font-size: 15px; } /* 手指好点 */
+  .panel .chip { padding: 5px 12px; font-size: 13px; }
+}
+@keyframes sheet-up { from { transform: translateY(100%); } }
+@keyframes fade-in { from { opacity: 0; } }
+
+/* ---------- 首次快捷键引导（src/client/hud.ts） ---------- */
+#guide {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 9; width: min(720px, 92vw); max-height: 86vh; overflow-y: auto;
+  padding: 16px 20px; border-radius: 18px; background: var(--pine); border: 1px solid var(--canvas); backdrop-filter: blur(8px);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.35), 0 20px 50px rgba(0, 0, 0, 0.45);
+  animation: guide-in 0.45s var(--spring) both;
+}
+#guide .guide-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+#guide .guide-badge { flex: none; width: 46px; height: 46px; display: grid; place-items: center; border-radius: 14px; background: var(--canvas); color: var(--ink); animation: wiggle 0.6s 0.4s ease; }
+#guide h2 { margin: 0 0 2px; font-size: 18px; letter-spacing: 0.04em; color: var(--birch); }
+#guide .hint { margin: 0; }
+#guide .guide-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 12px 0 14px; }
+#guide section { padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(0, 0, 0, 0.2); }
+#guide h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss); }
+#guide .guide-row { display: grid; grid-template-columns: 104px 1fr; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
+#guide .ks { display: flex; flex-wrap: wrap; gap: 3px; }
+#guide kbd { font-size: 12px; padding: 1px 6px; border-bottom-width: 3px; animation: key-pop 0.4s var(--spring) both; animation-delay: calc(200ms + var(--k) * 30ms); }
+#guide .row { justify-content: flex-end; }
+#guide .primary { width: auto; padding: 9px 26px; border-radius: 999px; transition: transform 0.25s var(--spring); }
+#guide .primary:hover { transform: scale(1.06) rotate(-1deg); }
+@keyframes guide-in { from { opacity: 0; transform: translate(-50%, -44%) scale(0.9); } }
+@keyframes key-pop { from { opacity: 0; transform: translateY(6px) scale(0.6); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 #privacy h2 { margin: 0 0 6px; }
 #privacy p { margin: 6px 0; line-height: 1.6; font-size: 13px; }
 #privacy .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
 #privacy button { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
-.card-entry button.quiet { opacity: 0.75; font-size: 12px; }
