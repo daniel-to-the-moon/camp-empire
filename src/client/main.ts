@@ -156,9 +156,14 @@ function freshGame(): GameState {
   clearDevOffset();
   return freshGameAt(Date.now(), newSeed());
 }
-let state: GameState = (slot && (await slot.read().catch(() => null))) ?? freshGame();
-/** 没有可靠的原子写入或单写者机制：整页只读，提示原因（GPT 审核 #4 第 2 轮第 2 条） */
-const unsupported = !slot ? '这个浏览器打不开 IndexedDB（可能是隐私模式），无法可靠保存，本页只读。' : !locks ? '这个浏览器不支持 Web Locks，无法保证只有一个标签页写存档，本页只读。' : null;
+const saved = slot ? await slot.read().catch(() => null) : null;
+let state: GameState = saved ?? freshGame();
+/** 没有可靠的原子写入或单写者机制：整页只读，提示原因（GPT 审核 #4 第 2 轮第 1 条） */
+const unsupported = !slot
+  ? '这个浏览器打不开 IndexedDB（可能是隐私模式），无法可靠保存，本页只读。'
+  : legacyMayBeHidden(!!saved, legacyRead.ok)
+    ? '读不到浏览器本地存储，那里可能还有你的旧存档。为了不覆盖它，本页先只读；请允许本站使用存储后刷新。'
+    : !locks ? '这个浏览器不支持 Web Locks，无法保证只有一个标签页写存档，本页只读。' : null;
 /** 本标签页是否持有写权；拿到锁之前一律只读 */
 let writer = false;
 /** 同一标签页内的存档读写按顺序执行 */
@@ -1093,7 +1098,7 @@ function renderHud() {
       ${pl.lost ? `<p class="lost">${pl.lost}</p>` : ''}
       <button data-act="collect" ${pv.pending > 0 ? '' : 'disabled'}>收取</button>
     </div>
-    <p class="fine">上限 = ${PENDING.capHours} 小时的期望停车收入（${PENDING.capGold} 金，提案值）。收取的金额按收取当天计入每日软上限（提案值）。</p>`;
+    <p class="fine">上限 = ${PENDING.capHours} 小时的期望停车收入（${PENDING.capGold} 金，提案值）。收取的金额按收取当天计入每日软上限。</p>`);
 
   const sv = giftStreakView(state, now());
   setBadge('daily', sv.claimedToday ? '' : '!', true);
