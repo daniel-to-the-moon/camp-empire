@@ -24,4 +24,16 @@ CC0 不要求署名；仍建议在游戏「致谢」里写 Kenney、Quaternius�
 
 | 文件 | 用途 | 来源 |
 |---|---|---|
-| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供，**用户确认为 AI 生成**（2026-11-26）。生成工具与账号套餐：**待用户说明**；商用条款原文：**待核实**（拿到工具名后按 CHARTER 第三节第 1 条补原文与核实日期）。在补齐前只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。 |
+| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供；**GPT Image 生成**（用户 2026-11-26 确认）。账号套餐 / 走 ChatGPT 还是 API / 生成者使用服务时的居住地：待用户说明。生成输入（提示词或参考图）：待用户说明（须确认不含 MXGARAGE 旧 GLB、旧 viewer 截图或其渲染图，CHARTER 第三节第 1 条）。条款见下节。只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。 |
+
+### GPT Image 条款核实（2026-11-26，Claude 读取官方页面）
+
+来源：[OpenAI Terms of Use](https://openai.com/policies/row-terms-of-use/)（「Published / Effective: January 1, 2026」），适用于「ChatGPT, DALL·E, and OpenAI's other services for individuals」。
+
+- 归属：「you (a) retain your ownership rights in Input and (b) own the Output.」「We hereby assign to you all our right, title, and interest, if any, in and to Output.」（前提：「As between you and OpenAI, and to the extent permitted by applicable law」）
+- 商用：页面未单独说明。
+- 不唯一：「output may not be unique and other users may receive similar output from our Services.」
+- 相关限制：不得「Represent that Output was human-generated when it was not」；不得「Use Output to develop models that compete with OpenAI」；不得侵犯他人权利；另须遵守 Usage Policies 与 Sharing & Publication Policy（**未读，待核实**）。
+- 若是通过 API 或企业账号生成，适用的是 [Business Terms](https://openai.com/policies/business-terms/)（**未读，待核实**）；居住在欧洲经济区（EEA）、英国或瑞士的个人用户适用 [EU Terms of Use](https://openai.com/policies/eu-terms-of-use/)（页面原文未摘录，**待核实**）。
+
+对本图的适用性：**待核实**。上面摘录的是面向个人的服务条款；本图通过哪项服务、哪个账号套餐生成，以及生成者使用服务时的居住地尚未确认，Usage Policies 与 Sharing & Publication Policy 也未读，因此暂不对本图的授权下结论。在核实前沿用上表限制：只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。用户确认生成渠道、套餐和居住地并核对相应条款后，再在此补结论。
