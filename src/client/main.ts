@@ -584,8 +584,9 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     $('#welcome').hidden = true;
   },
   // 底栏罗盘：点一下展开 / 收起圆形菜单
-  menu() {
-    if (!closeMenu()) openMenu();
+  menu(arg) {
+    // 键盘（空格 / 回车）点罗盘：和按 M 一样，焦点进菜单第一格，方向键可绕圈（Codex 审核 #102）
+    if (!closeMenu()) openMenu(arg === 'kbd');
   },
   menuClose() {
     closeMenu();
@@ -719,7 +720,9 @@ document.addEventListener('click', (e) => {
   // 圆形菜单里选了任何一格（视图或功能）都先收起菜单；选了抽屉时焦点交给抽屉，不还回罗盘
   if (act !== 'menu' && act !== 'menuClose' && el.closest('#radial')) closeMenu(act !== 'drawer');
   // 统计不在这里发：点击不等于成功，各操作确认成功后自己上报（GPT 审核 #66 第 2 轮）
-  void Promise.resolve(actions[act]?.(el.dataset.arg ?? '')).finally(renderHud);
+  // 罗盘没有 data-arg：用 click 的 detail 区分键盘触发（detail 为 0）和指针点击
+  const arg = act === 'menu' && e.detail === 0 ? 'kbd' : el.dataset.arg ?? '';
+  void Promise.resolve(actions[act]?.(arg)).finally(renderHud);
 });
 
 // ---------- 键盘 ----------

@@ -401,6 +401,10 @@ try {
     await tabTo('#hub');
     await page.keyboard.press('Space');
     await page.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('空格没有展开圆形菜单'); });
+    // 键盘点开的：焦点进菜单第一格，方向键能绕圈（Codex 审核 #102）
+    if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'pending'))) throw new Error('空格展开菜单后焦点没进菜单');
+    await page.keyboard.press('ArrowRight');
+    if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'daily'))) throw new Error('空格展开菜单后方向键没有绕圈');
     await page.keyboard.press('Escape');
     if (!(await page.evaluate(() => document.activeElement?.id === 'hub'))) throw new Error('Esc 收起菜单后焦点没回到罗盘');
     // M 展开：焦点落在第一格（待收取），左方向键逆时针到最后一格（车库）
