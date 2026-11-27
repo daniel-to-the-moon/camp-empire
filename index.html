@@ -14,13 +14,16 @@
       <button class="help" id="help" data-act="guide" title="快捷键引导（H）" aria-label="快捷键引导"></button>
     </header>
     <!-- 收起式控制面板：两侧只留图标列，点图标展开抽屉（逻辑见 src/shared/hudnav.ts、src/client/hud.ts） -->
+    <div id="sheet-backdrop" data-act="drawerClose" hidden></div>
     <nav class="rail left" id="rail-left" aria-label="车与营地"></nav>
     <aside class="panel left" id="drawer-left" hidden>
+      <div class="sheet-head"><b class="sheet-title" id="drawer-left-title"></b><button class="sheet-close" data-act="drawerClose" aria-label="收起">完成</button></div>
       <section id="garage" data-tab="garage"></section>
       <section id="shop" data-tab="shop"></section>
     </aside>
     <nav class="rail right" id="rail-right" aria-label="收入与记录"></nav>
     <aside class="panel right" id="drawer-right" hidden>
+      <div class="sheet-head"><b class="sheet-title" id="drawer-right-title"></b><button class="sheet-close" data-act="drawerClose" aria-label="收起">完成</button></div>
       <section id="pending" data-tab="pending"></section>
       <section id="spots" data-tab="spots"></section>
       <section id="daily" data-tab="daily"></section>

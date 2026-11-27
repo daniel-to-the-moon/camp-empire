@@ -241,12 +241,17 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 }
 #dev button { padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); }
 
-/* 窄屏：两侧抽屉互斥（hudnav.ts NARROW_PX），抽屉占满图标列之间的宽度 */
+/* 窄屏：两侧抽屉互斥（hudnav.ts NARROW_PX）；顶栏收紧成一行 */
 @media (max-width: 760px) {
   :root { --rail: 40px; }
-  .panel, .panel.right { width: auto; left: calc(12px + var(--rail) + 8px); right: calc(12px + var(--rail) + 8px); max-height: calc(100vh - 60px - 220px); }
   .dock { border-radius: 20px; }
+  .top { gap: 10px; padding: 0 12px; }
+  .brand { font-size: 15px; letter-spacing: 0.04em; white-space: nowrap; }
+  .clock { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .wallet { font-size: 17px; white-space: nowrap; }
 }
+/* 触屏没有悬停：点过的图标不留提示气泡 */
+@media (hover: none), (max-width: 760px) { .rail .tip { display: none; } }
 
 /* 矮视口（手机横屏等）：抽屉改为盖在底栏之上的整高浮层，图标列可滚动；抽屉高度由视口决定，不再固定扣除底栏（GPT 审核 #90 第 2 轮） */
 @media (max-height: 520px) {
@@ -256,6 +261,44 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
   .rail .tip { display: none; }
   .panel, .panel.right { top: 8px; max-height: calc(100vh - 16px); z-index: 6; }
 }
+
+/* ---------- PC：popover（默认收起，点图标在图标旁弹出，顶边对齐图标，箭头指着图标） ---------- */
+.sheet-head { display: none; }
+#sheet-backdrop { display: none; }
+@media (min-width: 761px) and (min-height: 521px) {
+  .panel { top: var(--pop-top, 60px); max-height: calc(100vh - var(--pop-top, 60px) - 140px); }
+  .rail-btn.on::after {
+    content: ''; position: absolute; top: 50%; margin-top: -8px; border: 8px solid transparent; pointer-events: none;
+    animation: section-in 0.25s ease both;
+  }
+  .rail.left .rail-btn.on::after { left: calc(100% + 2px); border-right-color: var(--pine); }
+  .rail.right .rail-btn.on::after { right: calc(100% + 2px); border-left-color: var(--pine); }
+}
+
+/* ---------- 移动端（窄屏）：底部 action sheet（默认收起；遮罩点一下或“完成”收起；两侧互斥） ---------- */
+@media (max-width: 760px) {
+  #sheet-backdrop { display: block; position: fixed; inset: 0; z-index: 7; background: rgba(5, 10, 8, 0.5); animation: fade-in 0.2s ease both; }
+  .panel.left, .panel.right {
+    left: 0; right: 0; top: auto; bottom: 0; width: auto; z-index: 8;
+    max-height: min(72vh, calc(100vh - 48px)); border-radius: 18px 18px 0 0; border-bottom: 0;
+    padding: 0 16px calc(14px + env(safe-area-inset-bottom, 0px));
+    animation: sheet-up 0.34s cubic-bezier(0.2, 0.9, 0.3, 1.08) both; transform-origin: bottom center;
+  }
+  .sheet-head {
+    display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 1;
+    padding: 14px 0 8px; margin: 0 -2px; background: var(--pine);
+  }
+  .sheet-head::before {
+    content: ''; position: absolute; left: 50%; top: 5px; width: 40px; height: 4px; margin-left: -20px; border-radius: 2px; background: rgba(236, 230, 214, 0.3);
+  }
+  .sheet-title { font-size: 15px; letter-spacing: 0.04em; }
+  .sheet-close { padding: 6px 14px; border-radius: 999px; border: 0; background: var(--canvas); color: var(--ink); font-weight: 700; }
+  .panel > section.active > h2:first-child { display: none; } /* 标题已在 sheet 头部 */
+  .panel .card > button, .panel .primary { padding: 12px; font-size: 15px; } /* 手指好点 */
+  .panel .chip { padding: 5px 12px; font-size: 13px; }
+}
+@keyframes sheet-up { from { transform: translateY(100%); } }
+@keyframes fade-in { from { opacity: 0; } }
 
 /* ---------- 首次快捷键引导（src/client/hud.ts） ---------- */
 #guide {

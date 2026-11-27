@@ -588,6 +588,10 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     if (isDrawerTab(tab)) drawers.toggle(tab, narrowQuery.matches);
     syncDrawers();
   },
+  // action sheet 的“完成”按钮和遮罩、popover 外点：收起全部
+  drawerClose() {
+    if (drawers.closeAll()) syncDrawers();
+  },
   // 快捷键引导：顶栏按钮 / H / ? 打开；关掉即记为看过
   guide() {
     if (guideOpen()) return actions.guideClose('');

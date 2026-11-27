@@ -72,8 +72,16 @@ export function syncDrawers() {
       const on = s.dataset.tab === open;
       if (s.classList.contains('active') !== on) s.classList.toggle('active', on);
     });
-    if (open) panel.setAttribute('aria-label', DRAWERS[open].label);
+    if (open) {
+      panel.setAttribute('aria-label', DRAWERS[open].label);
+      $(`#drawer-${side}-title`).textContent = DRAWERS[open].label;
+      placePopover(panel, side, open);
+    }
   }
+  // 移动端 action sheet 的遮罩：有抽屉开着才显示，点遮罩收起
+  const any = !!(drawers.open.left || drawers.open.right);
+  const bd = $('#sheet-backdrop');
+  if (bd.hidden !== !any) bd.hidden = !any;
   document.querySelectorAll<HTMLElement>('.rail-btn[data-act="drawer"]').forEach((b) => {
     const on = drawers.isOpen(b.dataset.arg as DrawerTab);
     if (b.classList.contains('on') !== on) {
@@ -81,6 +89,20 @@ export function syncDrawers() {
       b.setAttribute('aria-expanded', String(on));
     }
   });
+}
+
+/**
+ * PC 端 popover：顶边对齐被点的图标弹出（箭头画在图标上，见 style.css）；放不下时往上挪。
+ * 移动端（窄屏）是底部 action sheet，位置交给 CSS，这里设的变量不起作用。
+ */
+function placePopover(panel: HTMLElement, side: Side, tab: DrawerTab) {
+  const btn = document.querySelector<HTMLElement>(`#rail-${side} [data-arg="${tab}"]`);
+  if (!btn) return;
+  const r = btn.getBoundingClientRect();
+  const bottomReserve = 140; // 底栏罗盘的高度
+  const minH = Math.min(320, window.innerHeight - 60 - bottomReserve);
+  const top = Math.max(56, Math.min(r.top - 14, window.innerHeight - bottomReserve - minH));
+  panel.style.setProperty('--pop-top', `${Math.round(top)}px`);
 }
 
 /** 图标角标：文字为空就隐藏；hot 时跳动提醒 */

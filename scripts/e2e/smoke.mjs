@@ -184,25 +184,86 @@ try {
     await saveShot('front34', 'vehicle-no-brow-front34.png');
   });
 
-  await step('窄屏两侧抽屉互斥：正好 760px 点两侧只开一侧；宽屏双开后缩窄自动收起一侧', async () => {
+  await step('窄屏 action sheet：默认收起；点图标从底部弹出，点遮罩 / 完成 / Esc 收起，一次只开一个', async () => {
     const left = page.locator('#drawer-left');
     const right = page.locator('#drawer-right');
-    const openTab = async (side, tab) => {
-      if (!(await page.locator(`#rail-${side} [data-arg="${tab}"].on`).count())) await page.locator(`#rail-${side} [data-arg="${tab}"]`).click();
-    };
+    const bd = page.locator('#sheet-backdrop');
     await page.keyboard.press('Escape');
     await page.setViewportSize({ width: 760, height: 800 });
-    await openTab('left', 'garage');
-    await openTab('right', 'daily');
-    if (!(await left.isHidden()) || !(await right.isVisible())) throw new Error('760px 下两侧抽屉同时打开');
+    if (!(await left.isHidden()) || !(await right.isHidden()) || !(await bd.isHidden())) throw new Error('窄屏默认应全部收起');
+    await page.locator('#rail-left [data-arg="garage"]').click();
+    await left.waitFor({ state: 'visible', timeout: 3_000 });
+    await bd.waitFor({ state: 'visible', timeout: 3_000 });
+    await page.waitForTimeout(450); // 等 sheet 滑上来
+    const box = await left.boundingBox();
+    if (!box || Math.abs(box.y + box.height - 800) > 2 || box.width < 750) throw new Error(`action sheet 应贴底铺满宽度：${JSON.stringify(box)}`);
+    // 遮罩盖住画面：点遮罩收起
+    await page.mouse.click(380, 40);
+    await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点遮罩没有收起 action sheet'); });
+    await page.locator('#rail-right [data-arg="daily"]').click();
+    await right.waitFor({ state: 'visible', timeout: 3_000 });
+    if (!(await left.isHidden())) throw new Error('760px 下两侧抽屉同时打开');
+    await right.locator('.sheet-close').click();
+    await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点“完成”没有收起 action sheet'); });
+    await page.locator('#rail-left [data-arg="shop"]').click();
+    await left.waitFor({ state: 'visible', timeout: 3_000 });
     await page.keyboard.press('Escape');
+    await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('Esc 没有收起 action sheet'); });
+    // 宽屏能两侧同开；缩窄后自动收起一侧
     await page.setViewportSize({ width: 1280, height: 800 });
-    await openTab('left', 'garage');
-    await openTab('right', 'daily');
+    await page.locator('#rail-left [data-arg="garage"]').click();
+    await page.locator('#rail-right [data-arg="daily"]').click();
     if (!(await left.isVisible()) || !(await right.isVisible())) throw new Error('宽屏下两侧抽屉应能同时打开');
     await page.setViewportSize({ width: 700, height: 800 });
     await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('缩窄后左侧抽屉没有收起'); });
     if ((await page.locator('#rail-left [data-arg="garage"]').getAttribute('aria-expanded')) !== 'false') throw new Error('左侧抽屉收起后图标仍是展开状态');
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1280, height: 800 });
+  });
+
+  await step('PC popover：默认收起；点图标就在图标旁弹出，顶边对齐图标', async () => {
+    await page.keyboard.press('Escape');
+    if (!(await page.locator('#drawer-left').isHidden()) || !(await page.locator('#drawer-right').isHidden())) throw new Error('PC 默认应全部收起');
+    for (const [side, tab] of [['left', 'shop'], ['right', 'spots']]) {
+      const icon = page.locator(`#rail-${side} [data-arg="${tab}"]`);
+      await icon.click();
+      const panel = page.locator(`#drawer-${side}`);
+      await panel.waitFor({ state: 'visible', timeout: 3_000 });
+      await page.waitForTimeout(400); // 等弹出动画
+      const ib = await icon.boundingBox();
+      const pb = await panel.boundingBox();
+      if (!ib || !pb || Math.abs(pb.y - (ib.y - 14)) > 4) throw new Error(`${side} popover 没有对齐图标：icon ${ib?.y} panel ${pb?.y}`);
+      const gap = side === 'left' ? pb.x - (ib.x + ib.width) : ib.x - (pb.x + pb.width);
+      if (gap < 0 || gap > 24) throw new Error(`${side} popover 离图标太远或盖住了图标：${gap}px`);
+      if (await page.locator('#sheet-backdrop').isVisible()) throw new Error('PC 不应显示 action sheet 遮罩');
+      await page.screenshot({ path: join(outDir, `ui-popover-${side}.png`) });
+      await page.keyboard.press('Escape');
+    }
+  });
+
+  await step('手机 390×844：action sheet 里能真实点到“收取”，金币增加', async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.keyboard.press('Escape');
+    await page.screenshot({ path: join(outDir, 'ui-mobile-collapsed.png') });
+    // 开发面板只用于造数据：直接触发快进
+    await page.evaluate(() => document.querySelector('#dev [data-act="dev"][data-arg="86400000"]').click());
+    await page.waitForTimeout(500);
+    await closeWelcome();
+    await page.keyboard.press('Escape');
+    await page.locator('#rail-right [data-arg="pending"]').click();
+    const b = page.locator('#pending [data-act="collect"]');
+    await page.waitForFunction(() => !document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 10_000 });
+    await page.waitForTimeout(400);
+    const bb = await b.boundingBox();
+    if (!bb || bb.y + bb.height > 844 || bb.height < 36) throw new Error(`手机上收取按钮不在可视区或太小：${JSON.stringify(bb)}`);
+    await page.screenshot({ path: join(outDir, 'ui-mobile-sheet.png') });
+    const c0 = await coins();
+    await b.click();
+    await page.waitForFunction(() => document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 5_000 })
+      .catch(() => { throw new Error('手机上点收取没有生效'); });
+    if (!((await coins()) > c0)) throw new Error('手机上收取后金币没有增加');
+    await page.locator('#drawer-right .sheet-close').click();
+    await page.locator('#drawer-right').waitFor({ state: 'hidden', timeout: 3_000 });
     await page.setViewportSize({ width: 1280, height: 800 });
   });
 
