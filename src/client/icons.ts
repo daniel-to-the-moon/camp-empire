@@ -29,9 +29,10 @@ export const ICON = {
   follow: svg('<path d="M12 4l6 7h-4v8h-4v-8H6z"/>'),
   /** 视图：环绕（环形箭头） */
   orbit: svg('<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>'),
-  /** 视图：引擎盖（方向盘） */
+  /** 视图：驾驶舱（方向盘） */
   hood: svg('<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2"/><path d="M4.5 10.5l5.6 1M19.5 10.5l-5.6 1M12 14v6"/>'),
   /** 关闭：× */
+  menu: svg('<rect x="4" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6"/><circle cx="16.75" cy="16.75" r="3.4"/>'),
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
 } as const;
 
