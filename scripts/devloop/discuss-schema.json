@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reply"],
+  "properties": {
+    "reply": { "type": "string", "description": "评论正文（中文 Markdown），按提示词“输出格式”一节书写，第一行为执行者行" }
+  }
+}

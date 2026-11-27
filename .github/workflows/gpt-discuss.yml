@@ -2,8 +2,11 @@
 # 触发判定在 scripts/devloop/discuss-gate.mjs、去重与提示词在 discuss-build.mjs（均有测试）：
 # 打上 discussion / proposal 标签时首次评审一次（带标签新建也走 labeled 事件，已评审过则跳过）；
 # 之后只在评论里点名 @gpt 时回答那条评论；也可手动触发。控制费用：不是每条评论都跑。
-# 安全结构（与 openai/codex-action 官方示例一致）：
-#   review：只读令牌，Codex 以 :read-only 权限配置读仓库与讨论全文，产出回复；
+# 安全结构：
+#   review：只读令牌；scripts/devloop/gpt-agent.mjs 直接调 Responses API（read 模式：只有读文件 / 搜索工具，不能写、不能执行命令），
+#           读 main 检出与讨论全文，产出回复。与 gpt-review.yml / codex.yml 同一条调用路径。
+#           不用 openai/codex-action：官方 key 所在组织被拒 codex_byok_restricted_by_api_credit_promo（2026-11-22），
+#           且 2026-11-27 起 runner 上启动沙箱即失败（Could not restrict access to /run/dbus/system_bus_socket，#104）。
 #   post  ：只有 issues:write，只负责把回复贴成评论，不运行模型。
 name: gpt-discuss
 
@@ -72,16 +75,18 @@ jobs:
             --mode "$MODE" --trigger "$TRIGGER" --header scripts/devloop/discuss-prompt.md --out "$d/prompt.md"
       - name: GPT 评审
         if: steps.gate.outputs.run == 'true' && steps.build.outputs.skip != 'true'
-        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1.13（标签指向的提交，非标签对象）
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          # 兼容 OpenAI Responses API 的网关（仓库变量）；为空时走官方地址
-          responses-api-endpoint: ${{ vars.GPT_RESPONSES_ENDPOINT }}
-          prompt-file: ${{ runner.temp }}/gpt/prompt.md
-          output-file: ${{ runner.temp }}/gpt/reply.md
-          permission-profile: ':read-only'
-          model: ${{ vars.GPT_MODEL }}
-          effort: high
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GPT_RESPONSES_ENDPOINT: ${{ vars.GPT_RESPONSES_ENDPOINT }}
+          # 讨论以玩法 / 设计为主，用主设模型（GPT_DESIGN_MODEL）；未设则用 GPT_MODEL
+          MODEL: ${{ vars.GPT_DESIGN_MODEL || vars.GPT_MODEL }}
+          EFFORT: high
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/gpt"
+          node scripts/devloop/gpt-agent.mjs --mode read --root . --prompt "$d/prompt.md" \
+            --schema scripts/devloop/discuss-schema.json --out "$d/reply.json"
+          jq -er '.reply | select(type == "string" and length > 0)' "$d/reply.json" > "$d/reply.md"
       - uses: actions/upload-artifact@v4
         if: steps.gate.outputs.run == 'true' && steps.build.outputs.skip != 'true'
         with:
@@ -111,7 +116,7 @@ jobs:
           f=reply/reply.md
           [ -s "$f" ] || { echo "::error::GPT 没有产出回复"; exit 1; }
           # 统一第一行，便于识别与防止被当成别的执行者
-          head -1 "$f" | grep -q '^执行者：GPT' || { printf '执行者：GPT（云端评审，openai/codex-action）\n\n' | cat - "$f" > r2 && mv r2 "$f"; }
+          head -1 "$f" | grep -q '^执行者：GPT' || { printf '执行者：GPT（云端讨论，Responses API）\n\n' | cat - "$f" > r2 && mv r2 "$f"; }
           # 去重标记：discuss-build.mjs 只认 github-actions[bot] 发出且带此标记的评论为“已评审”
           printf '\n\n<!-- gpt-discuss:review run=%s -->\n' "${{ github.run_id }}" >> "$f"
           gh issue comment "$N" -R "$REPO" --body-file "$f"
