@@ -6,7 +6,7 @@ import mainSrc from '../src/client/main.ts?raw';
 import cardSrc from '../src/shared/card.ts?raw';
 import html from '../index.html?raw';
 import css from '../src/style.css?raw';
-import hudSrc from '../src/client/hud.ts?raw';
+import hudSrc from '../src/shared/hudnav.ts?raw';
 import * as THREE from 'three';
 import { CAMP_SHOT_H, CARD_H, CARD_W, drawCard, SHOT_W, VEHICLE_SHOT_H } from '../src/client/card';
 import { CARD_FAIL_MSG, createCardFlow } from '../src/client/cardflow';
@@ -481,7 +481,7 @@ describe('提示不被卡片遮挡', () => {
 describe('不自动弹出、不强制分享、无分享奖励', () => {
   it('预览框默认隐藏；页面加载时不生成卡片，只有 card 动作（玩家点“生成露营卡片”）调用生成', () => {
     expect(html).toMatch(/<div id="camp-card"[^>]*\bhidden\b/);
-    expect(hudSrc).toContain("act: 'card'"); // 入口按钮在左侧图标列（hud.ts 生成）
+    expect(hudSrc).toContain("act: 'card'"); // 入口在罗盘展开的圆形菜单外圈（hudnav.ts RING_ITEMS）
     expect(mainSrc.match(/cardFlow\.generate\(\)/g)?.length).toBe(1);
     const cardAction = mainSrc.slice(mainSrc.indexOf('async card()'), mainSrc.indexOf('cardDownload()'));
     expect(cardAction).toContain('cardFlow.generate()');
