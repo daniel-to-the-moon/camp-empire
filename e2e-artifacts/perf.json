@@ -1,0 +1,42 @@
+{
+  "scenes": {
+    "camp": {
+      "frames": 61,
+      "callsMedian": 89,
+      "callsMax": 89,
+      "trisMedian": 13748,
+      "trisMax": 13748,
+      "msMedian": 150
+    },
+    "driving": {
+      "frames": 60,
+      "callsMedian": 47,
+      "callsMax": 48,
+      "trisMedian": 13298,
+      "trisMax": 13322,
+      "msMedian": 133.4
+    }
+  },
+  "shots": [
+    "shot-camp.png",
+    "shot-driving.png",
+    "shot-mobile.png"
+  ],
+  "budgets": {
+    "_说明": "性能验收预算（scripts/e2e/gates.mjs，CI 里用 SwiftShader 实测 WebGL draw call 与三角形，含阴影通道）。提案值：main 630d295 实测基线 ×约 1.3 取整，给已排队的 #48（车灯 + 侧边帐）留余量；目标设备实测前（#55）不判帧率。改预算需用户确认。",
+    "_基线": "2026-11-21 main 630d295：camp draw call 中位 97 / 最大 97，三角形中位 5374；driving draw call 中位 51 / 最大 67，三角形中位 4900",
+    "scenes": {
+      "camp": {
+        "callsMedian": 130,
+        "callsMax": 140,
+        "trisMedian": 30000
+      },
+      "driving": {
+        "callsMedian": 90,
+        "callsMax": 110,
+        "trisMedian": 30000
+      }
+    }
+  },
+  "failures": []
+}

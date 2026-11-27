@@ -342,6 +342,17 @@ try {
       await page.keyboard.press('Escape');
       await box.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error(`Esc 没有关掉 ${sel}`); });
     }
+    // 图鉴开着时按 M 再从菜单打开隐私：图鉴先关掉，不会两个叠在一起，Esc 关的是看得见的隐私（Codex 审核 #103）
+    await pick('dex');
+    await page.locator('#dex').waitFor({ state: 'visible', timeout: 3_000 });
+    await page.keyboard.press('KeyM');
+    await page.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 });
+    if (!(await page.locator('#dex').isHidden())) throw new Error('展开菜单时图鉴没有关掉（菜单被图鉴挡住）');
+    await pick('privacy');
+    await page.locator('#privacy').waitFor({ state: 'visible', timeout: 3_000 });
+    if (!(await page.locator('#dex').isHidden())) throw new Error('打开隐私后图鉴没有关掉（两个弹窗叠在一起）');
+    await page.keyboard.press('Escape');
+    await page.locator('#privacy').waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('Esc 没有关掉最上面的隐私'); });
     // 引导也能用右上角 × 关
     await page.keyboard.press('KeyH');
     await page.locator('#guide').waitFor({ state: 'visible', timeout: 3_000 });
