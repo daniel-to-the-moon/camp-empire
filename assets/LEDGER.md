@@ -24,7 +24,7 @@ CC0 不要求署名；仍建议在游戏「致谢」里写 Kenney、Quaternius�
 
 | 文件 | 用途 | 来源 |
 |---|---|---|
-| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供；**GPT Image 生成**（用户 2026-11-26 确认）。账号套餐 / 走 ChatGPT 还是 API：待用户说明。条款见下节。只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。 |
+| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供；**GPT Image 生成**（用户 2026-11-26 确认）。账号套餐 / 走 ChatGPT 还是 API / 适用地区：待用户说明。生成输入（提示词或参考图）：待用户说明（须确认不含 MXGARAGE 旧 GLB、旧 viewer 截图或其渲染图，CHARTER 第三节第 1 条）。条款见下节。只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。 |
 
 ### GPT Image 条款核实（2026-11-26，Claude 读取官方页面）
 
@@ -36,4 +36,4 @@ CC0 不要求署名；仍建议在游戏「致谢」里写 Kenney、Quaternius�
 - 相关限制：不得「Represent that Output was human-generated when it was not」；不得「Use Output to develop models that compete with OpenAI」；不得侵犯他人权利；另须遵守 Usage Policies 与 Sharing & Publication Policy（**未读，待核实**）。
 - 若是通过 API 或企业账号生成，适用的是 [Business Terms](https://openai.com/policies/business-terms/)（**未读，待核实**）；欧盟 / 英国 / 瑞士用户适用单独的 EU 条款。
 
-结论（Claude 判断，非法律意见）：作为造型参照使用没有障碍；产出不保证唯一，所以游戏里的人物应按参考图重新建模，不直接用图像像素做贴图（与上表用法一致）。
+对本图的适用性：**待核实**。上面摘录的是面向个人的服务条款；本图通过哪项服务、哪个账号套餐、在哪个地区生成尚未确认，Usage Policies 与 Sharing & Publication Policy 也未读，因此暂不对本图的授权下结论。在核实前沿用上表限制：只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。用户确认生成渠道、套餐和地区并核对相应条款后，再在此补结论。
