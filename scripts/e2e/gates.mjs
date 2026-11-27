@@ -59,6 +59,16 @@ function hookGl() {
   window.__gates = { take: () => frames.splice(0, frames.length) };
 }
 
+/** 首次打开的快捷键引导（#guide）：等它出现再关掉，免得挡住回访面板和截图 */
+async function closeGuide(p) {
+  const g = p.locator('#guide');
+  await g.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
+  if (await g.isVisible()) {
+    await g.locator('[data-act="guideClose"]').click();
+    await g.waitFor({ state: 'hidden', timeout: 5_000 });
+  }
+}
+
 const errors = [];
 const browser = await chromium.launch({ args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader'] });
 const results = { scenes: {}, shots: [], budgets };
@@ -74,10 +84,12 @@ try {
   await page.goto(url.toString(), { waitUntil: 'load', timeout: 30_000 });
   await page.locator('#stage canvas').waitFor({ timeout: 20_000 });
   const welcome = page.locator('#welcome');
+  await welcome.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await welcome.isVisible()) {
     await welcome.locator('[data-act="closeWelcome"]').click();
     await welcome.waitFor({ state: 'hidden', timeout: 5_000 });
   }
+  await closeGuide(page); // 引导在回访面板关掉之后才弹
   /** 等镜头稳定后采样 n 帧 */
   async function sample(name, settleMs = 2500, n = 60) {
     await page.waitForTimeout(settleMs);
@@ -119,7 +131,9 @@ try {
   await m.goto(base, { waitUntil: 'load', timeout: 30_000 });
   await m.locator('#stage canvas').waitFor({ timeout: 20_000 });
   const mw = m.locator('#welcome');
+  await mw.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
   if (await mw.isVisible()) await mw.locator('[data-act="closeWelcome"]').click().catch(() => {});
+  await closeGuide(m);
   await m.waitForTimeout(2500);
   await m.screenshot({ path: join(outDir, 'shot-mobile.png') });
   results.shots.push('shot-mobile.png');

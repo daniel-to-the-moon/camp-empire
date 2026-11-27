@@ -25,6 +25,14 @@ async function coins() {
   return n;
 }
 
+/** 玩家路径：点底栏罗盘展开圆形菜单，再点其中一格（抽屉 / 卡片 / 图鉴 / 隐私 / 视图） */
+async function pick(arg, p = page) {
+  if (await p.locator('#radial').isHidden()) await p.locator('#hub').click();
+  await p.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 });
+  await p.locator(`#radial button[data-arg="${arg}"], #radial button[data-act="${arg}"]`).click();
+  await p.locator('#radial').waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error(`选了 ${arg} 后圆形菜单没有收起`); });
+}
+
 async function step(name, fn) {
   try {
     await fn();
@@ -85,6 +93,30 @@ try {
     if (colors < 8) throw new Error(`场景画布只有 ${colors} 种颜色，疑似没有渲染`);
   });
 
+  await step('首次打开：快捷键引导出现，Esc 关掉；H 重开、按钮关掉', async () => {
+    const guide = page.locator('#guide');
+    // 首次打开先出回访面板（每日礼物），引导要等它关掉才弹，不能叠在它上面
+    const wel = page.locator('#welcome');
+    await wel.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await guide.isVisible()) throw new Error('回访面板开着时引导也弹出来了');
+    await wel.locator('[data-act="closeWelcome"]').click();
+    await guide.waitFor({ state: 'visible', timeout: 10_000 });
+    await page.screenshot({ path: join(outDir, 'ui-guide.png') });
+    await page.keyboard.press('Escape');
+    await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+    await page.keyboard.press('KeyH');
+    await guide.waitFor({ state: 'visible', timeout: 5_000 });
+    await guide.locator('[data-act="guideClose"]').click();
+    await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+    // 顶栏按钮打开 → 焦点在“开始露营”上按空格关闭 → 焦点回到顶栏按钮（GPT 审核 #90）
+    await page.locator('#help').click();
+    await guide.waitFor({ state: 'visible', timeout: 5_000 });
+    await page.keyboard.press('Space');
+    await guide.waitFor({ state: 'hidden', timeout: 5_000 });
+    const focused = await page.evaluate(() => document.activeElement?.id);
+    if (focused !== 'help') throw new Error(`关闭引导后焦点没有回到顶栏按钮（现在是 ${focused || 'body'}）`);
+  });
+
   const welcome = page.locator('#welcome');
   /** 回访面板（每日礼物、离线汇总）只关掉、不在里面收取：收取一律走待收取区，才能单独核对收取入账 */
   async function closeWelcome() {
@@ -105,7 +137,10 @@ try {
   });
 
   const btn = page.locator('#pending [data-act="collect"]');
-  await step('待收取池有钱', async () => {
+  await step('待收取池有钱（点罗盘、在圆形菜单里选待收取）', async () => {
+    await page.screenshot({ path: join(outDir, 'ui-collapsed.png') });
+    await pick('pending');
+    await page.locator('#drawer-right').waitFor({ state: 'visible', timeout: 5_000 });
     await btn.waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => !document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 10_000 });
   });
@@ -118,8 +153,8 @@ try {
     before = await coins();
     // 流水只显示最近 6 条、最新在前：比较第一条的内容
     logBefore = (await page.locator('#log li').first().textContent().catch(() => '')) ?? '';
-    // 面板每帧重绘、按钮节点不稳定；点击处理挂在 document 上，直接对当前节点派发点击
-    await page.evaluate(() => document.querySelector('#pending [data-act="collect"]')?.click());
+    // 真实指针点击抽屉里可见的收取按钮（抽屉内容不变就不重绘，节点稳定）
+    await btn.click();
     await page.waitForFunction(() => document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 5_000 })
       .catch(() => { throw new Error('收取后待收取池没有清空（收取按钮仍可点）'); });
     const after = await coins();
