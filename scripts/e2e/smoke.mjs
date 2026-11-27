@@ -82,14 +82,14 @@ try {
     const wel = page.locator('#welcome');
     await wel.waitFor({ state: 'visible', timeout: 10_000 });
     if (await guide.isVisible()) throw new Error('回访面板开着时引导也弹出来了');
-    await wel.locator('[data-act="closeWelcome"]').click();
+    await wel.locator('.x-close').click();
     await guide.waitFor({ state: 'visible', timeout: 10_000 });
     await page.screenshot({ path: join(outDir, 'ui-guide.png') });
     await page.keyboard.press('Escape');
     await guide.waitFor({ state: 'hidden', timeout: 5_000 });
     await page.keyboard.press('KeyH');
     await guide.waitFor({ state: 'visible', timeout: 5_000 });
-    await guide.locator('[data-act="guideClose"]').click();
+    await guide.locator('.primary[data-act="guideClose"]').click();
     await guide.waitFor({ state: 'hidden', timeout: 5_000 });
     // 顶栏按钮打开 → 焦点在“开始露营”上按空格关闭 → 焦点回到顶栏按钮（GPT 审核 #90）
     await page.locator('#help').click();
@@ -104,7 +104,7 @@ try {
   /** 回访面板（每日礼物、离线汇总）只关掉、不在里面收取：收取一律走待收取区，才能单独核对收取入账 */
   async function closeWelcome() {
     if (await welcome.isVisible()) {
-      await welcome.locator('[data-act="closeWelcome"]').click();
+      await welcome.locator('.x-close').click();
       await welcome.waitFor({ state: 'hidden', timeout: 5_000 });
     }
   }
@@ -263,8 +263,8 @@ try {
     await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('展开圆形菜单时抽屉没有收起'); });
     await page.keyboard.press('Escape');
     await pick('daily');
-    await right.locator('.sheet-close').click();
-    await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点“完成”没有收起抽屉'); });
+    await right.locator('.x-close').click();
+    await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点右上角 ×没有收起抽屉'); });
   });
 
   await step('窄屏 760px：圆形菜单选中后底部弹出 action sheet，点遮罩 / 完成 / Esc 收起', async () => {
@@ -284,8 +284,8 @@ try {
     await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点遮罩没有收起 action sheet'); });
     await pick('daily');
     await right.waitFor({ state: 'visible', timeout: 3_000 });
-    await right.locator('.sheet-close').click();
-    await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点“完成”没有收起 action sheet'); });
+    await right.locator('.x-close').click();
+    await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点右上角 ×没有收起 action sheet'); });
     await pick('shop');
     await left.waitFor({ state: 'visible', timeout: 3_000 });
     await page.keyboard.press('Escape');
@@ -321,38 +321,67 @@ try {
     await page.waitForFunction(() => document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 5_000 })
       .catch(() => { throw new Error('手机上点收取没有生效'); });
     if (!((await coins()) > c0)) throw new Error('手机上收取后金币没有增加');
-    await page.locator('#drawer-right .sheet-close').click();
+    await page.locator('#drawer-right .x-close').click();
     await page.locator('#drawer-right').waitFor({ state: 'hidden', timeout: 3_000 });
     await page.setViewportSize({ width: 1280, height: 800 });
   });
 
-  await step('罗盘连切：转向南途中按 4，指针从当时的实际角度走最短弧转到西', async () => {
-    const angle = () => page.evaluate(() => {
-      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
+  await step('所有关闭都支持 Esc；关闭钮在右上角、醒目', async () => {
+    await page.keyboard.press('Escape');
+    for (const [arg, sel] of [['dex', '#dex'], ['privacy', '#privacy'], ['daily', '#drawer-right']]) {
+      await pick(arg);
+      const box = page.locator(sel);
+      await box.waitFor({ state: 'visible', timeout: 3_000 });
+      await page.waitForTimeout(400);
+      const bb = await box.boundingBox();
+      const xb = await box.locator('.x-close').first().boundingBox();
+      if (!bb || !xb) throw new Error(`${sel} 没有关闭钮`);
+      // 右上角：离右边、上边都不超过 28px；够大（至少 32px）
+      if (bb.x + bb.width - (xb.x + xb.width) > 28 || xb.y - bb.y > 28 || xb.width < 32) throw new Error(`${sel} 的关闭钮不在右上角或太小：${JSON.stringify({ bb, xb })}`);
+      if (arg === 'dex') await page.screenshot({ path: join(outDir, 'ui-close-topright.png') });
+      await page.keyboard.press('Escape');
+      await box.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error(`Esc 没有关掉 ${sel}`); });
+    }
+    // 引导也能用右上角 × 关
+    await page.keyboard.press('KeyH');
+    await page.locator('#guide').waitFor({ state: 'visible', timeout: 3_000 });
+    await page.locator('#guide .x-close').click();
+    await page.locator('#guide').waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点引导右上角 × 没有关掉'); });
+  });
+
+  await step('罗盘实时感应：环绕视图拖动画面，盘面跟着镜头朝向实时转；拖回来又转回去', async () => {
+    const dial = () => page.evaluate(() => {
+      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#hub .dial')).transform);
       return m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
     });
-    await page.keyboard.press('1');
+    const diff = (a, b) => Math.abs(((((a - b) % 360) + 540) % 360) - 180);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('3');
+    await page.locator('#views [data-arg="orbit"].on').waitFor({ timeout: 3_000 });
+    await page.waitForTimeout(1500);
+    const a0 = await dial();
+    await page.locator('#views').screenshot({ path: join(outDir, 'ui-compass-live-1.png') });
+    // 拖动途中就要转（不是松手后才更新）
+    await page.mouse.move(900, 300);
+    await page.mouse.down();
+    await page.mouse.move(750, 300, { steps: 6 });
+    await page.waitForTimeout(300);
+    const aMid = await dial();
+    await page.mouse.move(600, 300, { steps: 6 });
+    await page.mouse.up();
     await page.waitForTimeout(1200);
-    // 按 3 后等两帧（指针刚起步），记下此刻实际角度，再立刻按 4；跑得快慢不同的机器上起点不同，所以断言相对起点
-    const start = await page.evaluate(async () => {
-      const key = (code, key) => window.dispatchEvent(new KeyboardEvent('keydown', { code, key }));
-      key('Digit3', '3');
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
-      const a = m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
-      key('Digit4', '4');
-      return a;
-    });
-    const seen = [start];
-    for (let i = 0; i < 20; i++) { await page.waitForTimeout(50); seen.push(await angle()); }
-    // 展开成连续角度，看总共转了多远
-    const cum = [start];
-    for (let i = 1; i < seen.length; i++) cum.push(cum[i - 1] + ((((seen[i] - seen[i - 1]) % 360) + 540) % 360) - 180);
-    const shortest = Math.abs(((((-90 - start) % 360) + 540) % 360) - 180);
-    const far = Math.max(...cum.map((a) => Math.abs(a - start)));
-    if (far > shortest * 1.1 + 5) throw new Error(`指针没走最短弧：起点 ${start.toFixed(0)}°，最短 ${shortest.toFixed(0)}°，实际转到 ${far.toFixed(0)}°（${seen.map((a) => a.toFixed(0)).join(', ')}）`);
-    if (Math.abs(seen.at(-1) + 90) > 15) throw new Error(`指针没停在西：${seen.at(-1).toFixed(0)}°`);
-    for (const k of ['Digit3', 'Digit4']) await page.evaluate((code) => window.dispatchEvent(new KeyboardEvent('keyup', { code })), k);
+    const a1 = await dial();
+    await page.locator('#views').screenshot({ path: join(outDir, 'ui-compass-live-2.png') });
+    if (diff(aMid, a0) < 5) throw new Error(`拖动途中罗盘没动：${a0.toFixed(0)}° → ${aMid.toFixed(0)}°`);
+    if (diff(a1, a0) < 20) throw new Error(`拖完罗盘转得太少：${a0.toFixed(0)}° → ${a1.toFixed(0)}°`);
+    // 拖回原处：罗盘回到原来的朝向
+    await page.mouse.move(600, 300);
+    await page.mouse.down();
+    await page.mouse.move(900, 300, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(1500);
+    const a2 = await dial();
+    if (diff(a2, a0) > 6) throw new Error(`拖回原处后罗盘没回到原朝向：${a0.toFixed(0)}° → ${a2.toFixed(0)}°`);
     await page.keyboard.press('1');
   });
 
@@ -375,7 +404,7 @@ try {
     await p2.locator('#stage canvas').waitFor({ timeout: 20_000 });
     const g = p2.locator('#guide');
     await g.waitFor({ state: 'visible', timeout: 10_000 });
-    await g.locator('[data-act="guideClose"]').click();
+    await g.locator('.primary[data-act="guideClose"]').click();
     await g.waitFor({ state: 'hidden', timeout: 5_000 });
     await ctx.close();
     if (errs.length) throw new Error(`存储不可用时页面报错：${errs.join('；')}`);
@@ -431,25 +460,6 @@ try {
     if (!(await page.locator('#daily.active').isVisible())) throw new Error('鼠标点过的图标被空格再次触发（抽屉收起了）');
     await page.keyboard.press('Escape');
     await page.evaluate(() => document.activeElement?.blur());
-  });
-
-  await step('减少动态效果：途中开启立即停在目标；开启后换视图不转动画', async () => {
-    const angle = () => page.evaluate(() => {
-      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#views .needle')).transform);
-      return m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
-    });
-    await page.waitForTimeout(900);
-    await page.keyboard.press('3');
-    await page.emulateMedia({ reducedMotion: 'reduce' });
-    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-    const a1 = await angle();
-    if (Math.abs(Math.abs(a1) - 180) > 2) throw new Error(`途中开启减少动态后指针没对齐南：${a1.toFixed(0)}°`);
-    await page.keyboard.press('2');
-    await page.waitForTimeout(30);
-    const a2 = await angle();
-    if (Math.abs(a2 - 90) > 2) throw new Error(`减少动态下换视图仍在转动：${a2.toFixed(0)}°`);
-    await page.emulateMedia({ reducedMotion: 'no-preference' });
-    await page.keyboard.press('1');
   });
 
   await step('矮横屏 667×280：圆形菜单放得下，选车库后能点到里面的按钮', async () => {

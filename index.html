@@ -16,12 +16,12 @@
     <!-- 收起式控制面板：所有菜单收在底栏罗盘里，点罗盘展开圆形菜单，选中后打开抽屉（逻辑见 src/shared/hudnav.ts、src/client/hud.ts） -->
     <div id="sheet-backdrop" data-act="drawerClose" hidden></div>
     <aside class="panel left" id="drawer-left" hidden>
-      <div class="sheet-head"><b class="sheet-title" id="drawer-left-title"></b><button class="sheet-close" data-act="drawerClose" aria-label="收起">完成</button></div>
+      <div class="sheet-head"><b class="sheet-title" id="drawer-left-title"></b><button class="x-close" data-act="drawerClose" aria-label="关闭（Esc）" title="关闭（Esc）"></button></div>
       <section id="garage" data-tab="garage"></section>
       <section id="shop" data-tab="shop"></section>
     </aside>
     <aside class="panel right" id="drawer-right" hidden>
-      <div class="sheet-head"><b class="sheet-title" id="drawer-right-title"></b><button class="sheet-close" data-act="drawerClose" aria-label="收起">完成</button></div>
+      <div class="sheet-head"><b class="sheet-title" id="drawer-right-title"></b><button class="x-close" data-act="drawerClose" aria-label="关闭（Esc）" title="关闭（Esc）"></button></div>
       <section id="pending" data-tab="pending"></section>
       <section id="spots" data-tab="spots"></section>
       <section id="daily" data-tab="daily"></section>
@@ -41,21 +41,21 @@
     <div id="toast" role="status" hidden></div>
     <div id="welcome" role="dialog" aria-label="回访" hidden></div>
     <div id="camp-card" role="dialog" aria-label="露营卡片" hidden>
+      <button class="x-close" data-act="cardClose" aria-label="关闭（Esc）" title="关闭（Esc）"></button>
       <img id="camp-card-img" alt="露营卡片预览" />
       <div class="row">
         <button class="primary" data-act="cardDownload">下载 PNG</button>
         <button data-act="cardCopy">复制图片</button>
-        <button data-act="cardClose">关闭</button>
       </div>
     </div>
     <div id="guide" role="dialog" aria-modal="false" aria-label="快捷键引导" hidden></div>
     <div id="dex" role="dialog" aria-label="车型图鉴" hidden></div>
     <div id="privacy" role="dialog" aria-label="隐私与统计" hidden>
+      <button class="x-close" data-act="privacyClose" aria-label="关闭（Esc）" title="关闭（Esc）"></button>
       <h2>隐私与统计</h2>
       <div id="privacy-body"></div>
       <div class="row">
         <button data-act="privacyToggle" id="privacy-toggle">关闭匿名统计</button>
-        <button data-act="privacyClose">关闭</button>
       </div>
     </div>
     <div id="dev" hidden>
