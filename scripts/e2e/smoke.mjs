@@ -25,6 +25,14 @@ async function coins() {
   return n;
 }
 
+/** 玩家路径：点底栏罗盘展开圆形菜单，再点其中一格（抽屉 / 卡片 / 图鉴 / 隐私 / 视图） */
+async function pick(arg, p = page) {
+  if (await p.locator('#radial').isHidden()) await p.locator('#hub').click();
+  await p.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 });
+  await p.locator(`#radial button[data-arg="${arg}"], #radial button[data-act="${arg}"]`).click();
+  await p.locator('#radial').waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error(`选了 ${arg} 后圆形菜单没有收起`); });
+}
+
 async function step(name, fn) {
   try {
     await fn();
@@ -112,9 +120,9 @@ try {
   });
 
   const btn = page.locator('#pending [data-act="collect"]');
-  await step('待收取池有钱（右侧图标列展开待收取抽屉）', async () => {
+  await step('待收取池有钱（点罗盘、在圆形菜单里选待收取）', async () => {
     await page.screenshot({ path: join(outDir, 'ui-collapsed.png') });
-    await page.locator('#rail-right [data-arg="pending"]').click();
+    await pick('pending');
     await page.locator('#drawer-right').waitFor({ state: 'visible', timeout: 5_000 });
     await btn.waitFor({ timeout: 10_000 });
     await page.waitForFunction(() => !document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 10_000 });
@@ -149,10 +157,8 @@ try {
     };
     const selectVariant = async (id) => {
       const chip = `#garage [data-act="variant"][data-arg="${id}"]`;
-      // 玩家路径：点左侧车库图标展开抽屉，再真实点击可见的车型按钮
-      if (await page.locator('#drawer-left').isHidden() || !(await page.locator('#garage.active').count())) {
-        await page.locator('#rail-left [data-arg="garage"]').click();
-      }
+      // 玩家路径：点罗盘、在圆形菜单里选车库，再真实点击可见的车型按钮
+      if (await page.locator('#drawer-left').isHidden() || !(await page.locator('#garage.active').count())) await pick('garage');
       await page.locator('#garage').waitFor({ state: 'visible', timeout: 5_000 });
       if (!(await page.locator(`${chip}.on`).count())) await page.locator(chip).click();
       await page.locator(`${chip}.on`).waitFor({ state: 'attached', timeout: 10_000 });
@@ -184,61 +190,107 @@ try {
     await saveShot('front34', 'vehicle-no-brow-front34.png');
   });
 
-  await step('窄屏 action sheet：默认收起；点图标从底部弹出，点遮罩 / 完成 / Esc 收起，一次只开一个', async () => {
+  await step('圆形菜单：点罗盘展开，全部功能平均分在外圈、视图在内圈；点中心 / 遮罩 / Esc / 再点罗盘都能收起', async () => {
+    await page.keyboard.press('Escape');
+    const radial = page.locator('#radial');
+    const hub = page.locator('#hub');
+    if (!(await radial.isHidden())) throw new Error('圆形菜单默认应收起');
+    await hub.click();
+    await radial.waitFor({ state: 'visible', timeout: 3_000 });
+    if ((await hub.getAttribute('aria-expanded')) !== 'true') throw new Error('罗盘的 aria-expanded 没有跟着变');
+    await page.waitForTimeout(700); // 等弹出动画
+    await page.screenshot({ path: join(outDir, 'ui-radial-pc.png') });
+    // 外圈 9 格、内圈 4 格：图标到圆心的距离一致、相邻两格夹角一致
+    const geo = await page.evaluate(() => {
+      const w = document.querySelector('#radial .wheel').getBoundingClientRect();
+      const cx = w.left + w.width / 2, cy = w.top + w.height / 2;
+      const ring = (sel) => [...document.querySelectorAll(sel)].map((b) => {
+        const r = b.getBoundingClientRect();
+        const x = r.left + r.width / 2 - cx, y = r.top + r.height / 2 - cy;
+        return { d: Math.hypot(x, y), a: ((Math.atan2(x, -y) * 180) / Math.PI + 360) % 360 };
+      });
+      return { outer: ring('#radial .rbtn:not(.vbtn)'), inner: ring('#radial .vbtn'), size: w.width };
+    });
+    for (const [name, list, n] of [['外圈', geo.outer, 9], ['内圈', geo.inner, 4]]) {
+      if (list.length !== n) throw new Error(`${name}应有 ${n} 格，实际 ${list.length}`);
+      const ds = list.map((x) => x.d);
+      if (Math.max(...ds) - Math.min(...ds) > 3) throw new Error(`${name}图标到圆心的距离不一致：${ds.map((d) => d.toFixed(0))}`);
+      list.forEach((x, i) => {
+        const want = (360 / n) * i;
+        const diff = Math.abs(((x.a - want + 540) % 360) - 180);
+        if (diff > 3) throw new Error(`${name}第 ${i + 1} 格不在等分扇区中线上：${x.a.toFixed(0)}° ≠ ${want}°`);
+      });
+    }
+    // 收起：中心 ×、遮罩、Esc、再点罗盘
+    await page.locator('#radial .radial-center').click();
+    await radial.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点中心没有收起圆形菜单'); });
+    await hub.click();
+    await page.mouse.click(40, 400);
+    await radial.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点遮罩没有收起圆形菜单'); });
+    await hub.click();
+    await page.keyboard.press('Escape');
+    await radial.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('Esc 没有收起圆形菜单'); });
+    await page.keyboard.press('KeyM');
+    await radial.waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('M 没有展开圆形菜单'); });
+    await page.keyboard.press('KeyM');
+    await radial.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('再按 M 没有收起圆形菜单'); });
+    // 菜单里选视图：菜单收起、罗盘指到新视图
+    await pick('follow');
+    await page.locator('#views [data-arg="follow"].on').waitFor({ timeout: 3_000 }).catch(() => { throw new Error('菜单里选跟随没有换视图'); });
+    await page.keyboard.press('1');
+    // 卡片 / 图鉴 / 隐私这类直接执行：图鉴弹窗打开
+    await pick('dex');
+    await page.locator('#dex').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('菜单里选图鉴没有打开图鉴'); });
+    await page.locator('#dex [data-act="dexClose"]').first().click();
+  });
+
+  await step('PC 抽屉：从圆形菜单打开，在底栏上方弹出、不挡罗盘；一次只开一个', async () => {
+    const left = page.locator('#drawer-left');
+    const right = page.locator('#drawer-right');
+    await pick('shop');
+    await left.waitFor({ state: 'visible', timeout: 3_000 });
+    await page.waitForTimeout(400);
+    const pb = await left.boundingBox();
+    const hb = await page.locator('#hub').boundingBox();
+    if (!pb || !hb || pb.y + pb.height > hb.y) throw new Error(`PC 抽屉盖住了罗盘：panel ${JSON.stringify(pb)} hub ${JSON.stringify(hb)}`);
+    await page.screenshot({ path: join(outDir, 'ui-drawer-pc.png') });
+    await pick('spots');
+    await right.waitFor({ state: 'visible', timeout: 3_000 });
+    if (!(await left.isHidden())) throw new Error('打开车位后小卖部没有收起（应一次只开一个）');
+    if ((await page.locator('#radial button[data-arg="shop"]').getAttribute('aria-expanded')) !== 'false') throw new Error('小卖部收起后菜单格子仍是展开状态');
+    // 再点罗盘：抽屉收起、菜单展开
+    await page.locator('#hub').click();
+    await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('展开圆形菜单时抽屉没有收起'); });
+    await page.keyboard.press('Escape');
+    await pick('daily');
+    await right.locator('.sheet-close').click();
+    await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点“完成”没有收起抽屉'); });
+  });
+
+  await step('窄屏 760px：圆形菜单选中后底部弹出 action sheet，点遮罩 / 完成 / Esc 收起', async () => {
     const left = page.locator('#drawer-left');
     const right = page.locator('#drawer-right');
     const bd = page.locator('#sheet-backdrop');
     await page.keyboard.press('Escape');
     await page.setViewportSize({ width: 760, height: 800 });
     if (!(await left.isHidden()) || !(await right.isHidden()) || !(await bd.isHidden())) throw new Error('窄屏默认应全部收起');
-    await page.locator('#rail-left [data-arg="garage"]').click();
+    await pick('garage');
     await left.waitFor({ state: 'visible', timeout: 3_000 });
     await bd.waitFor({ state: 'visible', timeout: 3_000 });
     await page.waitForTimeout(450); // 等 sheet 滑上来
     const box = await left.boundingBox();
     if (!box || Math.abs(box.y + box.height - 800) > 2 || box.width < 750) throw new Error(`action sheet 应贴底铺满宽度：${JSON.stringify(box)}`);
-    // 遮罩盖住画面：点遮罩收起
     await page.mouse.click(380, 40);
     await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点遮罩没有收起 action sheet'); });
-    await page.locator('#rail-right [data-arg="daily"]').click();
+    await pick('daily');
     await right.waitFor({ state: 'visible', timeout: 3_000 });
-    if (!(await left.isHidden())) throw new Error('760px 下两侧抽屉同时打开');
     await right.locator('.sheet-close').click();
     await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点“完成”没有收起 action sheet'); });
-    await page.locator('#rail-left [data-arg="shop"]').click();
+    await pick('shop');
     await left.waitFor({ state: 'visible', timeout: 3_000 });
     await page.keyboard.press('Escape');
     await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('Esc 没有收起 action sheet'); });
-    // 宽屏能两侧同开；缩窄后自动收起一侧
     await page.setViewportSize({ width: 1280, height: 800 });
-    await page.locator('#rail-left [data-arg="garage"]').click();
-    await page.locator('#rail-right [data-arg="daily"]').click();
-    if (!(await left.isVisible()) || !(await right.isVisible())) throw new Error('宽屏下两侧抽屉应能同时打开');
-    await page.setViewportSize({ width: 700, height: 800 });
-    await left.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('缩窄后左侧抽屉没有收起'); });
-    if ((await page.locator('#rail-left [data-arg="garage"]').getAttribute('aria-expanded')) !== 'false') throw new Error('左侧抽屉收起后图标仍是展开状态');
-    await page.keyboard.press('Escape');
-    await page.setViewportSize({ width: 1280, height: 800 });
-  });
-
-  await step('PC popover：默认收起；点图标就在图标旁弹出，顶边对齐图标', async () => {
-    await page.keyboard.press('Escape');
-    if (!(await page.locator('#drawer-left').isHidden()) || !(await page.locator('#drawer-right').isHidden())) throw new Error('PC 默认应全部收起');
-    for (const [side, tab] of [['left', 'shop'], ['right', 'spots']]) {
-      const icon = page.locator(`#rail-${side} [data-arg="${tab}"]`);
-      await icon.click();
-      const panel = page.locator(`#drawer-${side}`);
-      await panel.waitFor({ state: 'visible', timeout: 3_000 });
-      await page.waitForTimeout(400); // 等弹出动画
-      const ib = await icon.boundingBox();
-      const pb = await panel.boundingBox();
-      if (!ib || !pb || Math.abs(pb.y - (ib.y - 14)) > 4) throw new Error(`${side} popover 没有对齐图标：icon ${ib?.y} panel ${pb?.y}`);
-      const gap = side === 'left' ? pb.x - (ib.x + ib.width) : ib.x - (pb.x + pb.width);
-      if (gap < 0 || gap > 24) throw new Error(`${side} popover 离图标太远或盖住了图标：${gap}px`);
-      if (await page.locator('#sheet-backdrop').isVisible()) throw new Error('PC 不应显示 action sheet 遮罩');
-      await page.screenshot({ path: join(outDir, `ui-popover-${side}.png`) });
-      await page.keyboard.press('Escape');
-    }
   });
 
   await step('手机 390×844：action sheet 里能真实点到“收取”，金币增加', async () => {
@@ -250,7 +302,14 @@ try {
     await page.waitForTimeout(500);
     await closeWelcome();
     await page.keyboard.press('Escape');
-    await page.locator('#rail-right [data-arg="pending"]').click();
+    await page.locator('#hub').click();
+    await page.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 });
+    await page.waitForTimeout(700);
+    // 圆形菜单整圈都在手机屏幕里
+    const wb = await page.locator('#radial .wheel').boundingBox();
+    if (!wb || wb.x < 0 || wb.x + wb.width > 390 || wb.y < 0 || wb.y + wb.height > 844) throw new Error(`手机上圆形菜单超出屏幕：${JSON.stringify(wb)}`);
+    await page.screenshot({ path: join(outDir, 'ui-radial-mobile.png') });
+    await pick('pending');
     const b = page.locator('#pending [data-act="collect"]');
     await page.waitForFunction(() => !document.querySelector('#pending [data-act="collect"]')?.hasAttribute('disabled'), null, { timeout: 10_000 });
     await page.waitForTimeout(400);
@@ -322,7 +381,7 @@ try {
     if (errs.length) throw new Error(`存储不可用时页面报错：${errs.join('；')}`);
   });
 
-  await step('键盘：Tab 聚焦图标按空格展开抽屉、聚焦罗盘按空格换视图', async () => {
+  await step('键盘：Tab 到罗盘按空格展开菜单；M 展开后方向键绕圈、空格选中', async () => {
     await page.keyboard.press('Escape');
     const tabTo = async (sel) => {
       for (let i = 0; i < 40; i++) {
@@ -331,17 +390,42 @@ try {
       }
       throw new Error(`Tab 走不到 ${sel}`);
     };
-    await tabTo('#rail-left [data-arg="garage"]');
+    // 先用鼠标点过画面，再纯键盘：M 展开 → 右方向键到“每日” → 空格选中（Codex 审核 #102）
+    await page.mouse.click(640, 300);
+    await page.keyboard.press('KeyM');
+    await page.keyboard.press('ArrowRight');
+    if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'daily'))) throw new Error('M 展开后右方向键没有移到每日');
+    await page.keyboard.press('Space');
+    await page.locator('#daily.active').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('鼠标点过之后，M → 方向键 → 空格没有选中每日'); });
+    // 键盘选的抽屉：焦点跟进抽屉；Esc 收起后焦点回到罗盘（Codex 审核 #102）
+    if (!(await page.evaluate(() => !!document.activeElement?.closest('#drawer-right')))) throw new Error('键盘选了抽屉后焦点没进抽屉');
+    await page.keyboard.press('Escape');
+    if (!(await page.evaluate(() => document.activeElement?.id === 'hub'))) throw new Error('Esc 收起抽屉后焦点没回到罗盘');
+    await tabTo('#hub');
+    await page.keyboard.press('Space');
+    await page.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('空格没有展开圆形菜单'); });
+    // 键盘点开的：焦点进菜单第一格，方向键能绕圈（Codex 审核 #102）
+    if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'pending'))) throw new Error('空格展开菜单后焦点没进菜单');
+    await page.keyboard.press('ArrowRight');
+    if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'daily'))) throw new Error('空格展开菜单后方向键没有绕圈');
+    await page.keyboard.press('Escape');
+    if (!(await page.evaluate(() => document.activeElement?.id === 'hub'))) throw new Error('Esc 收起菜单后焦点没回到罗盘');
+    // M 展开：焦点落在第一格（待收取），左方向键逆时针到最后一格（车库）
+    await page.keyboard.press('KeyM');
+    if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'pending'))) throw new Error('M 展开后焦点不在第一格');
+    await page.keyboard.press('ArrowLeft');
+    if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'garage'))) throw new Error('方向键没有绕圈移到车库');
     await page.keyboard.press('Space');
     await page.locator('#garage.active').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('空格没有展开车库抽屉'); });
-    await tabTo('#views [data-arg="hood"]');
+    await page.keyboard.press('KeyM');
+    await tabTo('#radial button[data-arg="hood"]');
     await page.keyboard.press('Space');
     await page.locator('#views [data-arg="hood"].on').waitFor({ timeout: 3_000 }).catch(() => { throw new Error('空格没有切到引擎盖视图'); });
     await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press('Escape');
     await page.keyboard.press('1');
-    // 鼠标点过的图标留着焦点：先按 W 再按空格，空格仍是刹车，不会再点一次图标把抽屉收起
-    await page.locator('#rail-right [data-arg="daily"]').click();
+    // 鼠标点过的罗盘留着焦点：先按 W 再按空格，空格仍是刹车，不会再点一次罗盘把抽屉收起
+    await pick('daily');
     await page.keyboard.press('KeyW');
     await page.keyboard.press('Space');
     if (!(await page.locator('#daily.active').isVisible())) throw new Error('鼠标点过的图标被空格再次触发（抽屉收起了）');
@@ -368,16 +452,18 @@ try {
     await page.keyboard.press('1');
   });
 
-  await step('矮横屏 667×280：点图标打开抽屉，能点到里面的按钮', async () => {
+  await step('矮横屏 667×280：圆形菜单放得下，选车库后能点到里面的按钮', async () => {
     await page.setViewportSize({ width: 667, height: 280 });
     await page.keyboard.press('Escape');
-    await page.locator('#rail-left [data-arg="garage"]').click();
+    await page.locator('#hub').click();
+    const wb = await page.locator('#radial .wheel').boundingBox();
+    if (!wb || wb.y < 0 || wb.y + wb.height > 280) throw new Error(`矮屏下圆形菜单超出屏幕：${JSON.stringify(wb)}`);
+    await pick('garage');
     const chip = page.locator('#garage [data-act="variant"][data-arg="SH5043XLJH9DB-C_3116"]');
     await chip.click();
     await page.locator('#garage [data-arg="SH5043XLJH9DB-C_3116"].on').waitFor({ state: 'attached', timeout: 5_000 });
     await page.keyboard.press('Escape');
-    // 右侧最后一个图标在矮屏下要滚到才能点
-    await page.locator('#rail-right [data-arg="log"]').click();
+    await pick('log');
     await page.locator('#log').waitFor({ state: 'visible', timeout: 3_000 });
     await page.screenshot({ path: join(outDir, 'ui-short-landscape.png') });
     await page.keyboard.press('Escape');

@@ -2,7 +2,7 @@
  * 收起式控制面板与首次快捷键引导（hudnav.ts）：抽屉开合、罗盘指针最短转向、引导只自动弹一次、引导里的按键与实际键位一致。
  */
 import { describe, expect, it } from 'vitest';
-import { compassAngle, DRAWERS, Drawers, GUIDE_KEY, guideSeen, isDrawerTab, isGuideKey, markGuideSeen, needleTurn, SHORTCUTS } from '../src/shared/hudnav';
+import { compassAngle, DRAWERS, Drawers, GUIDE_KEY, guideSeen, isDrawerTab, isGuideKey, isMenuKey, markGuideSeen, needleTurn, polar, RING_ITEMS, ringSectors, sectorPath, SHORTCUTS } from '../src/shared/hudnav';
 import mainSrc from '../src/client/main.ts?raw';
 import hudSrc from '../src/client/hud.ts?raw';
 import { VIEWS, viewForKey } from '../src/shared/camview';
@@ -101,7 +101,7 @@ describe('首次快捷键引导', () => {
     expect(isGuideKey({ code: 'Slash', key: '/' })).toBe(false);
   });
   it('引导里的每个按键都真的由 main.ts 的键盘处理（或驾驶键表）响应', () => {
-    const NOT_KEYS = new Set(['拖拽', '滚轮', '双指', '点图标']);
+    const NOT_KEYS = new Set(['拖拽', '滚轮', '双指', '点罗盘']);
     const codeFor = (k: string): string => {
       if (/^\d$/.test(k)) return `Digit${k}`;
       if (/^[A-Z]$/.test(k)) return `Key${k}`;
@@ -110,6 +110,7 @@ describe('首次快捷键引导', () => {
     const handled = (code: string) => {
       if (code === '?') return isGuideKey({ code: 'Slash', key: '?' });
       if (code === 'KeyH') return isGuideKey({ code, key: 'h' });
+      if (code === 'KeyM') return isMenuKey({ code }) && mainSrc.includes('isMenuKey(e)');
       if (/^Digit[1-4]$|^Key[VC]$/.test(code)) return viewForKey(code, 'overview') !== null;
       return mainSrc.includes(`'${code}'`);
     };
@@ -133,5 +134,38 @@ describe('首次快捷键引导', () => {
     expect(viewForKey('KeyC', 'overview')).toBe('follow');
     // H 没有被镜头占用
     expect(viewForKey('KeyH', 'overview')).toBeNull();
+  });
+});
+
+describe('圆形菜单', () => {
+  it('外圈收齐视图以外的全部功能：每个抽屉和卡片 / 图鉴 / 隐私各一格，不重复', () => {
+    const tabs = RING_ITEMS.filter((i) => i.tab).map((i) => i.tab);
+    expect(new Set(tabs)).toEqual(new Set(Object.keys(DRAWERS)));
+    expect(tabs).toHaveLength(Object.keys(DRAWERS).length);
+    expect(RING_ITEMS.filter((i) => i.act).map((i) => i.act).sort()).toEqual(['card', 'dex', 'privacy']);
+  });
+  it('扇区平均分、首格以正北为中线、首尾相接铺满一圈', () => {
+    const s = ringSectors(9);
+    expect(s[0]).toEqual({ from: -20, to: 20, mid: 0 });
+    for (let i = 1; i < s.length; i++) {
+      expect(s[i].from).toBeCloseTo(s[i - 1].to);
+      expect(s[i].to - s[i].from).toBeCloseTo(40);
+    }
+    expect(s[8].to - s[0].from).toBeCloseTo(360);
+    expect(ringSectors(4).map((x) => x.mid)).toEqual([0, 90, 180, 270]);
+  });
+  it('极坐标：0° 在正上方、90° 在右侧', () => {
+    const [x0, y0] = polar(100, 100, 50, 0);
+    expect([x0, y0].map(Math.round)).toEqual([100, 50]);
+    const [x1, y1] = polar(100, 100, 50, 90);
+    expect([x1, y1].map(Math.round)).toEqual([150, 100]);
+  });
+  it('扇区路径是闭合的圆环片', () => {
+    const d = sectorPath(200, 200, 100, 190, ringSectors(9)[0]);
+    expect(d).toMatch(/^M[\d. -]+A190 190 0 0 1 [\d. -]+L[\d. -]+A100 100 0 0 0 [\d. -]+Z$/);
+  });
+  it('M 键开合菜单', () => {
+    expect(isMenuKey({ code: 'KeyM' })).toBe(true);
+    expect(isMenuKey({ code: 'KeyN' })).toBe(false);
   });
 });

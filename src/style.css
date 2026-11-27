@@ -44,36 +44,13 @@ kbd {
 }
 
 /* ---------- 收起式控制面板：图标列 + 抽屉（src/client/hud.ts） ---------- */
-:root { --spring: cubic-bezier(0.34, 1.56, 0.64, 1); --rail: 46px; }
+:root { --spring: cubic-bezier(0.34, 1.56, 0.64, 1); }
 .help {
   pointer-events: auto; width: 32px; height: 32px; padding: 0; display: grid; place-items: center;
   border-radius: 50%; border: 1px solid var(--line); background: var(--pine); transition: transform 0.25s var(--spring), background 0.2s;
 }
 .help:hover { transform: rotate(-10deg) scale(1.1); background: var(--pine-2); }
 .help svg { width: 18px; height: 18px; }
-.rail { position: fixed; top: 60px; z-index: 5; display: flex; flex-direction: column; gap: 10px; }
-.rail.left { left: 12px; }
-.rail.right { right: 12px; }
-.rail-btn {
-  position: relative; width: var(--rail); height: var(--rail); padding: 0; display: grid; place-items: center;
-  border-radius: 50%; border: 1px solid var(--line); background: var(--pine); color: var(--birch);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25); backdrop-filter: blur(6px);
-  transition: transform 0.3s var(--spring), background 0.2s, color 0.2s, box-shadow 0.2s;
-  animation: rail-in 0.5s var(--spring) both; animation-delay: calc(var(--i) * 60ms);
-}
-.rail-btn:hover { transform: translateY(-2px) scale(1.08) rotate(-5deg); border-color: var(--canvas); }
-.rail-btn:active { transform: scale(0.88); transition-duration: 0.08s; }
-.rail-btn.on { background: var(--canvas); color: var(--ink); border-color: var(--canvas); box-shadow: 0 0 0 4px rgba(224, 137, 46, 0.25), 0 6px 16px rgba(0, 0, 0, 0.3); }
-.rail-btn.on svg { animation: wiggle 0.45s ease; }
-.rail-btn .tip {
-  position: absolute; top: 50%; padding: 3px 10px; border-radius: 999px; white-space: nowrap; pointer-events: none;
-  font-size: 12px; background: rgba(15, 26, 21, 0.92); border: 1px solid var(--line); color: var(--birch);
-  opacity: 0; transition: opacity 0.18s, transform 0.25s var(--spring);
-}
-.rail.left .tip { left: calc(100% + 10px); transform: translate(-6px, -50%); }
-.rail.right .tip { right: calc(100% + 10px); transform: translate(6px, -50%); }
-.rail-btn:hover .tip, .rail-btn:focus-visible .tip { opacity: 1; transform: translate(0, -50%); }
-.rail-btn.on .tip { opacity: 0; }
 .badge {
   position: absolute; top: -5px; right: -6px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
   font: 700 10px/18px var(--mono); font-style: normal; color: var(--ink); background: var(--coin); box-shadow: 0 0 0 2px var(--ink);
@@ -85,11 +62,9 @@ kbd {
   backdrop-filter: blur(6px); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
   animation: drawer-pop 0.32s var(--spring) both;
 }
-.panel.left { left: calc(12px + var(--rail) + 10px); transform-origin: top left; }
-.panel.right { right: calc(12px + var(--rail) + 10px); width: 320px; transform-origin: top right; }
+.panel.left, .panel.right { width: 340px; transform-origin: top center; }
 .panel > section { display: none; border-bottom: 0; }
 .panel > section.active { display: block; animation: section-in 0.25s ease both; }
-@keyframes rail-in { from { opacity: 0; transform: scale(0.4) translateY(10px); } }
 @keyframes drawer-pop { from { opacity: 0; transform: scale(0.85) translateY(-6px); } }
 @keyframes section-in { from { opacity: 0; transform: translateY(6px); } }
 @keyframes wiggle { 30% { transform: rotate(-12deg); } 60% { transform: rotate(9deg); } }
@@ -146,40 +121,86 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 .keys { font-size: 12px; color: rgba(236, 230, 214, 0.75); }
 #speed { font-family: var(--mono); font-weight: 700; min-width: 72px; }
 #bump { color: #ffb3a1; font-weight: 700; }
-/* 视图切换（#44）做成罗盘：四个视图在 北 / 东 / 南 / 西，指针转到当前视图（src/client/hud.ts syncCompass） */
-#views { position: relative; flex: none; width: 108px; height: 108px; }
-#views .rose {
-  position: absolute; inset: 15px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(156, 189, 118, 0.18), rgba(0, 0, 0, 0.35) 70%); border: 1px dashed rgba(236, 230, 214, 0.25);
+/* 底栏罗盘（#44）：整个是一个按钮，点一下展开圆形菜单；指针转到当前视图（src/client/hud.ts syncCompass） */
+#views { position: relative; flex: none; width: 96px; height: 96px; }
+#hub {
+  position: absolute; inset: 0; padding: 0; border-radius: 50%; border: 1px solid var(--line); color: var(--birch);
+  background: radial-gradient(circle, var(--pine-2) 40%, rgba(0, 0, 0, 0.35)); cursor: pointer;
+  box-shadow: 0 0 0 0 rgba(224, 137, 46, 0.5); transition: transform 0.3s var(--spring), box-shadow 0.3s, border-color 0.2s;
 }
-#views .rose i { position: absolute; left: 50%; top: 50%; width: 2px; height: 6px; margin: -3px 0 0 -1px; background: rgba(236, 230, 214, 0.35); }
-#views .rose i:nth-child(1) { transform: rotate(45deg) translateY(-34px); }
-#views .rose i:nth-child(2) { transform: rotate(135deg) translateY(-34px); }
-#views .rose i:nth-child(3) { transform: rotate(225deg) translateY(-34px); }
-#views .rose i:nth-child(4) { transform: rotate(315deg) translateY(-34px); }
+#hub:hover { transform: scale(1.06) rotate(-6deg); border-color: var(--canvas); }
+#hub:active { transform: scale(0.92); }
+#hub[aria-expanded="true"] { border-color: var(--canvas); box-shadow: 0 0 0 5px rgba(224, 137, 46, 0.3); }
+#hub .rose { position: absolute; inset: 12px; border-radius: 50%; border: 1px dashed rgba(236, 230, 214, 0.25); }
+#hub .rose i { position: absolute; left: 50%; top: 50%; width: 2px; height: 6px; margin: -3px 0 0 -1px; background: rgba(236, 230, 214, 0.35); }
+#hub .rose i:nth-child(1) { transform: rotate(45deg) translateY(-30px); }
+#hub .rose i:nth-child(2) { transform: rotate(135deg) translateY(-30px); }
+#hub .rose i:nth-child(3) { transform: rotate(225deg) translateY(-30px); }
+#hub .rose i:nth-child(4) { transform: rotate(315deg) translateY(-30px); }
 #views.wobble .rose { animation: wobble 0.6s ease; }
-#views .needle { position: absolute; inset: 0; pointer-events: none; } /* 转动由 hud.ts spinNeedle 逐帧驱动 */
-#views .needle b {
-  position: absolute; left: calc(50% - 6px); top: 30px; width: 12px; height: 24px;
+#hub .needle { position: absolute; inset: 0; pointer-events: none; } /* 转动由 hud.ts spinNeedle 逐帧驱动 */
+#hub .needle b {
+  position: absolute; left: calc(50% - 6px); top: 24px; width: 12px; height: 24px;
   background: linear-gradient(var(--canvas), rgba(224, 137, 46, 0.2)); clip-path: polygon(50% 0, 100% 100%, 50% 80%, 0 100%);
 }
-#views .compass-label {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin-top: 6px; pointer-events: none;
+#hub .compass-label {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin-top: 8px; pointer-events: none; white-space: nowrap;
   font-size: 10px; font-weight: 700; letter-spacing: 0.05em; padding: 0 5px; border-radius: 6px; background: rgba(15, 26, 21, 0.8);
 }
-#views button {
-  position: absolute; width: 34px; height: 34px; padding: 0; display: grid; place-items: center; border-radius: 50%;
-  border: 1px solid var(--line); background: var(--pine-2); transition: transform 0.3s var(--spring), background 0.2s, color 0.2s;
+#hub .pt { position: absolute; width: 16px; height: 16px; display: grid; place-items: center; opacity: 0.45; transition: opacity 0.2s, color 0.2s, transform 0.3s var(--spring); }
+#hub .pt svg { width: 14px; height: 14px; }
+#hub .pt.on { opacity: 1; color: var(--moss); transform: scale(1.2); }
+#hub .pt-0 { left: 40px; top: 2px; }
+#hub .pt-1 { right: 2px; top: 40px; }
+#hub .pt-2 { left: 40px; bottom: 2px; }
+#hub .pt-3 { left: 2px; top: 40px; }
+#hub kbd { position: absolute; right: 2px; bottom: 2px; padding: 0 4px; font-size: 9px; line-height: 1.5; background: var(--ink); color: var(--birch); }
+#hub .hub-dot { position: absolute; right: 8px; top: 8px; width: 12px; height: 12px; border-radius: 50%; background: var(--coin); box-shadow: 0 0 0 2px var(--ink); animation: hop 1.6s ease-in-out infinite; }
+
+/* ---------- 圆形菜单：内圈四个视图、外圈全部功能，平均分扇区（src/client/hud.ts mountHud） ---------- */
+#radial { position: fixed; inset: 0; z-index: 8; }
+#radial[hidden] { display: none; }
+#radial .radial-backdrop { position: absolute; inset: 0; background: radial-gradient(circle, rgba(5, 10, 8, 0.35), rgba(5, 10, 8, 0.7)); animation: fade-in 0.2s ease both; }
+#radial .wheel {
+  position: absolute; inset: 0; margin: auto; width: min(420px, 94vw, calc(100vh - 72px)); aspect-ratio: 1; height: auto; max-height: calc(100vh - 72px);
+  container-type: inline-size; animation: wheel-in 0.42s var(--spring) both; transform-origin: 50% 85%;
 }
-#views button svg { width: 18px; height: 18px; }
-#views button kbd { position: absolute; right: -6px; bottom: -4px; min-width: 0; padding: 0 3px; font-size: 9px; line-height: 1.4; background: var(--ink); color: var(--birch); }
-#views button:hover { transform: scale(1.15); border-color: var(--canvas); }
-#views button:active { transform: scale(0.9); }
-#views .pt-0 { left: 37px; top: 0; }
-#views .pt-1 { right: 0; top: 37px; }
-#views .pt-2 { left: 37px; bottom: 0; }
-#views .pt-3 { left: 0; top: 37px; }
-#views button.on { background: var(--moss); color: var(--ink); border-color: var(--moss); transform: scale(1.12); box-shadow: 0 0 0 4px rgba(156, 189, 118, 0.25); }
+#radial .wheel > svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+#radial .wheel-bg { fill: rgba(15, 26, 21, 0.55); }
+#radial .sec {
+  fill: #182921; stroke: rgba(236, 230, 214, 0.14); stroke-width: 1; cursor: pointer;
+  transition: fill 0.18s, transform 0.25s var(--spring); transform-origin: 200px 200px; transform-box: view-box;
+  animation: sec-in 0.4s var(--spring) both; animation-delay: calc(80ms + var(--i) * 28ms);
+}
+#radial .sec-view { fill: var(--pine-2); animation-delay: calc(30ms + var(--i) * 40ms); }
+#radial .sec:hover, #radial .sec.hl { fill: #2f4a3b; transform: scale(1.035); }
+#radial .sec.on { fill: rgba(224, 137, 46, 0.85); }
+#radial .sec-view.on { fill: var(--moss); }
+#radial .sec-center { fill: var(--ink); stroke: var(--line); cursor: pointer; }
+#radial .rbtn {
+  position: absolute; transform: translate(-50%, -50%); padding: 0; border: 0; background: none; color: var(--birch);
+  display: grid; justify-items: center; gap: 3px; font-size: clamp(10px, 3.1cqw, 13px); line-height: 1.2; cursor: pointer;
+  animation: label-in 0.4s var(--spring) both; animation-delay: calc(120ms + var(--i) * 28ms);
+}
+#radial .rbtn svg { width: clamp(18px, 6.4cqw, 26px); height: clamp(18px, 6.4cqw, 26px); transition: transform 0.3s var(--spring); }
+#radial .rbtn:hover svg, #radial .rbtn:focus-visible svg { transform: scale(1.18) rotate(-8deg); }
+#radial .rbtn:focus-visible { outline: none; }
+#radial .rbtn .tip { white-space: nowrap; font-weight: 700; letter-spacing: 0.04em; }
+#radial .rbtn.on { color: var(--ink); }
+#radial .vbtn { font-size: clamp(9px, 2.7cqw, 12px); }
+#radial .vbtn svg { width: clamp(16px, 5.2cqw, 22px); height: clamp(16px, 5.2cqw, 22px); }
+#radial .vbtn kbd { margin-left: 3px; padding: 0 3px; font-size: 0.8em; line-height: 1.3; background: var(--ink); color: var(--birch); }
+#radial .rbtn .badge { top: -8px; right: -14px; }
+#radial .radial-center {
+  position: absolute; left: 50%; top: 50%; width: 20%; height: 20%; transform: translate(-50%, -50%); border-radius: 50%;
+  padding: 0; border: 0; background: none; color: var(--birch); display: grid; place-items: center; cursor: pointer;
+  transition: transform 0.3s var(--spring);
+}
+#radial .radial-center:hover { transform: translate(-50%, -50%) rotate(90deg); }
+@container (max-width: 300px) { #radial .rbtn .tip { display: none; } }
+@keyframes wheel-in { from { opacity: 0; transform: scale(0.25) rotate(-40deg); } }
+@keyframes sec-in { from { opacity: 0; transform: scale(0.6); } }
+@keyframes label-in { from { opacity: 0; transform: translate(-50%, -50%) scale(0.3); } }
 @keyframes wobble { 30% { transform: rotate(8deg); } 60% { transform: rotate(-5deg); } }
 /* 加速挡按钮按下时高亮 */
 #controls .boost { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); white-space: nowrap; }
@@ -243,36 +264,33 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 
 /* 窄屏：两侧抽屉互斥（hudnav.ts NARROW_PX）；顶栏收紧成一行 */
 @media (max-width: 760px) {
-  :root { --rail: 40px; }
   .dock { border-radius: 20px; }
   .top { gap: 10px; padding: 0 12px; }
   .brand { font-size: 15px; letter-spacing: 0.04em; white-space: nowrap; }
   .clock { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .wallet { font-size: 17px; white-space: nowrap; }
 }
-/* 触屏没有悬停：点过的图标不留提示气泡 */
-@media (hover: none), (max-width: 760px) { .rail .tip { display: none; } }
 
-/* 矮视口（手机横屏等）：抽屉改为盖在底栏之上的整高浮层，图标列可滚动；抽屉高度由视口决定，不再固定扣除底栏（GPT 审核 #90 第 2 轮） */
+/* 矮视口（宽屏但很矮）：抽屉改为盖在底栏之上的整高浮层；抽屉高度由视口决定，不再固定扣除底栏（GPT 审核 #90 第 2 轮） */
 @media (max-height: 520px) {
-  .rail { max-height: calc(100vh - 60px - 8px); overflow-y: auto; overscroll-behavior: contain; padding: 6px 8px; scrollbar-width: none; }
-  .rail.left { left: 4px; }
-  .rail.right { right: 4px; }
-  .rail .tip { display: none; }
-  .panel, .panel.right { top: 8px; max-height: calc(100vh - 16px); z-index: 6; }
+  .panel.left, .panel.right { top: 8px; bottom: auto; left: calc(50% - 170px); max-height: calc(100vh - 16px); z-index: 6; }
 }
 
-/* ---------- PC：popover（默认收起，点图标在图标旁弹出，顶边对齐图标，箭头指着图标） ---------- */
-.sheet-head { display: none; }
+/* ---------- 抽屉头部：标题 + “完成”（PC 浮层和手机 action sheet 共用） ---------- */
+.sheet-head {
+  display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 1;
+  padding: 10px 0 8px; margin: 0 -2px; background: var(--pine);
+}
+.sheet-title { font-size: 12px; letter-spacing: 0.18em; color: var(--moss); }
+.sheet-close { padding: 3px 12px; font-size: 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--pine-2); color: var(--birch); }
+.panel > section.active > h2:first-child { display: none; } /* 标题已在头部 */
 #sheet-backdrop { display: none; }
+
+/* ---------- PC：浮层（默认收起；从罗盘的圆形菜单选中后，在底栏上方居中弹出） ---------- */
 @media (min-width: 761px) and (min-height: 521px) {
-  .panel { top: var(--pop-top, 60px); max-height: calc(100vh - var(--pop-top, 60px) - 140px); }
-  .rail-btn.on::after {
-    content: ''; position: absolute; top: 50%; margin-top: -8px; border: 8px solid transparent; pointer-events: none;
-    animation: section-in 0.25s ease both;
+  .panel.left, .panel.right {
+    top: auto; bottom: 150px; left: calc(50% - 170px); max-height: calc(100vh - 210px); transform-origin: bottom center;
   }
-  .rail.left .rail-btn.on::after { left: calc(100% + 2px); border-right-color: var(--pine); }
-  .rail.right .rail-btn.on::after { right: calc(100% + 2px); border-left-color: var(--pine); }
 }
 
 /* ---------- 移动端（窄屏）：底部 action sheet（默认收起；遮罩点一下或“完成”收起；两侧互斥） ---------- */
@@ -284,16 +302,12 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
     padding: 0 16px calc(14px + env(safe-area-inset-bottom, 0px));
     animation: sheet-up 0.34s cubic-bezier(0.2, 0.9, 0.3, 1.08) both; transform-origin: bottom center;
   }
-  .sheet-head {
-    display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 1;
-    padding: 14px 0 8px; margin: 0 -2px; background: var(--pine);
-  }
+  .sheet-head { padding: 14px 0 8px; }
   .sheet-head::before {
     content: ''; position: absolute; left: 50%; top: 5px; width: 40px; height: 4px; margin-left: -20px; border-radius: 2px; background: rgba(236, 230, 214, 0.3);
   }
-  .sheet-title { font-size: 15px; letter-spacing: 0.04em; }
-  .sheet-close { padding: 6px 14px; border-radius: 999px; border: 0; background: var(--canvas); color: var(--ink); font-weight: 700; }
-  .panel > section.active > h2:first-child { display: none; } /* 标题已在 sheet 头部 */
+  .sheet-title { font-size: 15px; letter-spacing: 0.04em; color: var(--birch); }
+  .sheet-close { padding: 6px 14px; border: 0; background: var(--canvas); color: var(--ink); font-weight: 700; }
   .panel .card > button, .panel .primary { padding: 12px; font-size: 15px; } /* 手指好点 */
   .panel .chip { padding: 5px 12px; font-size: 13px; }
 }

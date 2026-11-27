@@ -1,7 +1,8 @@
 /**
  * 收起式控制面板与首次快捷键引导（纯逻辑，界面见 src/client/hud.ts）。
- * - 左右两侧只留一列图标；点图标展开对应抽屉，再点或按 Esc 收起。每侧同一时间只开一个抽屉。
- * - 底栏的视图切换做成罗盘：四个视图在四个方位，指针转到当前视图。
+ * - 所有菜单收进底栏的罗盘：点罗盘（或按 M）展开一个圆形菜单，内圈四个视图、外圈其余功能，平均分在各扇区。
+ *   选中抽屉类功能后圆形菜单收起、抽屉打开（手机是底部 action sheet，PC 是浮层），一次只开一个；Esc 收起。
+ * - 罗盘的指针转到当前视图。
  * - 首次打开显示快捷键引导；看过后记在 localStorage，之后可用顶栏的 ? 按钮或 H / ? 键再打开。
  */
 import { VIEWS, type View } from './camview';
@@ -65,6 +66,57 @@ export function needleTurn(prev: number, v: View): number {
   if (d <= -180) d += 360;
   return prev + d;
 }
+
+// ---------- 圆形菜单（点罗盘展开） ----------
+/** 外圈：除视图以外的全部功能；顺时针从正北开始排，平均分扇区 */
+export type MenuItem = { tab: DrawerTab; act?: never } | { act: 'card' | 'dex' | 'privacy'; tab?: never };
+export const RING_ITEMS: (MenuItem & { label: string })[] = [
+  { tab: 'pending', label: '待收取' },
+  { tab: 'daily', label: '每日' },
+  { tab: 'spots', label: '车位' },
+  { tab: 'log', label: '流水' },
+  { act: 'card', label: '卡片' },
+  { act: 'dex', label: '图鉴' },
+  { act: 'privacy', label: '隐私' },
+  { tab: 'shop', label: '小卖部' },
+  { tab: 'garage', label: '车库' },
+];
+
+export interface Sector {
+  /** 扇区起止角（度，顺时针，0 = 北） */
+  from: number;
+  to: number;
+  /** 扇区中线角，图标放在这条线上 */
+  mid: number;
+}
+
+/** n 个等分扇区，第一个以正北为中线 */
+export function ringSectors(n: number): Sector[] {
+  const w = 360 / n;
+  return Array.from({ length: n }, (_, i) => ({ from: i * w - w / 2, to: i * w + w / 2, mid: i * w }));
+}
+
+/** 极坐标（度，顺时针，0 = 北）转成以 (cx, cy) 为圆心的屏幕坐标 */
+export function polar(cx: number, cy: number, r: number, deg: number): [number, number] {
+  const a = (deg * Math.PI) / 180;
+  return [cx + r * Math.sin(a), cy - r * Math.cos(a)];
+}
+
+/** 圆环扇区的 SVG 路径：内半径 r0、外半径 r1，两侧各让出 gap 度留缝 */
+export function sectorPath(cx: number, cy: number, r0: number, r1: number, s: Sector, gap = 1.2): string {
+  const a = s.from + gap;
+  const b = s.to - gap;
+  const large = b - a > 180 ? 1 : 0;
+  const f = (n: number) => Math.round(n * 100) / 100;
+  const [x0, y0] = polar(cx, cy, r1, a);
+  const [x1, y1] = polar(cx, cy, r1, b);
+  const [x2, y2] = polar(cx, cy, r0, b);
+  const [x3, y3] = polar(cx, cy, r0, a);
+  return `M${f(x0)} ${f(y0)}A${r1} ${r1} 0 ${large} 1 ${f(x1)} ${f(y1)}L${f(x2)} ${f(y2)}A${r0} ${r0} 0 ${large} 0 ${f(x3)} ${f(y3)}Z`;
+}
+
+/** 打开 / 收起圆形菜单的按键：M */
+export const isMenuKey = (e: { code: string }): boolean => e.code === 'KeyM';
 
 // ---------- 首次快捷键引导 ----------
 export const GUIDE_KEY = 'camp-empire.guideSeen';
@@ -137,8 +189,8 @@ export const SHORTCUTS: ShortcutGroup[] = [
   {
     title: '面板',
     rows: [
-      { keys: ['点图标'], what: '展开两侧面板，再点收起' },
-      { keys: ['Esc'], what: '收起面板 / 关掉引导' },
+      { keys: ['点罗盘', 'M'], what: '展开圆形菜单：视图和全部功能都在里面' },
+      { keys: ['Esc'], what: '收起菜单 / 面板 / 引导' },
       { keys: ['H', '?'], what: '随时再看这份引导' },
     ],
   },

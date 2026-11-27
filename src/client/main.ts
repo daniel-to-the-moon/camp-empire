@@ -45,8 +45,8 @@ import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
 import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
-import { closeGuide, drawers, mountHud, openGuide, guideOpen, setBadge, syncCompass, syncDrawers } from './hud';
-import { guideSeen, isDrawerTab, isGuideKey, markGuideSeen, NARROW_PX } from '../shared/hudnav';
+import { closeGuide, closeMenu, drawers, focusDrawer, menuArrow, menuOpen, mountHud, openGuide, guideOpen, openMenu, setBadge, syncCompass, syncDrawers } from './hud';
+import { guideSeen, isDrawerTab, isGuideKey, isMenuKey, markGuideSeen, NARROW_PX } from '../shared/hudnav';
 import { ENDPOINT, successEvent, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
 /** 更早一版存在 localStorage 的存档键：首次启动时导入 IndexedDB 后删除（IndexedDB 存档键见 save.ts SAVE_KEY） */
@@ -583,9 +583,17 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   closeWelcome() {
     $('#welcome').hidden = true;
   },
-  // 收起式控制面板：点图标开合抽屉（同侧只开一个）
+  // 底栏罗盘：点一下展开 / 收起圆形菜单
+  menu(arg) {
+    // 键盘（空格 / 回车）点罗盘：和按 M 一样，焦点进菜单第一格，方向键可绕圈（Codex 审核 #102）
+    if (!closeMenu()) openMenu(arg === 'kbd');
+  },
+  menuClose() {
+    closeMenu();
+  },
+  // 圆形菜单里选了抽屉类功能：打开它（一次只开一个）
   drawer(tab) {
-    if (isDrawerTab(tab)) drawers.toggle(tab, narrowQuery.matches);
+    if (isDrawerTab(tab)) drawers.toggle(tab, true);
     syncDrawers();
   },
   // action sheet 的“完成”按钮和遮罩、popover 外点：收起全部
@@ -709,8 +717,16 @@ document.addEventListener('click', (e) => {
   if (!el || (el as HTMLButtonElement).disabled) return;
   renderHud();
   const act = el.dataset.act!;
+  // 圆形菜单里选了任何一格（视图或功能）都先收起菜单；选了抽屉时焦点交给抽屉，不还回罗盘
+  if (act !== 'menu' && act !== 'menuClose' && el.closest('#radial')) closeMenu(act !== 'drawer');
   // 统计不在这里发：点击不等于成功，各操作确认成功后自己上报（GPT 审核 #66 第 2 轮）
-  void Promise.resolve(actions[act]?.(el.dataset.arg ?? '')).finally(renderHud);
+  // 罗盘没有 data-arg：用 click 的 detail 区分键盘触发（detail 为 0）和指针点击
+  const arg = act === 'menu' && e.detail === 0 ? 'kbd' : el.dataset.arg ?? '';
+  void Promise.resolve(actions[act]?.(arg)).finally(() => {
+    renderHud();
+    // 键盘在菜单里选了抽屉：焦点跟进抽屉（renderHud 之后，内容已经画好）
+    if (act === 'drawer' && e.detail === 0 && isDrawerTab(arg) && drawers.isOpen(arg)) focusDrawer(arg);
+  });
 });
 
 // ---------- 键盘 ----------
@@ -725,13 +741,23 @@ window.addEventListener('keydown', (e) => {
   // 键盘聚焦在按钮上时，空格 / 回车按原生方式点这个按钮，不当作刹车（GPT 审核 #90 第 2 轮）；
   // 鼠标点过的按钮焦点不让出，空格照样刹车（见 isKeyboardFocusedButton）
   if ((e.code === 'Space' || e.code === 'Enter') && isKeyboardFocusedButton(e.target)) return;
+  // 圆形菜单开着、焦点在菜单里：方向键绕圈挪焦点，不当作驾驶
+  if (menuOpen() && (e.target as HTMLElement | null)?.closest?.('#radial') && menuArrow(e.code)) {
+    e.preventDefault();
+    return;
+  }
   if (DRIVE_KEYS.includes(e.code)) e.preventDefault();
   keys.add(e.code);
   if (e.repeat) return;
   if (e.code === 'Escape') {
-    // Esc 先关引导，再收抽屉
+    // Esc 先关引导，再收圆形菜单，再收抽屉
     if (guideOpen()) void actions.guideClose('');
+    else if (closeMenu()) return;
     else if (drawers.closeAll()) syncDrawers();
+    return;
+  }
+  if (isMenuKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (!closeMenu()) openMenu(true);
     return;
   }
   if (isGuideKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -755,7 +781,8 @@ const keyboardFocused = new WeakSet<EventTarget>();
 let pointerFocus = false;
 window.addEventListener('pointerdown', () => (pointerFocus = true), true);
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Tab') pointerFocus = false;
+  // Tab、M（展开菜单并聚焦第一格）、菜单里的方向键都是键盘挪焦点：之后的焦点算键盘焦点，空格按原生方式点它（Codex 审核 #102）
+  if (e.key === 'Tab' || e.code === 'KeyM' || (e.code.startsWith('Arrow') && menuOpen())) pointerFocus = false;
 }, true);
 document.addEventListener('focusin', (e) => {
   if (!e.target) return;
@@ -770,7 +797,7 @@ const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
 // ---------- 场景画面手势（环绕视图；规则见 src/shared/camview.ts OrbitGesture） ----------
 const stage = $('#stage');
 stage.addEventListener('pointerdown', (e) => {
-  // 点场景画面就收起两侧抽屉，把画面还给营地
+  // 点场景画面就收起抽屉，把画面还给营地
   if (drawers.closeAll()) syncDrawers();
   if (currentView() !== 'orbit' || (e.pointerType === 'mouse' && e.button !== 0)) return;
   stage.setPointerCapture(e.pointerId);
@@ -991,7 +1018,6 @@ function renderHud() {
   const dexLabel = `车型图鉴 ${dv.lit} / ${dv.total}`;
   if ($('#dex-entry').getAttribute('aria-label') !== dexLabel) {
     $('#dex-entry').setAttribute('aria-label', dexLabel);
-    $('#dex-entry .tip').textContent = dexLabel;
   }
   setBadge('dex', dv.lit ? `${dv.lit}` : '');
   if (!$('#dex').hidden) {
