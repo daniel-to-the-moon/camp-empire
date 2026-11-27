@@ -18,6 +18,8 @@ import {
   ORBIT,
   OrbitGesture,
   orbitBehind,
+  orbitFrom,
+  VIEW_LABEL,
   DEFAULT_VIEW,
   orbitCam,
   smoothOrbit,
@@ -187,34 +189,48 @@ describe('车灯（自动）', () => {
 
 // 车灯几何、昼夜与顶点色回归见 lampFixtures.test.ts。
 describe('视图切换', () => {
-  it('四种视图；1–4 直选，V 循环，C 俯瞰 ↔ 跟随', () => {
-    expect(VIEWS).toEqual(['overview', 'follow', 'orbit', 'hood']);
-    expect(viewForKey('Digit3', 'follow')).toBe('orbit');
-    expect(viewForKey('Digit4', 'follow')).toBe('hood');
+  it('三种可选视图（跟随 · 驾驶舱 · 俯瞰）；1–3 直选，V 循环，C 俯瞰 ↔ 跟随；环绕不再单独可选', () => {
+    expect(VIEWS).toEqual(['follow', 'hood', 'overview']);
+    expect(VIEW_LABEL.hood).toBe('驾驶舱');
+    expect(viewForKey('Digit1', 'orbit')).toBe('follow');
+    expect(viewForKey('Digit2', 'follow')).toBe('hood');
+    expect(viewForKey('Digit3', 'follow')).toBe('overview');
+    expect(viewForKey('Digit4', 'follow')).toBeNull();
     expect(viewForKey('KeyV', 'follow')).toBe('next');
     expect(viewForKey('KeyC', 'overview')).toBe('follow');
     expect(viewForKey('KeyC', 'hood')).toBe('overview');
     expect(viewForKey('KeyW', 'follow')).toBeNull();
   });
-  it('默认环绕（#82）：进入游戏与停回家位都是环绕；玩家手动选的视图停着、行驶都生效，直到下次停回家位', () => {
-    expect(DEFAULT_VIEW).toBe('orbit');
+  it('默认跟随（用户 2026-11-27）：进入游戏与停回家位都是跟随；拖拽进入的自由环绕按 V 回到跟随', () => {
+    expect(DEFAULT_VIEW).toBe('follow');
     const v = new ViewChoice();
-    expect(v.effective(true)).toBe('orbit');
-    expect(v.effective(false)).toBe('orbit');
+    expect(v.effective(true)).toBe('follow');
+    expect(v.effective(false)).toBe('follow');
     v.select('hood', false);
     expect(v.effective(false)).toBe('hood');
+    expect(v.next(false)).toBe('overview');
     v.onParked();
-    expect(v.effective(true)).toBe('orbit');
-    expect(v.effective(false)).toBe('orbit');
-    v.select('overview', true);
-    expect(v.effective(true)).toBe('overview');
-    expect(v.effective(false)).toBe('overview');
-    v.select('follow', false);
-    expect(v.effective(false)).toBe('follow');
-    v.onParked();
-    expect(v.effective(true)).toBe('orbit');
+    expect(v.effective(true)).toBe('follow');
     expect(v.next(true)).toBe('hood');
-    expect(v.next(false)).toBe('hood'); // 停回家位后开出去仍是默认环绕，V 切到引擎盖
+    v.select('orbit', true); // 拖拽画面进入自由环绕
+    expect(v.effective(true)).toBe('orbit');
+    expect(v.next(true)).toBe('follow');
+    v.onParked();
+    expect(v.effective(false)).toBe('follow');
+  });
+  it('从镜头当前位置起转：orbitFrom 反推的环绕参数再算回来就是原位置（跟随镜头在环绕范围内，不跳）', () => {
+    const t: Target = { x: 3, y: -4, yaw: 0.7, h: 1.5 };
+    const f = camFor('follow', t, orbitBehind(t.yaw), hoodMount(ALL_VARIANTS[0]));
+    const o = orbitFrom(f.pos, t);
+    const back = orbitCam(t, o).pos;
+    for (let i = 0; i < 3; i++) expect(back[i]).toBeCloseTo(f.pos[i], 6);
+    // 方位就在车后方
+    expect(Math.cos(o.azimuth - (t.yaw + Math.PI))).toBeCloseTo(1, 6);
+    // 俯瞰太高太远：夹到上下限，但方位不变
+    const ov = camFor('overview', t, o, hoodMount(ALL_VARIANTS[0]));
+    const o2 = orbitFrom(ov.pos, t);
+    expect(o2.dist).toBeLessThanOrEqual(ORBIT.maxDist);
+    expect(o2.pitch).toBeLessThanOrEqual(ORBIT.maxPitch);
   });
   it('切换视图只换相机，不改车的位姿与速度（camFor 是纯函数，输入不变）', () => {
     const t: Target = { x: 3, y: -4, yaw: 0.7, h: 1.5 };
@@ -446,10 +462,13 @@ describe('底栏窄屏布局（GPT 审核 #48）', () => {
     expect(dock).toMatch(/max-width:\s*calc\(100vw - \d+px\)/);
     expect(dock).toMatch(/flex-wrap:\s*wrap/);
   });
-  it('视图罗盘固定尺寸不撑宽底栏；驾驶控件组能换行；快捷键提示不再禁止换行', () => {
-    const w = Number(rule('#views').match(/width:\s*(\d+)px/)?.[1]);
-    expect(w).toBeGreaterThan(0);
-    expect(w).toBeLessThanOrEqual(120);
+  it('指南针和菜单钮固定尺寸不撑宽底栏；驾驶控件组能换行；快捷键提示不再禁止换行', () => {
+    expect(rule('#views')).toMatch(/flex:\s*none/);
+    for (const sel of ['#compass', '#hub']) {
+      const w = Number(rule(sel).match(/width:\s*(\d+)px/)?.[1]);
+      expect(w, sel).toBeGreaterThan(0);
+      expect(w, sel).toBeLessThanOrEqual(96);
+    }
     expect(rule('#controls')).toMatch(/flex-wrap:\s*wrap/);
     expect(rule('.keys')).not.toMatch(/nowrap/);
   });

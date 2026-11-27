@@ -6,7 +6,7 @@ import '../style.css';
 import { CATALOG, findVariant } from '../data/models';
 import { stallById, stallRect, staticShapes } from '../shared/camp';
 import { ECONOMY, FRAME_MAX_DT_S, NPC, PENDING, SIDE_AWNING } from '../shared/config';
-import { camFor, hoodMount, OrbitGesture, orbitBehind, smoothOrbit, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
+import { camFor, hoodMount, OrbitGesture, orbitBehind, orbitFrom, smoothOrbit, VIEWS, ViewChoice, viewForKey, wheelZoom, type Orbit, type View } from '../shared/camview';
 import { BlinkClock, lightsFor, manualBraking } from '../shared/lights';
 import { runningLights } from '../shared/runningLights';
 import type { LampState } from '../geometry/placeholder';
@@ -46,7 +46,7 @@ import { createCardFlow } from './cardflow';
 import { dexView } from '../shared/dex';
 import { dexHtml } from './dex';
 import { closeButton } from './icons';
-import { closeGuide, closeMenu, drawers, focusDrawer, menuArrow, menuOpen, mountHud, openGuide, guideOpen, openMenu, setBadge, setHeading, syncCompass, syncDrawers } from './hud';
+import { closeGuide, closeMenu, drawers, focusDrawer, menuArrow, menuOpen, mountHud, openGuide, guideOpen, openMenu, setBadge, setHeading, syncViews, syncDrawers } from './hud';
 import { cameraHeading, guideSeen, isDrawerTab, isGuideKey, isMenuKey, markGuideSeen, NARROW_PX } from '../shared/hudnav';
 import { ENDPOINT, successEvent, getOrCreateAid, uuidV4, isOptedOut, payload, PRIVACY_TEXT, setOptOut, shouldSend, type AnalyticsEvent } from '../shared/analytics';
 
@@ -102,7 +102,7 @@ const devClock = new DevClock(DEV ? safeStorage : null, DEV_KEY, () => Date.now(
 const now = () => devClock.now(state.sid);
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
-// 图标列、罗盘先建好：之后任何 renderHud 都只更新它们
+// 指南针、菜单钮、圆形菜单先建好：之后任何 renderHud 都只更新它们
 mountHud();
 /** 与 style.css 窄屏断点同一条媒体查询；变窄时若两侧都开着，只留右侧（Codex 审核 #90） */
 const narrowQuery = window.matchMedia(`(max-width: ${NARROW_PX}px)`);
@@ -220,8 +220,8 @@ const AUTO_SPEED = 6;
 /** 停好的 NPC 集合变了（到位、跳过、同步增删），自动驾驶需要重新验证剩余路线 */
 let parkedDirty = false;
 
-// ---------- 视图（issue #44：俯瞰 / 跟随 / 环绕 / 引擎盖） ----------
-const views = new ViewChoice(); // 默认环绕（issue #82）
+// ---------- 视图（跟随 / 驾驶舱 / 俯瞰；任何视图里拖拽画面就自由环绕，见 src/shared/camview.ts） ----------
+const views = new ViewChoice(); // 默认跟随（用户 2026-11-27）
 let orbit: Orbit = orbitBehind(drive.pose.yaw);
 let displayedOrbit: Orbit | null = null;
 let hood = hoodMount(currentVariant(state));
@@ -391,7 +391,7 @@ function act<R extends { events: CampEvent[] }>(fn: (s: GameState) => R, opts: {
   });
 }
 
-/** 停回家位：视图回到默认环绕，从车后方起转（issue #82） */
+/** 停回家位：视图回到默认跟随；环绕参数也重置到车后方 */
 function resetViewOnPark() {
   views.onParked();
   orbit = orbitBehind(drive.pose.yaw);
@@ -585,9 +585,9 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
   closeWelcome() {
     $('#welcome').hidden = true;
   },
-  // 底栏罗盘：点一下展开 / 收起圆形菜单
+  // 底栏菜单钮（和指南针分开）：点一下展开 / 收起圆形菜单
   menu(arg) {
-    // 键盘（空格 / 回车）点罗盘：和按 M 一样，焦点进菜单第一格，方向键可绕圈（Codex 审核 #102）
+    // 键盘（空格 / 回车）点菜单钮：和按 M 一样，焦点进菜单第一格，方向键可绕圈（Codex 审核 #102）
     if (!closeMenu()) openMenuOverDialogs(arg === 'kbd');
   },
   menuClose() {
@@ -711,7 +711,7 @@ async function settleHome() {
   mode = 'parked';
   boostLatch = false;
   drive = { pose: parkedPose(spec, home), speed: 0, curvature: 0 };
-  resetViewOnPark(); // 停回家位：回到默认环绕（issue #82），停着时可再选别的视图
+  resetViewOnPark(); // 停回家位：回到默认跟随，停着时可再选别的视图
   placeVehicle(player.root, spec, drive.pose);
   player.setAwning(awningOut(state));
   toast('已停回家位');
@@ -722,10 +722,10 @@ document.addEventListener('click', (e) => {
   if (!el || (el as HTMLButtonElement).disabled) return;
   renderHud();
   const act = el.dataset.act!;
-  // 圆形菜单里选了任何一格（视图或功能）都先收起菜单；选了抽屉时焦点交给抽屉，不还回罗盘
+  // 圆形菜单里选了任何一格（视图或功能）都先收起菜单；选了抽屉时焦点交给抽屉，不还回菜单钮
   if (act !== 'menu' && act !== 'menuClose' && el.closest('#radial')) closeMenu(act !== 'drawer');
   // 统计不在这里发：点击不等于成功，各操作确认成功后自己上报（GPT 审核 #66 第 2 轮）
-  // 罗盘没有 data-arg：用 click 的 detail 区分键盘触发（detail 为 0）和指针点击
+  // 菜单钮没有 data-arg：用 click 的 detail 区分键盘触发（detail 为 0）和指针点击
   const arg = act === 'menu' && e.detail === 0 ? 'kbd' : el.dataset.arg ?? '';
   void Promise.resolve(actions[act]?.(arg)).finally(() => {
     renderHud();
@@ -817,26 +817,50 @@ function closeTopDialog(): boolean {
 }
 const k = (...codes: string[]) => (codes.some((c) => keys.has(c)) ? 1 : 0);
 
-// ---------- 场景画面手势（环绕视图；规则见 src/shared/camview.ts OrbitGesture） ----------
+// ---------- 场景画面手势（任何视图都能拖拽环绕；规则见 src/shared/camview.ts OrbitGesture） ----------
 const stage = $('#stage');
+/** 拖过这么多像素才算拖拽：只是点一下画面（收抽屉）不切到自由环绕 */
+const DRAG_START_PX = 4;
+const dragFrom = new Map<number, [number, number]>();
+/** 还不在自由环绕：从镜头此刻的位置接着转，不跳 */
+function enterOrbit() {
+  if (currentView() === 'orbit') return;
+  const p = view.camera.position;
+  const [cx, cy] = bodyCenter(spec, drive.pose);
+  orbit = orbitFrom([p.x, p.y, p.z], { x: cx, y: cy });
+  displayedOrbit = orbit;
+  views.select('orbit', mode === 'parked');
+  renderHud();
+}
 stage.addEventListener('pointerdown', (e) => {
   // 点场景画面就收起抽屉，把画面还给营地
   if (drawers.closeAll()) syncDrawers();
-  if (currentView() !== 'orbit' || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
   stage.setPointerCapture(e.pointerId);
+  dragFrom.set(e.pointerId, [e.clientX, e.clientY]);
   gesture.down(e.pointerId, e.clientX, e.clientY);
 });
 stage.addEventListener('pointermove', (e) => {
-  if (currentView() !== 'orbit') return;
+  const from = dragFrom.get(e.pointerId);
+  if (!from) return;
+  if (currentView() !== 'orbit') {
+    // 双指（缩放）直接进入；单指要拖过一点距离才进入
+    if (gesture.active < 2 && Math.hypot(e.clientX - from[0], e.clientY - from[1]) < DRAG_START_PX) return;
+    enterOrbit();
+  }
   const o = gesture.move(e.pointerId, e.clientX, e.clientY, orbit);
   if (o) orbit = o;
 });
-for (const ev of ['pointerup', 'pointercancel'] as const) stage.addEventListener(ev, (e) => gesture.up(e.pointerId));
+for (const ev of ['pointerup', 'pointercancel'] as const)
+  stage.addEventListener(ev, (e) => {
+    dragFrom.delete(e.pointerId);
+    gesture.up(e.pointerId);
+  });
 stage.addEventListener(
   'wheel',
   (e) => {
-    if (currentView() !== 'orbit') return;
     e.preventDefault();
+    enterOrbit();
     orbit = wheelZoom(orbit, e.deltaY);
   },
   { passive: false },
@@ -1014,7 +1038,7 @@ function frame(t: number) {
   const boosting = mode === 'driving' && boost;
   $('#speed').textContent = `${Math.abs(drive.speed * 3.6).toFixed(0)} km/h${drive.speed < -0.05 ? ' 倒车' : ''}${boosting ? ' · 加速挡' : ''}`;
   view.render(dt);
-  // 罗盘实时感应：镜头每帧的朝向（画面上方对着的地面方位）驱动盘面转动
+  // 指南针实时感应：镜头每帧的朝向（画面上方对着的地面方位）驱动盘面转动
   setHeading(cameraHeading(view.camera.quaternion));
 }
 
@@ -1140,10 +1164,15 @@ function renderHud() {
       : mode === 'driving'
         ? `<button class="primary" data-act="park">自动泊回家位 <kbd>P</kbd></button><button class="boost ${boostLatch ? 'on' : ''}" data-act="boost" aria-pressed="${boostLatch}">加速挡 <kbd>Shift</kbd></button><span class="keys"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 驾驶 · <kbd>空格</kbd> 刹车</span>`
         : `<span class="keys">自动驾驶中…</span>`;
-  // 罗盘（#44 的四个视图 + 1–4 / V 键）：节点只建一次，这里只转指针；环绕视图下提示手势
+  // 视图（跟随 / 驾驶舱 / 俯瞰 + 1–3 / V 键）：圆形菜单内圈标出当前视图；拖拽环绕任何视图都能用，所以手势提示一直在
   const cv = currentView();
-  syncCompass(cv);
-  if (cv === 'orbit') $('#controls').insertAdjacentHTML('beforeend', `<span class="keys">拖拽画面环绕 · 滚轮 / 双指缩放</span>`);
+  syncViews(cv);
+  $('#controls').insertAdjacentHTML(
+    'beforeend',
+    cv === 'orbit'
+      ? `<span class="keys">自由环绕中 · 按 <kbd>1</kbd> 回到跟随</span>`
+      : `<span class="keys">拖拽画面环绕 · 滚轮 / 双指缩放</span>`,
+  );
 }
 
 if (DEV) {

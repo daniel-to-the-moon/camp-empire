@@ -110,7 +110,7 @@ describe('首次快捷键引导', () => {
     expect(isGuideKey({ code: 'Slash', key: '/' })).toBe(false);
   });
   it('引导里的每个按键都真的由 main.ts 的键盘处理（或驾驶键表）响应', () => {
-    const NOT_KEYS = new Set(['拖拽', '滚轮', '双指', '点罗盘']);
+    const NOT_KEYS = new Set(['拖拽', '滚轮', '双指', '点菜单']);
     const codeFor = (k: string): string => {
       if (/^\d$/.test(k)) return `Digit${k}`;
       if (/^[A-Z]$/.test(k)) return `Key${k}`;
@@ -137,8 +137,8 @@ describe('首次快捷键引导', () => {
 
   it('引导里写的镜头键和实际键位一致', () => {
     const cam = SHORTCUTS.find((g) => g.title === '镜头')!;
-    expect(cam.rows[0].keys).toEqual(['1', '2', '3', '4']);
-    expect(['Digit1', 'Digit2', 'Digit3', 'Digit4'].map((c) => viewForKey(c, 'overview'))).toEqual([...VIEWS]);
+    expect(cam.rows[0].keys).toEqual(['1', '2', '3']);
+    expect(['Digit1', 'Digit2', 'Digit3'].map((c) => viewForKey(c, 'overview'))).toEqual([...VIEWS]);
     expect(viewForKey('KeyV', 'overview')).toBe('next');
     expect(viewForKey('KeyC', 'overview')).toBe('follow');
     // H 没有被镜头占用
