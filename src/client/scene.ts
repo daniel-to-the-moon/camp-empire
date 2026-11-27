@@ -5,64 +5,15 @@
  * 围栏外的地貌、天空与夕照见 duskLandscape.ts（#97）。
  */
 import * as THREE from 'three';
-import type { Variant } from '../data/models';
 import { GATE, ROAD, STALLS, TREES, WORLD, type Stall } from '../shared/camp';
-import { SIDE_AWNING } from '../shared/config';
-import { bodyCenter, type Pose, type VehicleSpec } from '../shared/kinematics';
-import { buildPlaceholderVehicle, buildSideAwning, setLamps, type LampState } from '../geometry/placeholder';
 import { applyShake, type CamWant, type V3 } from '../shared/camview';
 import { SNAPSHOT_FOV_DEG } from '../shared/cardcam';
 import { addDuskLandscape, createDuskYard } from './duskLandscape';
 import { takeSnapshot } from './snapshot';
+import { toThree } from './vehicleView';
+export { disposeTree, makeVehicle, placeVehicle, toThree, type VehicleView } from './vehicleView';
 
 const flat = (color: number) => new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.9 });
-
-export function toThree(x: number, y: number, h = 0): THREE.Vector3 {
-  return new THREE.Vector3(x, h, -y);
-}
-
-export function placeVehicle(obj: THREE.Object3D, s: VehicleSpec, p: Pose): void {
-  const [cx, cy] = bodyCenter(s, p);
-  obj.position.copy(toThree(cx, cy));
-  obj.rotation.y = p.yaw + Math.PI / 2;
-}
-
-export interface VehicleView {
-  root: THREE.Group;
-  setAwning(on: boolean): void;
-  /** 车灯亮灭：只在状态变化时改顶点颜色 */
-  setLights(on: LampState): void;
-}
-
-export function makeVehicle(v: Variant, tint?: number): VehicleView {
-  const { root, anchors } = buildPlaceholderVehicle(v, tint);
-  let awning: THREE.Group | null = null;
-  return {
-    root,
-    setLights: (on) => setLamps(root, on),
-    setAwning(on) {
-      if (on && !awning) {
-        awning = buildSideAwning(v, SIDE_AWNING.depthM);
-        anchors.side_awning.add(awning);
-      } else if (!on && awning) {
-        anchors.side_awning.remove(awning);
-        disposeTree(awning);
-        awning = null;
-      }
-    },
-  };
-}
-
-export function disposeTree(o: THREE.Object3D): void {
-  o.traverse((n) => {
-    const m = n as THREE.Mesh;
-    if (m.isMesh) {
-      m.geometry.dispose();
-      const mat = m.material;
-      (Array.isArray(mat) ? mat : [mat]).forEach((x) => x.dispose());
-    }
-  });
-}
 
 function stadium(path: THREE.Path, halfStraight: number, r: number, hole = false): void {
   // 逻辑平面上的跑道形，按 three 的 (x, −y) 写进 Shape（Shape 在 xy 平面，之后绕 x 轴转到地面）
@@ -99,10 +50,10 @@ function labelSprite(text: string, color = '#f5efe0'): THREE.Sprite {
   ctx.beginPath();
   ctx.roundRect(4, 8, 248, 48, 12);
   ctx.fill();
-  ctx.fillStyle = color;
   ctx.font = 'bold 28px "PingFang SC", "Microsoft YaHei", sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+  ctx.fillStyle = color;
   ctx.fillText(text, 128, 33);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -143,7 +94,7 @@ function buildWorld(scene: THREE.Scene): Map<string, THREE.Sprite> {
   gateRoad.receiveShadow = true;
   scene.add(gateRoad);
 
-  // 篝火岛：草坪 + 篝火 + 几根原木
+  // 篝火岛：草坪 + 篝火 + 原木
   const island = new THREE.Shape();
   stadium(island, ROAD.halfStraight, ROAD.centerR - ROAD.width / 2);
   scene.add(groundMesh(island, flat(0x929664), 0.012));
@@ -314,12 +265,12 @@ function createDust(scene: THREE.Scene) {
         p.vel.set(
           n[0] * out + Math.cos(a) * 0.8,
           0.6 + Math.random() * (0.8 + hard * 1.2),
-          -(n[1] * out) + Math.sin(a) * 0.8,
+          -(n[1] * out + Math.sin(a) * 0.8),
         );
         p.sprite.position.set(point[0] + (Math.random() - 0.5) * 0.4, 0.2 + Math.random() * 0.8, -point[1] + (Math.random() - 0.5) * 0.4);
-        p.max = p.life = 0.7 + Math.random() * (0.6 + hard * 0.8);
+        p.max = p.life = 0.7 + Math.random() * (0.6 + hard * 1.2);
         p.size0 = 0.4 + Math.random() * 0.4;
-        p.size1 = 1.4 + Math.random() * 1.2 + hard * 1.6;
+        p.size1 = 1.4 + Math.random() * (0.8 + hard * 1.6);
         p.alpha = 0.45 + hard * 0.35;
         (p.sprite.material as THREE.SpriteMaterial).color.copy(dustColor).lerp(smokeColor, hard * Math.random());
         p.sprite.visible = true;
@@ -335,7 +286,7 @@ function createDust(scene: THREE.Scene) {
         }
         const k = 1 - p.life / p.max; // 0 → 1
         p.vel.multiplyScalar(Math.exp(-dt * 2.2)); // 空气阻力
-        p.vel.y += dt * 0.25; // 热烟上浮
+        p.vel.y += dt * 0.25;
         p.sprite.position.addScaledVector(p.vel, dt);
         p.sprite.scale.setScalar(p.size0 + (p.size1 - p.size0) * Math.sqrt(k));
         (p.sprite.material as THREE.SpriteMaterial).opacity = p.alpha * (1 - k) * Math.min(1, k * 8);

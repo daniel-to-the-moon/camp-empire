@@ -3,6 +3,8 @@ import type { Variant } from '../data/models';
 import type { Layout } from './layout';
 import { lampFixtures } from './lampFixtures';
 import { grille, noseBelt, noseFloor, noseProfile } from './frontProfile';
+import { tireRadius } from './vehicleMotion';
+import { frontWell, paintLowerSides, seatDeck, wheelAndHub } from './wheelBays';
 
 export const MAIN_PAINT = 0x608faa;
 const CREAM = 0xfff0d7;
@@ -24,12 +26,14 @@ function between(a: Point, b: Point, t: number): Point {
   return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 }
 
-class Facets {
+export class Facets {
   private positions: number[] = [];
   private colors: number[] = [];
   private color = new THREE.Color();
 
   constructor(private withAlpha = false) {}
+
+  get count() { return this.positions.length / 3; }
 
   triangle(tint: number, a: Point, b: Point, c: Point, alpha = 1): void {
     this.positions.push(...a, ...b, ...c);
@@ -215,72 +219,6 @@ function motorhomeSideWindows(
     };
     windowRow(body, trim, glass, bay, pane.bottom, pane.top, [[...edges(pane.bottom), ...edges(pane.top)]]);
   }
-}
-
-function paintLowerSides(
-  body: Facets, trim: Facets, paint: number, low: Point[], high: Point[], axles: number[], radius: number, joinZ: number,
-): void {
-  const [half, floor] = low[2];
-  const rear = low[3][2];
-  const belt = high[2][1];
-  const cut = radius + 0.028;
-  const lift = Math.asin((floor - radius) / cut);
-  const mouth = cut * Math.cos(lift);
-  const archFace = half + 0.01;
-  const segments = 9;
-
-  for (const side of SIDES) {
-    const skin = (out: Facets, color: number, a: Point, b: Point, c: Point, d: Point) => {
-      if (side === 1) out.quad(color, a, b, c, d);
-      else out.quad(color, d, c, b, a);
-    };
-    const span = (from: number, to: number) => {
-      const x = side * half;
-      skin(body, paint, [x, floor, from], [x, floor, to], [x, belt, to], [x, belt, from]);
-      const edge = side * (half + 0.009);
-      skin(trim, RUBBER, [edge, floor, from], [edge, floor, to], [edge, floor + 0.095, to], [edge, floor + 0.095, from]);
-    };
-    let cursor = joinZ;
-    for (const axle of axles) {
-      span(cursor, axle + mouth);
-      const point = (x: number, r: number, angle: number): Point =>
-        [side * x, radius + r * Math.sin(angle), axle + r * Math.cos(angle)];
-      for (let i = 0; i < segments; i++) {
-        const a = lerp(lift, Math.PI - lift, i / segments);
-        const b = lerp(lift, Math.PI - lift, (i + 1) / segments);
-        const start = point(half, cut, a);
-        const end = point(half, cut, b);
-        skin(body, paint, start, end, [side * half, belt, end[2]], [side * half, belt, start[2]]);
-        const innerA = point(archFace, radius + 0.012, a);
-        const innerB = point(archFace, radius + 0.012, b);
-        const outerA = point(archFace, radius + 0.088, a);
-        const outerB = point(archFace, radius + 0.088, b);
-        skin(trim, RUBBER, innerA, innerB, outerB, outerA);
-        skin(trim, SEAL, outerA, outerB, point(half, radius + 0.088, b), point(half, radius + 0.088, a));
-        skin(trim, RUBBER, point(half - 0.29, radius + 0.012, a), point(half - 0.29, radius + 0.012, b), innerB, innerA);
-      }
-      cursor = axle - mouth;
-    }
-    span(cursor, rear);
-  }
-}
-
-function wheelAndHub(trim: Facets, hub: Facets, side: Side, half: number, radius: number, z: number): void {
-  const tireWidth = 0.215;
-  const outer = half - 0.041;
-  const cylinder = (r: number, width: number, x: number, segments: number, buriedBack = false) => {
-    const g = new THREE.CylinderGeometry(r, r, width, segments);
-    if (buriedBack) {
-      // CylinderGeometry builds barrel, top cap, bottom cap. Only the last cap is buried.
-      g.setIndex(Array.from(g.getIndex()!.array.slice(0, g.groups[2].start)));
-    }
-    return g.rotateZ(-side * Math.PI / 2).translate(side * x, Math.fround(radius), z);
-  };
-  trim.solid(RUBBER, cylinder(radius, tireWidth, outer - tireWidth / 2, 16));
-  trim.solid(0x414146, cylinder(radius * 0.80, 0.010, outer, 16, true));
-  hub.solid(0xb8b1a4, cylinder(radius * 0.57, 0.025, outer + 0.007, 12, true));
-  hub.solid(CHROME, cylinder(radius * 0.455, 0.018, outer + 0.019, 12, true));
-  hub.solid(0x797c7a, cylinder(radius * 0.17, 0.016, outer + 0.028, 8, true));
 }
 
 function fascia(trim: Facets, front: number, rear: number): void {
@@ -502,18 +440,23 @@ function steering(trim: Facets, x: number, windBaseZ: number): void {
   trim.solid(RUBBER, atWheel(new THREE.BoxGeometry(0.108, 0.09, 0.075)));
 }
 
-function cabin(trim: Facets, half: number, windBaseZ: number, seatZ: number, deckTop: number): void {
+function cabin(trim: Facets, half: number, windBaseZ: number, seatZ: number, deckTop: number, notchZ: number): void {
   const saddle = 0xbb794d;
   const cushion = 0xeabc88;
   const seatX = half * 0.47;
   const pedestalBottom = deckTop + 0.026;
   const pedestalTop = 0.81;
+  // 轨和座脚只落在全宽地台上，不伸进前轮窝；座垫与靠背位置不动。
+  const support = (w: number, h: number, x: number, y: number, back: number, front: number) => {
+    const end = Math.min(notchZ, front);
+    return block(w, h, end - back, x, y, (end + back) / 2);
+  };
   for (const side of SIDES) {
     const x = side * seatX;
     for (const rail of SIDES) {
-      trim.solid(0x6d6257, block(0.055, 0.047, 0.54, x + rail * 0.135, deckTop + 0.018, seatZ + 0.025));
+      trim.solid(0x6d6257, support(0.055, 0.047, x + rail * 0.135, deckTop + 0.018, seatZ - 0.245, seatZ + 0.295));
     }
-    trim.solid(SEAL, block(0.39, pedestalTop - pedestalBottom, 0.405, x, (pedestalTop + pedestalBottom) / 2, seatZ));
+    trim.solid(SEAL, support(0.39, pedestalTop - pedestalBottom, x, (pedestalTop + pedestalBottom) / 2, seatZ - 0.2025, seatZ + 0.2025));
     trim.solid(saddle, block(0.51, 0.15, 0.53, x, 0.87, seatZ + 0.07));
     trim.solid(cushion, block(0.39, 0.05, 0.41, x, 0.963, seatZ + 0.085));
     trim.solid(saddle, new THREE.BoxGeometry(0.52, 0.57, 0.16).rotateX(-0.14).translate(x, 1.20, seatZ - 0.17));
@@ -551,7 +494,8 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   const hub = new Facets();
   const half = v.widthM / 2;
   const { zFront: front, zRear: rear } = lay;
-  const radius = v.lengthM * 0.061;
+  const radius = tireRadius(v);
+  const { wellX, notchZ } = frontWell(half, radius, lay.frontAxleZ);
   const axles = [lay.frontAxleZ, lay.rearAxleZ];
   const floorY = noseFloor;
   const beltY = noseBelt;
@@ -571,7 +515,7 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   const joinZ = front - 0.34;
   band(body, paint, sill, belt, [0, 1, 2, 6, 7]);
   frontBumper(body, trim, paint, half, front, joinZ);
-  paintLowerSides(body, trim, paint, sill, belt, axles, radius, joinZ);
+  paintLowerSides(body, trim, paint, sill, belt, axles, radius, joinZ, wellX);
   band(body, CREAM, belt, hood, [0]);
   bonnet(body, stationFace(belt, hood, 0));
   band(body, CREAM, hood, header, [0, 2, 4, 6]);
@@ -618,15 +562,15 @@ export function vehicleGeometries(v: Variant, lay: Layout, paint: number) {
   const deckHeight = 0.07;
   const floor: Face = (x, z) => [x, floorY, z];
   rect(body, paint, floor, -bottomX, rear + 0.012, bottomX, deckZ - deckLength / 2);
-  rect(body, paint, floor, -bottomX, deckZ + deckLength / 2, bottomX, joinZ);
-  trim.solid(0x303637, block(2 * bottomX, deckHeight, deckLength, 0, floorY + deckHeight / 2, deckZ));
+  rect(body, paint, floor, -wellX, deckZ + deckLength / 2, wellX, joinZ);
+  seatDeck(trim, bottomX, wellX, notchZ, deckZ - deckLength / 2, deckZ + deckLength / 2, floorY, deckHeight);
 
-  for (const ax of axles) for (const side of SIDES) wheelAndHub(trim, hub, side, half, radius, ax);
+  const wheels = axles.flatMap(ax => SIDES.map(side => wheelAndHub(trim, hub, side, half, radius, ax, ax === lay.frontAxleZ)));
   trim.solid(RUBBER, block(v.widthM - 0.073, 0.245, 0.145, 0, 0.478, rear + 0.0725));
   fascia(trim, front, rear);
   const { housings, lenses } = lampFixtures(v, lay);
   for (const housing of housings) trim.quad(SEAL, ...housing);
   sideDetails(trim, half, beltY, headerY, windBaseZ, driverEnd, lay.rearAxleZ + radius + 0.16, front, rear, entry);
-  cabin(trim, half, windBaseZ, seatZ, floorY + deckHeight);
-  return { body: body.geometry(), trim: trim.geometry(), glass: glass.geometry(), hub: hub.geometry(), lenses };
+  cabin(trim, half, windBaseZ, seatZ, floorY + deckHeight, notchZ);
+  return { body: body.geometry(), trim: trim.geometry(), glass: glass.geometry(), hub: hub.geometry(), lenses, wheels };
 }
