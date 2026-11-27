@@ -110,7 +110,7 @@ describe('首次快捷键引导', () => {
     expect(isGuideKey({ code: 'Slash', key: '/' })).toBe(false);
   });
   it('引导里的每个按键都真的由 main.ts 的键盘处理（或驾驶键表）响应', () => {
-    const NOT_KEYS = new Set(['拖拽', '滚轮', '双指', '点罗盘']);
+    const NOT_KEYS = new Set(['拖拽', '滚轮', '双指', '点菜单']);
     const codeFor = (k: string): string => {
       if (/^\d$/.test(k)) return `Digit${k}`;
       if (/^[A-Z]$/.test(k)) return `Key${k}`;

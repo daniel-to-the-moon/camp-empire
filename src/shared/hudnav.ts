@@ -1,8 +1,8 @@
 /**
  * 收起式控制面板与首次快捷键引导（纯逻辑，界面见 src/client/hud.ts）。
- * - 所有菜单收进底栏的罗盘：点罗盘（或按 M）展开一个圆形菜单，内圈四个视图、外圈其余功能，平均分在各扇区。
+ * - 所有菜单收进底栏的菜单钮：点菜单钮（或按 M）展开一个圆形菜单，内圈四个视图、外圈其余功能，平均分在各扇区。
  *   选中抽屉类功能后圆形菜单收起、抽屉打开（手机是底部 action sheet，PC 是浮层），一次只开一个；Esc 收起。
- * - 罗盘实时感应镜头朝向：盘面和指针跟着镜头转，红色指针始终指向营地的北（cameraHeading / dialTurn）。
+ * - 指南针（和菜单钮分开，只显示朝向、不能点）实时感应镜头朝向：盘面和指针跟着镜头转，红色指针始终指向营地的北（cameraHeading / dialTurn）。
  * - 首次打开显示快捷键引导；看过后记在 localStorage，之后可用顶栏的 ? 按钮或 H / ? 键再打开。
  */
 
@@ -51,7 +51,7 @@ export class Drawers {
 }
 
 /**
- * 罗盘实时朝向：镜头此刻“画面上方”对着的地面方位角（度，顺时针，0 = 北 = three 的 −Z，90 = 东 = +X）。
+ * 指南针实时朝向：镜头此刻“画面上方”对着的地面方位角（度，顺时针，0 = 北 = three 的 −Z，90 = 东 = +X）。
  * q 为镜头的朝向四元数 { x, y, z, w }。镜头斜着看时取前方（−Z 轴）在地面的投影；
  * 几乎正俯视时前方投影太短，改用镜头上方（+Y 轴）的投影，也就是画面上方在地面的方向。两者都退化时返回 null。
  */
@@ -68,7 +68,7 @@ export function cameraHeading(q: { x: number; y: number; z: number; w: number })
   return (deg + 360) % 360;
 }
 
-/** 罗盘盘面的转角：镜头朝向 h 时，正北在画面上偏 −h；累计角度走最短弧，跨过 0° / 360° 时不倒转一整圈 */
+/** 指南针盘面的转角：镜头朝向 h 时，正北在画面上偏 −h；累计角度走最短弧，跨过 0° / 360° 时不倒转一整圈 */
 export function dialTurn(prev: number, heading: number): number {
   const target = -heading;
   let d = (((target - prev) % 360) + 540) % 360 - 180;
@@ -76,7 +76,7 @@ export function dialTurn(prev: number, heading: number): number {
   return prev + d;
 }
 
-// ---------- 圆形菜单（点罗盘展开） ----------
+// ---------- 圆形菜单（点菜单钮展开） ----------
 /** 外圈：除视图以外的全部功能；顺时针从正北开始排，平均分扇区 */
 export type MenuItem = { tab: DrawerTab; act?: never } | { act: 'card' | 'dex' | 'privacy'; tab?: never };
 export const RING_ITEMS: (MenuItem & { label: string })[] = [
@@ -198,7 +198,7 @@ export const SHORTCUTS: ShortcutGroup[] = [
   {
     title: '面板',
     rows: [
-      { keys: ['点罗盘', 'M'], what: '展开圆形菜单：视图和全部功能都在里面' },
+      { keys: ['点菜单', 'M'], what: '展开圆形菜单：视图和全部功能都在里面' },
       { keys: ['Esc'], what: '收起菜单 / 面板 / 引导' },
       { keys: ['H', '?'], what: '随时再看这份引导' },
     ],

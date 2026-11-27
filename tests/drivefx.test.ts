@@ -446,10 +446,13 @@ describe('底栏窄屏布局（GPT 审核 #48）', () => {
     expect(dock).toMatch(/max-width:\s*calc\(100vw - \d+px\)/);
     expect(dock).toMatch(/flex-wrap:\s*wrap/);
   });
-  it('视图罗盘固定尺寸不撑宽底栏；驾驶控件组能换行；快捷键提示不再禁止换行', () => {
-    const w = Number(rule('#views').match(/width:\s*(\d+)px/)?.[1]);
-    expect(w).toBeGreaterThan(0);
-    expect(w).toBeLessThanOrEqual(120);
+  it('指南针和菜单钮固定尺寸不撑宽底栏；驾驶控件组能换行；快捷键提示不再禁止换行', () => {
+    expect(rule('#views')).toMatch(/flex:\s*none/);
+    for (const sel of ['#compass', '#hub']) {
+      const w = Number(rule(sel).match(/width:\s*(\d+)px/)?.[1]);
+      expect(w, sel).toBeGreaterThan(0);
+      expect(w, sel).toBeLessThanOrEqual(96);
+    }
     expect(rule('#controls')).toMatch(/flex-wrap:\s*wrap/);
     expect(rule('.keys')).not.toMatch(/nowrap/);
   });

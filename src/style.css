@@ -121,45 +121,46 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 .keys { font-size: 12px; color: rgba(236, 230, 214, 0.75); }
 #speed { font-family: var(--mono); font-weight: 700; min-width: 72px; }
 #bump { color: #ffb3a1; font-weight: 700; }
-/* 底栏罗盘（#44）：整个是一个按钮，点一下展开圆形菜单；指针转到当前视图（src/client/hud.ts syncCompass） */
-#views { position: relative; flex: none; width: 96px; height: 96px; }
-#hub {
-  position: absolute; inset: 0; padding: 0; border-radius: 50%; border: 1px solid var(--line); color: var(--birch);
-  background: radial-gradient(circle, var(--pine-2) 40%, rgba(0, 0, 0, 0.35)); cursor: pointer;
-  box-shadow: 0 0 0 0 rgba(224, 137, 46, 0.5); transition: transform 0.3s var(--spring), box-shadow 0.3s, border-color 0.2s;
+/* 底栏左边两个独立控件（src/client/hud.ts mountHud）：指南针只显示镜头朝向、不能点；菜单钮单独展开圆形菜单 */
+#views { flex: none; display: flex; align-items: center; gap: 10px; }
+#compass {
+  position: relative; flex: none; width: 84px; height: 84px; border-radius: 50%; border: 2px solid rgba(236, 230, 214, 0.28);
+  background: radial-gradient(circle, #1c2c24 55%, rgba(0, 0, 0, 0.4)); box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45); cursor: default;
 }
-#hub:hover { transform: scale(1.06) rotate(-6deg); border-color: var(--canvas); }
-#hub:active { transform: scale(0.92); }
-#hub[aria-expanded="true"] { border-color: var(--canvas); box-shadow: 0 0 0 5px rgba(224, 137, 46, 0.3); }
 /* 盘面（刻度 + 东南西北 + 北针）随镜头朝向实时转动（hud.ts setHeading），不加过渡：每帧就是真实朝向 */
-#hub .dial { position: absolute; inset: 0; pointer-events: none; will-change: transform; }
-#hub .rose { position: absolute; inset: 12px; border-radius: 50%; border: 1px dashed rgba(236, 230, 214, 0.25); }
-#hub .rose i { position: absolute; left: 50%; top: 50%; width: 2px; height: 6px; margin: -3px 0 0 -1px; background: rgba(236, 230, 214, 0.35); }
-#hub .rose i:nth-child(1) { transform: rotate(45deg) translateY(-30px); }
-#hub .rose i:nth-child(2) { transform: rotate(135deg) translateY(-30px); }
-#hub .rose i:nth-child(3) { transform: rotate(225deg) translateY(-30px); }
-#hub .rose i:nth-child(4) { transform: rotate(315deg) translateY(-30px); }
-#views.wobble #hub { animation: wobble 0.6s ease; }
-#hub .cd { position: absolute; left: 50%; top: 50%; width: 14px; margin: -7px 0 0 -7px; font-size: 9px; line-height: 14px; font-weight: 800; text-align: center; color: rgba(236, 230, 214, 0.6); }
-#hub .cd-n { transform: translateY(-24px); color: #e8664a; }
-#hub .compass-label {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin-top: 21px; pointer-events: none; white-space: nowrap; z-index: 1;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.05em; padding: 0 5px; border-radius: 6px; background: rgba(15, 26, 21, 0.85);
+#compass .dial { position: absolute; inset: 0; pointer-events: none; will-change: transform; }
+#compass .rose { position: absolute; inset: 10px; border-radius: 50%; border: 1px dashed rgba(236, 230, 214, 0.22); }
+#compass .rose i { position: absolute; left: 50%; top: 50%; width: 2px; height: 6px; margin: -3px 0 0 -1px; background: rgba(236, 230, 214, 0.35); }
+#compass .rose i:nth-child(1) { transform: rotate(45deg) translateY(-26px); }
+#compass .rose i:nth-child(2) { transform: rotate(135deg) translateY(-26px); }
+#compass .rose i:nth-child(3) { transform: rotate(225deg) translateY(-26px); }
+#compass .rose i:nth-child(4) { transform: rotate(315deg) translateY(-26px); }
+#compass .cd { position: absolute; left: 50%; top: 50%; width: 14px; margin: -7px 0 0 -7px; font-size: 9px; line-height: 14px; font-weight: 800; text-align: center; color: rgba(236, 230, 214, 0.55); }
+#compass .cd-n { transform: translateY(-31px); color: #e8664a; font-size: 10px; }
+#compass .cd-e { transform: rotate(90deg) translateY(-31px); }
+#compass .cd-s { transform: rotate(180deg) translateY(-31px); }
+#compass .cd-w { transform: rotate(270deg) translateY(-31px); }
+#compass .needle { position: absolute; left: 50%; top: 50%; width: 8px; height: 40px; margin: -20px 0 0 -4px; }
+#compass .needle::before, #compass .needle::after { content: ''; position: absolute; left: 0; width: 8px; height: 20px; }
+#compass .needle::before { top: 0; background: #e8664a; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+#compass .needle::after { bottom: 0; background: rgba(236, 230, 214, 0.75); clip-path: polygon(0 0, 100% 0, 50% 100%); }
+#compass .needle b { position: absolute; left: 1px; top: 17px; width: 6px; height: 6px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 1px rgba(236, 230, 214, 0.6); }
+/* 菜单钮：醒目的橙色圆角方块，和圆形的指南针一眼分得开 */
+#hub {
+  position: relative; flex: none; width: 64px; height: 64px; padding: 6px 0 4px; border-radius: 18px; border: 0; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  background: var(--canvas); color: var(--ink); box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+  transition: transform 0.3s var(--spring), box-shadow 0.3s;
 }
-#hub .needle { position: absolute; left: 50%; top: 50%; width: 8px; height: 40px; margin: -20px 0 0 -4px; }
-#hub .needle::before, #hub .needle::after { content: ''; position: absolute; left: 0; width: 8px; height: 20px; }
-#hub .needle::before { top: 0; background: #e8664a; clip-path: polygon(50% 0, 100% 100%, 0 100%); }
-#hub .needle::after { bottom: 0; background: rgba(236, 230, 214, 0.75); clip-path: polygon(0 0, 100% 0, 50% 100%); }
-#hub .needle b { position: absolute; left: 1px; top: 17px; width: 6px; height: 6px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 1px rgba(236, 230, 214, 0.6); }
-#hub .pt { position: absolute; width: 16px; height: 16px; display: grid; place-items: center; opacity: 0.45; transition: opacity 0.2s, color 0.2s, transform 0.3s var(--spring); }
-#hub .pt svg { width: 14px; height: 14px; }
-#hub .pt.on { opacity: 1; color: var(--moss); transform: scale(1.2); }
-#hub .pt-0 { left: 40px; top: 2px; }
-#hub .pt-1 { right: 2px; top: 40px; }
-#hub .pt-2 { left: 40px; bottom: 2px; }
-#hub .pt-3 { left: 2px; top: 40px; }
-#hub kbd { position: absolute; right: 2px; bottom: 2px; padding: 0 4px; font-size: 9px; line-height: 1.5; background: var(--ink); color: var(--birch); }
-#hub .hub-dot { position: absolute; right: 8px; top: 8px; width: 12px; height: 12px; border-radius: 50%; background: var(--coin); box-shadow: 0 0 0 2px var(--ink); animation: hop 1.6s ease-in-out infinite; }
+#hub svg { width: 24px; height: 24px; stroke-width: 2.2; transition: transform 0.35s var(--spring); }
+#hub:hover { transform: translateY(-2px) scale(1.05); }
+#hub:hover svg { transform: rotate(45deg); }
+#hub:active { transform: scale(0.92); }
+#hub[aria-expanded="true"] { box-shadow: 0 0 0 5px rgba(224, 137, 46, 0.35), 0 4px 10px rgba(0, 0, 0, 0.3); }
+#hub[aria-expanded="true"] svg { transform: rotate(45deg); }
+#hub .hub-label { font-size: 11px; font-weight: 800; letter-spacing: 0.1em; }
+#hub kbd { position: absolute; right: -4px; bottom: -4px; padding: 0 4px; font-size: 9px; line-height: 1.5; background: var(--ink); color: var(--birch); }
+#hub .hub-dot { position: absolute; right: -4px; top: -4px; width: 12px; height: 12px; border-radius: 50%; background: #e8664a; box-shadow: 0 0 0 2px var(--pine); animation: hop 1.6s ease-in-out infinite; }
 
 /* ---------- 圆形菜单：内圈四个视图、外圈全部功能，平均分扇区（src/client/hud.ts mountHud） ---------- */
 #radial { position: fixed; inset: 0; z-index: 8; }
@@ -205,7 +206,6 @@ h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.2em; color: var(--moss)
 @keyframes wheel-in { from { opacity: 0; transform: scale(0.25) rotate(-40deg); } }
 @keyframes sec-in { from { opacity: 0; transform: scale(0.6); } }
 @keyframes label-in { from { opacity: 0; transform: translate(-50%, -50%) scale(0.3); } }
-@keyframes wobble { 30% { transform: rotate(8deg); } 60% { transform: rotate(-5deg); } }
 /* 加速挡按钮按下时高亮 */
 #controls .boost { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: rgba(0, 0, 0, 0.3); white-space: nowrap; }
 #controls .boost.on { background: var(--moss); color: var(--ink); border-color: var(--moss); font-weight: 700; }

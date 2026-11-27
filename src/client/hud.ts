@@ -1,6 +1,6 @@
 /**
- * 收起式控制面板的界面层：底栏罗盘、点罗盘展开的圆形菜单、抽屉、快捷键引导（规则见 src/shared/hudnav.ts）。
- * 罗盘与圆形菜单只建一次，之后 renderHud 只改类名 / 角标 / 角度，不重写节点：
+ * 收起式控制面板的界面层：底栏指南针、菜单钮展开的圆形菜单、抽屉、快捷键引导（规则见 src/shared/hudnav.ts）。
+ * 指南针、菜单钮与圆形菜单只建一次，之后 renderHud 只改类名 / 角标 / 角度，不重写节点：
  * 重写会打断弹出动画和指针的转动。
  */
 import { VIEW_LABEL, VIEWS, type View } from '../shared/camview';
@@ -20,23 +20,22 @@ const R_CENTER = 44;
 const R_VIEW: [number, number] = [50, 108];
 const R_RING: [number, number] = [114, 196];
 
-/** 建底栏罗盘与圆形菜单、顶栏引导按钮（只调一次） */
+/** 建底栏指南针、菜单钮与圆形菜单、顶栏引导按钮（只调一次） */
 export function mountHud() {
   $('#help').innerHTML = ICON.keys;
   // 页面里写死的右上角关闭钮（卡片、隐私、抽屉）：补上 × 图标
   document.querySelectorAll<HTMLElement>('.x-close').forEach((b) => (b.innerHTML = ICON.close));
-  // 底栏罗盘：整个是一个按钮，点一下展开圆形菜单；四个方位的小图标只是示意当前视图
-  $('#views').classList.add('compass');
+  // 底栏左边两个独立控件：指南针只显示镜头朝向（不能点）；旁边的菜单钮才展开圆形菜单
   $('#views').innerHTML = `
-    <button id="hub" data-act="menu" aria-haspopup="menu" aria-expanded="false" aria-controls="radial" aria-label="打开菜单（M）" title="菜单（M）">
+    <div id="compass" role="img" aria-label="指南针：红针指北" title="指南针：红针指着营地的北，跟着镜头实时转">
       <span class="dial" aria-hidden="true">
         <span class="rose"><i></i><i></i><i></i><i></i></span>
-        <span class="cd cd-n">北</span>
+        <span class="cd cd-n">北</span><span class="cd cd-e">东</span><span class="cd cd-s">南</span><span class="cd cd-w">西</span>
         <span class="needle"><b></b></span>
       </span>
-      <span class="compass-label" aria-hidden="true"></span>
-      ${VIEWS.map((v, i) => `<span class="pt pt-${i}" data-arg="${v}" aria-hidden="true">${VIEW_ICON[v]}</span>`).join('')}
-      <kbd aria-hidden="true">M</kbd><i class="hub-dot" hidden></i>
+    </div>
+    <button id="hub" data-act="menu" aria-haspopup="menu" aria-expanded="false" aria-controls="radial" aria-label="打开菜单（M）" title="菜单（M）">
+      ${ICON.menu}<span class="hub-label">菜单</span><kbd aria-hidden="true">M</kbd><i class="hub-dot" hidden></i>
     </button>`;
 
   const outer = ringSectors(RING_ITEMS.length);
@@ -144,7 +143,7 @@ export function syncDrawers() {
   for (const side of ['left', 'right'] as const) {
     const open = drawers.open[side];
     const panel = $(`#drawer-${side}`);
-    // 收起时焦点还在抽屉里（键盘用户）：还回罗盘，不丢到页面开头
+    // 收起时焦点还在抽屉里（键盘用户）：还回菜单钮，不丢到页面开头
     if (!open && !panel.hidden && panel.contains(document.activeElement)) $('#hub').focus({ preventScroll: true });
     if (panel.hidden !== !open) panel.hidden = !open;
     panel.querySelectorAll<HTMLElement>('section[data-tab]').forEach((s) => {
@@ -176,7 +175,7 @@ export function setBadge(key: string, text: string, hot = false) {
   if (b.textContent !== text) b.textContent = text;
   if (b.hidden !== !text) b.hidden = !text;
   if (b.classList.contains('hot') !== hot) b.classList.toggle('hot', hot);
-  // 罗盘上的小红点：菜单里有要处理的事（跳动的角标或“!”）就亮，提示点开看看
+  // 菜单钮上的小红点：菜单里有要处理的事（跳动的角标或“!”）就亮，提示点开看看
   const dot = document.querySelector<HTMLElement>('#hub .hub-dot');
   if (!dot) return;
   const need = [...document.querySelectorAll<HTMLElement>('#radial .badge')].some((x) => !x.hidden && (x.classList.contains('hot') || x.textContent === '!'));
@@ -184,7 +183,7 @@ export function setBadge(key: string, text: string, hot = false) {
 }
 
 /**
- * 罗盘实时朝向：每帧由 main.ts 传入镜头方位角，盘面（刻度 + “北”字）和北针一起转到 −heading，
+ * 指南针实时朝向：每帧由 main.ts 传入镜头方位角，盘面（刻度 + “北”字）和北针一起转到 −heading，
  * 红针始终指着营地的北。按累计角度走最短弧，跨过正北时不倒转一圈；变化不到 0.3° 不写样式，省重排。
  */
 let dialShown = 0;
@@ -195,28 +194,21 @@ export function setHeading(heading: number | null) {
   const next = dialTurn(dialShown, heading);
   if (Math.abs(next - dialShown) < 0.3 && dialEl) return;
   dialShown = next;
-  dialEl ??= document.querySelector<HTMLElement>('#hub .dial');
+  dialEl ??= document.querySelector<HTMLElement>('#compass .dial');
   if (dialEl) dialEl.style.transform = `rotate(${dialShown.toFixed(1)}deg)`;
 }
 
 let shownView: View | null = null;
 
-export function syncCompass(cv: View) {
+/** 圆形菜单内圈标出当前视图（视图只在菜单里切换，指南针不管视图） */
+export function syncViews(cv: View) {
   if (shownView === cv) return;
   shownView = cv;
-  const box = $('#views');
-  box.querySelectorAll<HTMLElement>('.pt').forEach((p) => p.classList.toggle('on', p.dataset.arg === cv));
   document.querySelectorAll<HTMLElement>('#radial [data-act="view"]').forEach((b) => {
     const on = b.dataset.arg === cv;
     b.classList.toggle('on', on);
     if (b instanceof HTMLButtonElement) b.setAttribute('aria-checked', String(on));
   });
-  const label = box.querySelector<HTMLElement>('.compass-label')!;
-  label.textContent = VIEW_LABEL[cv];
-  // 换视图时罗盘轻轻一晃
-  box.classList.remove('wobble');
-  void box.offsetWidth;
-  box.classList.add('wobble');
 }
 
 // ---------- 快捷键引导 ----------
@@ -227,7 +219,7 @@ export function guideHtml(): string {
     ${closeButton('guideClose')}
     <div class="guide-head">
       <span class="guide-badge">${ICON.keys}</span>
-      <div><h2>快捷键入门</h2><p class="hint">记住几个就能玩。所有菜单都收在底栏罗盘里，点一下就展开。之后按 <kbd>H</kbd> 或点右上角的键盘图标随时再看。</p></div>
+      <div><h2>快捷键入门</h2><p class="hint">记住几个就能玩。所有菜单都收在底栏的菜单钮里（指南针右边），点一下或按 <kbd>M</kbd> 就展开。之后按 <kbd>H</kbd> 或点右上角的键盘图标随时再看。</p></div>
     </div>
     <div class="guide-grid">${SHORTCUTS.map(
       (g) => `<section><h3>${g.title}</h3>${g.rows

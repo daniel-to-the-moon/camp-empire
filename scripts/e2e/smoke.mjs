@@ -25,7 +25,7 @@ async function coins() {
   return n;
 }
 
-/** 玩家路径：点底栏罗盘展开圆形菜单，再点其中一格（抽屉 / 卡片 / 图鉴 / 隐私 / 视图） */
+/** 玩家路径：点底栏菜单钮展开圆形菜单，再点其中一格（抽屉 / 卡片 / 图鉴 / 隐私 / 视图） */
 async function pick(arg, p = page) {
   if (await p.locator('#radial').isHidden()) await p.locator('#hub').click();
   await p.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 });
@@ -120,7 +120,7 @@ try {
   });
 
   const btn = page.locator('#pending [data-act="collect"]');
-  await step('待收取池有钱（点罗盘、在圆形菜单里选待收取）', async () => {
+  await step('待收取池有钱（点菜单钮、在圆形菜单里选待收取）', async () => {
     await page.screenshot({ path: join(outDir, 'ui-collapsed.png') });
     await pick('pending');
     await page.locator('#drawer-right').waitFor({ state: 'visible', timeout: 5_000 });
@@ -157,7 +157,7 @@ try {
     };
     const selectVariant = async (id) => {
       const chip = `#garage [data-act="variant"][data-arg="${id}"]`;
-      // 玩家路径：点罗盘、在圆形菜单里选车库，再真实点击可见的车型按钮
+      // 玩家路径：点菜单钮、在圆形菜单里选车库，再真实点击可见的车型按钮
       if (await page.locator('#drawer-left').isHidden() || !(await page.locator('#garage.active').count())) await pick('garage');
       await page.locator('#garage').waitFor({ state: 'visible', timeout: 5_000 });
       if (!(await page.locator(`${chip}.on`).count())) await page.locator(chip).click();
@@ -171,7 +171,7 @@ try {
 
     // front34 高度 2.6 m，低于这款车的平顶；另用玩家可操作的环绕视图拍天窗。
     await page.keyboard.press('3');
-    await page.locator('#views [data-arg="orbit"].on').waitFor();
+    await page.locator('#radial button[data-arg="orbit"].on').waitFor({ state: 'attached' });
     const style = await hideHud();
     try {
       // 固定视口，环绕从车后 28° 起步：−310 px 绕向右前，+80 px 把仰角抬到约 65°。
@@ -190,14 +190,14 @@ try {
     await saveShot('front34', 'vehicle-no-brow-front34.png');
   });
 
-  await step('圆形菜单：点罗盘展开，全部功能平均分在外圈、视图在内圈；点中心 / 遮罩 / Esc / 再点罗盘都能收起', async () => {
+  await step('圆形菜单：点菜单钮展开，全部功能平均分在外圈、视图在内圈；点中心 / 遮罩 / Esc / 再点菜单钮都能收起', async () => {
     await page.keyboard.press('Escape');
     const radial = page.locator('#radial');
     const hub = page.locator('#hub');
     if (!(await radial.isHidden())) throw new Error('圆形菜单默认应收起');
     await hub.click();
     await radial.waitFor({ state: 'visible', timeout: 3_000 });
-    if ((await hub.getAttribute('aria-expanded')) !== 'true') throw new Error('罗盘的 aria-expanded 没有跟着变');
+    if ((await hub.getAttribute('aria-expanded')) !== 'true') throw new Error('菜单钮的 aria-expanded 没有跟着变');
     await page.waitForTimeout(700); // 等弹出动画
     await page.screenshot({ path: join(outDir, 'ui-radial-pc.png') });
     // 外圈 9 格、内圈 4 格：图标到圆心的距离一致、相邻两格夹角一致
@@ -221,7 +221,7 @@ try {
         if (diff > 3) throw new Error(`${name}第 ${i + 1} 格不在等分扇区中线上：${x.a.toFixed(0)}° ≠ ${want}°`);
       });
     }
-    // 收起：中心 ×、遮罩、Esc、再点罗盘
+    // 收起：中心 ×、遮罩、Esc、再点菜单钮
     await page.locator('#radial .radial-center').click();
     await radial.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点中心没有收起圆形菜单'); });
     await hub.click();
@@ -234,9 +234,9 @@ try {
     await radial.waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('M 没有展开圆形菜单'); });
     await page.keyboard.press('KeyM');
     await radial.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('再按 M 没有收起圆形菜单'); });
-    // 菜单里选视图：菜单收起、罗盘指到新视图
+    // 菜单里选视图：菜单收起、内圈标出新视图
     await pick('follow');
-    await page.locator('#views [data-arg="follow"].on').waitFor({ timeout: 3_000 }).catch(() => { throw new Error('菜单里选跟随没有换视图'); });
+    await page.locator('#radial button[data-arg="follow"].on').waitFor({ state: 'attached', timeout: 3_000 }).catch(() => { throw new Error('菜单里选跟随没有换视图'); });
     await page.keyboard.press('1');
     // 卡片 / 图鉴 / 隐私这类直接执行：图鉴弹窗打开
     await pick('dex');
@@ -244,7 +244,7 @@ try {
     await page.locator('#dex [data-act="dexClose"]').first().click();
   });
 
-  await step('PC 抽屉：从圆形菜单打开，在底栏上方弹出、不挡罗盘；一次只开一个', async () => {
+  await step('PC 抽屉：从圆形菜单打开，在底栏上方弹出、不挡菜单钮；一次只开一个', async () => {
     const left = page.locator('#drawer-left');
     const right = page.locator('#drawer-right');
     await pick('shop');
@@ -252,13 +252,13 @@ try {
     await page.waitForTimeout(400);
     const pb = await left.boundingBox();
     const hb = await page.locator('#hub').boundingBox();
-    if (!pb || !hb || pb.y + pb.height > hb.y) throw new Error(`PC 抽屉盖住了罗盘：panel ${JSON.stringify(pb)} hub ${JSON.stringify(hb)}`);
+    if (!pb || !hb || pb.y + pb.height > hb.y) throw new Error(`PC 抽屉盖住了菜单钮：panel ${JSON.stringify(pb)} hub ${JSON.stringify(hb)}`);
     await page.screenshot({ path: join(outDir, 'ui-drawer-pc.png') });
     await pick('spots');
     await right.waitFor({ state: 'visible', timeout: 3_000 });
     if (!(await left.isHidden())) throw new Error('打开车位后小卖部没有收起（应一次只开一个）');
     if ((await page.locator('#radial button[data-arg="shop"]').getAttribute('aria-expanded')) !== 'false') throw new Error('小卖部收起后菜单格子仍是展开状态');
-    // 再点罗盘：抽屉收起、菜单展开
+    // 再点菜单钮：抽屉收起、菜单展开
     await page.locator('#hub').click();
     await right.waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('展开圆形菜单时抽屉没有收起'); });
     await page.keyboard.press('Escape');
@@ -360,18 +360,40 @@ try {
     await page.locator('#guide').waitFor({ state: 'hidden', timeout: 3_000 }).catch(() => { throw new Error('点引导右上角 × 没有关掉'); });
   });
 
-  await step('罗盘实时感应：环绕视图拖动画面，盘面跟着镜头朝向实时转；拖回来又转回去', async () => {
+  await step('指南针和菜单钮是两个分开的控件：点指南针不展开菜单，菜单钮单独展开', async () => {
+    await page.keyboard.press('Escape');
+    const compass = page.locator('#compass');
+    const hub = page.locator('#hub');
+    const cb = await compass.boundingBox();
+    const hb = await hub.boundingBox();
+    if (!cb || !hb) throw new Error('底栏缺指南针或菜单钮');
+    const overlap = cb.x < hb.x + hb.width && hb.x < cb.x + cb.width && cb.y < hb.y + hb.height && hb.y < cb.y + cb.height;
+    if (overlap) throw new Error(`指南针和菜单钮叠在一起：${JSON.stringify(cb)} ${JSON.stringify(hb)}`);
+    if (await page.locator('#compass button, #compass [data-act], #hub .dial').count()) throw new Error('指南针里不该有菜单入口，菜单钮里也不该有盘面');
+    await compass.click();
+    await page.waitForTimeout(400);
+    if (!(await page.locator('#radial').isHidden())) throw new Error('点指南针不该展开圆形菜单');
+    await page.locator('.dock').screenshot({ path: join(outDir, 'ui-compass-split.png') });
+    await hub.click();
+    await page.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('点菜单钮没有展开圆形菜单'); });
+    await page.waitForTimeout(700);
+    await page.screenshot({ path: join(outDir, 'ui-compass-split-menu.png') });
+    await page.keyboard.press('Escape');
+    await page.locator('#radial').waitFor({ state: 'hidden', timeout: 3_000 });
+  });
+
+  await step('指南针实时感应：环绕视图拖动画面，盘面跟着镜头朝向实时转；拖回来又转回去', async () => {
     const dial = () => page.evaluate(() => {
-      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#hub .dial')).transform);
+      const m = /^matrix\(([^,]+),\s*([^,]+)/.exec(getComputedStyle(document.querySelector('#compass .dial')).transform);
       return m ? (Math.atan2(Number(m[2]), Number(m[1])) * 180) / Math.PI : 0;
     });
     const diff = (a, b) => Math.abs(((((a - b) % 360) + 540) % 360) - 180);
     await page.keyboard.press('Escape');
     await page.keyboard.press('3');
-    await page.locator('#views [data-arg="orbit"].on').waitFor({ timeout: 3_000 });
+    await page.locator('#radial button[data-arg="orbit"].on').waitFor({ state: 'attached', timeout: 3_000 });
     await page.waitForTimeout(1500);
     const a0 = await dial();
-    await page.locator('#views').screenshot({ path: join(outDir, 'ui-compass-live-1.png') });
+    await page.locator('#compass').screenshot({ path: join(outDir, 'ui-compass-live-1.png') });
     // 拖动途中就要转（不是松手后才更新）
     await page.mouse.move(900, 300);
     await page.mouse.down();
@@ -382,17 +404,17 @@ try {
     await page.mouse.up();
     await page.waitForTimeout(1200);
     const a1 = await dial();
-    await page.locator('#views').screenshot({ path: join(outDir, 'ui-compass-live-2.png') });
-    if (diff(aMid, a0) < 5) throw new Error(`拖动途中罗盘没动：${a0.toFixed(0)}° → ${aMid.toFixed(0)}°`);
-    if (diff(a1, a0) < 20) throw new Error(`拖完罗盘转得太少：${a0.toFixed(0)}° → ${a1.toFixed(0)}°`);
-    // 拖回原处：罗盘回到原来的朝向
+    await page.locator('#compass').screenshot({ path: join(outDir, 'ui-compass-live-2.png') });
+    if (diff(aMid, a0) < 5) throw new Error(`拖动途中指南针没动：${a0.toFixed(0)}° → ${aMid.toFixed(0)}°`);
+    if (diff(a1, a0) < 20) throw new Error(`拖完指南针转得太少：${a0.toFixed(0)}° → ${a1.toFixed(0)}°`);
+    // 拖回原处：指南针回到原来的朝向
     await page.mouse.move(600, 300);
     await page.mouse.down();
     await page.mouse.move(900, 300, { steps: 12 });
     await page.mouse.up();
     await page.waitForTimeout(1500);
     const a2 = await dial();
-    if (diff(a2, a0) > 6) throw new Error(`拖回原处后罗盘没回到原朝向：${a0.toFixed(0)}° → ${a2.toFixed(0)}°`);
+    if (diff(a2, a0) > 6) throw new Error(`拖回原处后指南针没回到原朝向：${a0.toFixed(0)}° → ${a2.toFixed(0)}°`);
     await page.keyboard.press('1');
   });
 
@@ -421,7 +443,7 @@ try {
     if (errs.length) throw new Error(`存储不可用时页面报错：${errs.join('；')}`);
   });
 
-  await step('键盘：Tab 到罗盘按空格展开菜单；M 展开后方向键绕圈、空格选中', async () => {
+  await step('键盘：Tab 到菜单钮按空格展开菜单；M 展开后方向键绕圈、空格选中', async () => {
     await page.keyboard.press('Escape');
     const tabTo = async (sel) => {
       for (let i = 0; i < 40; i++) {
@@ -437,10 +459,10 @@ try {
     if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'daily'))) throw new Error('M 展开后右方向键没有移到每日');
     await page.keyboard.press('Space');
     await page.locator('#daily.active').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('鼠标点过之后，M → 方向键 → 空格没有选中每日'); });
-    // 键盘选的抽屉：焦点跟进抽屉；Esc 收起后焦点回到罗盘（Codex 审核 #102）
+    // 键盘选的抽屉：焦点跟进抽屉；Esc 收起后焦点回到菜单钮（Codex 审核 #102）
     if (!(await page.evaluate(() => !!document.activeElement?.closest('#drawer-right')))) throw new Error('键盘选了抽屉后焦点没进抽屉');
     await page.keyboard.press('Escape');
-    if (!(await page.evaluate(() => document.activeElement?.id === 'hub'))) throw new Error('Esc 收起抽屉后焦点没回到罗盘');
+    if (!(await page.evaluate(() => document.activeElement?.id === 'hub'))) throw new Error('Esc 收起抽屉后焦点没回到菜单钮');
     await tabTo('#hub');
     await page.keyboard.press('Space');
     await page.locator('#radial').waitFor({ state: 'visible', timeout: 3_000 }).catch(() => { throw new Error('空格没有展开圆形菜单'); });
@@ -449,7 +471,7 @@ try {
     await page.keyboard.press('ArrowRight');
     if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'daily'))) throw new Error('空格展开菜单后方向键没有绕圈');
     await page.keyboard.press('Escape');
-    if (!(await page.evaluate(() => document.activeElement?.id === 'hub'))) throw new Error('Esc 收起菜单后焦点没回到罗盘');
+    if (!(await page.evaluate(() => document.activeElement?.id === 'hub'))) throw new Error('Esc 收起菜单后焦点没回到菜单钮');
     // M 展开：焦点落在第一格（待收取），左方向键逆时针到最后一格（车库）
     await page.keyboard.press('KeyM');
     if (!(await page.evaluate(() => document.activeElement?.dataset.arg === 'pending'))) throw new Error('M 展开后焦点不在第一格');
@@ -460,11 +482,11 @@ try {
     await page.keyboard.press('KeyM');
     await tabTo('#radial button[data-arg="hood"]');
     await page.keyboard.press('Space');
-    await page.locator('#views [data-arg="hood"].on').waitFor({ timeout: 3_000 }).catch(() => { throw new Error('空格没有切到引擎盖视图'); });
+    await page.locator('#radial button[data-arg="hood"].on').waitFor({ state: 'attached', timeout: 3_000 }).catch(() => { throw new Error('空格没有切到引擎盖视图'); });
     await page.evaluate(() => document.activeElement?.blur());
     await page.keyboard.press('Escape');
     await page.keyboard.press('1');
-    // 鼠标点过的罗盘留着焦点：先按 W 再按空格，空格仍是刹车，不会再点一次罗盘把抽屉收起
+    // 鼠标点过的菜单钮留着焦点：先按 W 再按空格，空格仍是刹车，不会再点一次菜单钮把抽屉收起
     await pick('daily');
     await page.keyboard.press('KeyW');
     await page.keyboard.press('Space');
