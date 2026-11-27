@@ -39,7 +39,6 @@ import { homeFlow, type Mode, type ModeLock } from './homeflow';
 import { closeWelcomeAfterCollect, departToast, giftLine, offlineSummary, pendingLines, returnPanel } from './welcome';
 import { pendingView } from '../shared/economy';
 import { createCampScene, disposeTree, makeVehicle, placeVehicle, toThree, type VehicleView } from './scene';
-import { pathMotion } from './vehicleView';
 import { cardData, cardFileName, fmtMinutes, todayStats, type ClipboardEnv } from '../shared/card';
 import { campShotCamera } from '../shared/cardcam';
 import { CAMP_SHOT_H, drawCard, SHOT_W, VEHICLE_SHOT_H } from './card';
@@ -753,6 +752,10 @@ function frame(t: number) {
     if (c.runner || c.parked) traffic.push(c);
   }
   const step = stepTraffic(traffic, dt);
+  if (mode !== 'parked') {
+    // 此时位姿已经过碰撞或让行判定，但 autoDone 尚未切换模式：末帧也只记一次实际里程。
+    player.updateMotion(prevPose, playerAgent.pose, dt, mode === 'driving' ? drive.curvature : undefined);
+  }
   if ([...step.finished, ...step.skipped].some((a) => a !== playerAgent)) parkedDirty = true;
 
   if (mode === 'auto' && autoRun) {
@@ -782,12 +785,6 @@ function frame(t: number) {
     }
   }
   placeVehicle(player.root, spec, drive.pose);
-  if (mode === 'auto') {
-    const motion = pathMotion(prevPose, drive.pose, dt);
-    player.updateMotion(dt, motion.speed, motion.curvature);
-  } else if (mode === 'driving') {
-    player.updateMotion(dt, writer && !modeLock.busy ? drive.speed : 0, drive.curvature);
-  }
 
   const running = runningLights(now());
   for (const a of traffic) {
@@ -805,10 +802,7 @@ function frame(t: number) {
     placeVehicle(c.view.root, c.spec, c.pose);
     if (c.beforeStep) {
       if (!c.runner || c.pending) c.view.resetMotion(); // 完成/跳过，不把瞬移换算成里程
-      else {
-        const motion = pathMotion(c.beforeStep, c.pose, dt);
-        c.view.updateMotion(dt, motion.speed, motion.curvature);
-      }
+      else c.view.updateMotion(c.beforeStep, c.pose, dt);
     }
   }
 

@@ -16,28 +16,33 @@ export function placeVehicle(obj: THREE.Object3D, s: VehicleSpec, p: Pose): void
   obj.rotation.y = p.yaw + Math.PI / 2;
 }
 
-/** PathRunner 的位姿按线段插值；弦长带上前进/倒车符号，不能用名义路径速度（可能在让行）。 */
-export function pathMotion(from: Pose, to: Pose, dt: number) {
+/** 按实际位移给弦长带上前进/倒车符号；原地让行时无法从位移求曲率，沿用上一帧。 */
+export function pathMotion(from: Pose, to: Pose, dt: number, previousCurvature = 0) {
   const dx = to.x - from.x, dy = to.y - from.y;
   const yaw = wrapAngle(to.yaw - from.yaw);
   const heading = from.yaw + yaw / 2;
   const ds = Math.hypot(dx, dy) * Math.sign(dx * Math.cos(heading) + dy * Math.sin(heading));
-  return ds && dt > 0 ? { speed: ds / dt, curvature: yaw / ds } : { speed: 0, curvature: 0 };
+  return ds && dt > 0 ? { speed: ds / dt, curvature: yaw / ds } : { speed: 0, curvature: previousCurvature };
 }
 
 export type VehicleView = ReturnType<typeof makeVehicle>;
 export function makeVehicle(v: Variant, tint?: number) {
   const { root, anchors, setPose } = buildPlaceholderVehicle(v, tint);
   const motion = new VehicleMotion(tireRadius(v), v.wheelbaseM);
+  let lastCurvature = 0;
   let awning: THREE.Group | null = null;
   return {
     root,
     get pose() { return motion.pose as Readonly<typeof motion.pose>; },
-    updateMotion(dt: number, speed: number, curvature: number) {
-      motion.step(dt, speed, curvature);
+    updateMotion(from: Pose, to: Pose, dt: number, manualCurvature?: number) {
+      if (dt <= 0) return;
+      const travel = pathMotion(from, to, dt, lastCurvature);
+      lastCurvature = manualCurvature ?? travel.curvature; // 手动模式即使不动也能打方向
+      motion.step(dt, travel.speed, lastCurvature);
       setPose(motion.pose);
     },
     resetMotion() {
+      lastCurvature = 0;
       motion.reset();
       setPose(motion.pose);
     },

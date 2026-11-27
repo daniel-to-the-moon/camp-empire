@@ -5,6 +5,10 @@ import { makeVehicle, pathMotion } from '../src/client/vehicleView';
 import { computeLayout } from '../src/geometry/layout';
 import { vehicleGeometries, MAIN_PAINT } from '../src/geometry/vehicleBody';
 import { bindSuspension, groundOffset, LEAN_LIMIT, PITCH_LIMIT, STEER_LIMIT, still, tireRadius, TIRE_WIDTH, VehicleMotion } from '../src/geometry/vehicleMotion';
+import { COLLISION, resolveDrive } from '../src/shared/collision';
+import { rect } from '../src/shared/geom2d';
+import { specOf, stepDrive } from '../src/shared/kinematics';
+import { PathRunner, stepTraffic, type Agent } from '../src/shared/traffic';
 
 it('轮转角积分有符号里程/r；冻结不推进，原地打方向不滚轮', () => {
   const m = new VehicleMotion(0.36, 3.76);
@@ -55,13 +59,62 @@ it('路径显示用本步里程，处理倒车、跨 ±π、让行和冻结', ()
   expect(pathMotion(a, b, 0)).toEqual({ speed: 0, curvature: 0 });
 });
 
+it('手动撞墙解算退回原位：反弹速度不计入轮程，仍按驾驶曲率转向', () => {
+  const v = ALL_VARIANTS[0], spec = specOf(v), view = makeVehicle(v);
+  const dt = 1 / 30;
+  const prev = { pose: { x: 0, y: 0, yaw: 0 }, speed: 4, curvature: 0 };
+  const next = stepDrive(spec, prev, { throttle: 1, steer: 1 }, dt);
+  // 前后总空隙小于推出余量，撞墙后解算器只能退回上一帧位姿。
+  const gap = COLLISION.skin / 4;
+  const walls = [spec.wheelbaseM + spec.frontOverhangM + gap + 0.5, -spec.rearOverhangM - gap - 0.5];
+  const { state, impact } = resolveDrive(spec, prev, next, walls.map(x => ({ type: 'poly', pts: rect(x, 0, 0, 1, 40), tag: 'wall' })));
+  expect(impact).not.toBeNull();
+  expect(state.pose).toEqual(prev.pose);
+  expect(state.speed).not.toBe(0);
+  const start = { ...prev.pose, x: -0.1 };
+  view.updateMotion(start, prev.pose, dt, prev.curvature);
+  view.updateMotion(prev.pose, state.pose, dt, state.curvature);
+  expect(view.pose.spin).toBeCloseTo((state.pose.x - start.x) / tireRadius(v), 10);
+  expect(view.pose.steer).toBeCloseTo(Math.atan(next.curvature * spec.wheelbaseM), 10);
+});
+
+it('弯道让行不滚轮不回舵，重置后不继承上一次的曲率', () => {
+  const view = makeVehicle(ALL_VARIANTS[0]);
+  const a = { x: 0, y: 0, yaw: 0 }, b = { x: 0.2, y: 0, yaw: 0.01 };
+  view.updateMotion(a, b, 0.05);
+  const { spin, steer } = view.pose;
+  expect(steer).toBeGreaterThan(0);
+  view.updateMotion(b, b, 0.05);
+  expect(view.pose).toEqual({ spin, steer, pitch: 0, lean: 0 });
+  view.resetMotion();
+  view.updateMotion(b, b, 0.05);
+  expect(view.pose).toEqual(still);
+});
+
+it('自动路径末帧：runner 已结束也计入实际剩余里程，交还手动后不重复计程', () => {
+  const v = ALL_VARIANTS[0], view = makeVehicle(v);
+  const dt = 0.05;
+  const runner = new PathRunner([{ x: 0, y: 0, yaw: 0, dir: -1 }, { x: -0.15, y: 0, yaw: 0, dir: -1 }], 4);
+  const player: Agent = { id: 'player', spec: specOf(v), runner, pose: runner.current, pending: false, waited: 0 };
+  const start = player.pose;
+  stepTraffic([player], dt); // 倒车半速，首帧走 0.1 m
+  view.updateMotion(start, player.pose, dt);
+  const before = player.pose, spin = view.pose.spin;
+  expect(stepTraffic([player], dt).finished).toContain(player);
+  expect(player.runner).toBeNull();
+  view.updateMotion(before, player.pose, dt);
+  expect(view.pose.spin - spin).toBeCloseTo((player.pose.x - before.x) / tireRadius(v), 10);
+  view.updateMotion(player.pose, player.pose, dt, 0);
+  expect(view.pose.spin).toBeCloseTo(-0.15 / tireRadius(v), 10);
+});
+
 it('加载/换车无历史动作；灯和挂接面随簧上层，停车恢复绑定姿态，位姿根从不摇动', () => {
   const view = makeVehicle(ALL_VARIANTS[0]);
   const mesh = view.root.getObjectByName('trim') as THREE.Mesh;
   const pos = mesh.geometry.getAttribute('position');
   const rest = Array.from(pos.array);
   expect(view.pose).toEqual(still);
-  view.updateMotion(0.05, 4, -0.12);
+  view.updateMotion({ x: 0, y: 0, yaw: 0 }, { x: 0.2, y: 0, yaw: 0 }, 0.05, -0.12);
   view.setLights({ head: true });
   expect(mesh.parent!.rotation.z).toBeLessThan(0);
   expect(view.root.rotation.z).toBe(0);
