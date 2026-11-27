@@ -265,6 +265,7 @@ player.setAwning(awningOut(state));
 interface NpcCar extends Agent {
   parkingId: string;
   view: VehicleView;
+  beforeStep?: Pose;
 }
 const npcs = new Map<string, NpcCar>();
 const leaving: NpcCar[] = [];
@@ -548,7 +549,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
         if (!slot) return;
         try {
           // 一个事务整份换成按真实时间新建的局（新 sid），旧局的标签页之后的写入都会被拒绝；
-          // 存档替换成功后才清除快进偏移，重载后的时间基准与建局时一致（GPT 审核 #4 第 4 轮第 1 条）
+          // 存档替换成功后才清除快进偏移，重载后的时间基准与建局时一致（GPT 审核 #4 第 3 轮第 1 条）
           await resetSave({
             realNowMs: Date.now(),
             seed: newSeed(),
@@ -644,7 +645,7 @@ const actions: Record<string, (arg: string) => void | Promise<void>> = {
     sessionOptOut = !sessionOptOut;
     const saved = setOptOut(prefs, sessionOptOut);
     renderPrivacy();
-    toast(`${sessionOptOut ? '已关闭匿名统计' : '已开启匿名统计'}${saved ? '' : '（浏览器存储不可用，只对本次打开有效）'}`);
+    toast(`${sessionOptOut ? '已关闭' : '已开启'}匿名统计${saved ? '' : '（偏好保存失败，仅本次生效）'}`);
   },
   privacyClose() {
     $('#privacy').hidden = true;
@@ -712,6 +713,7 @@ async function settleHome() {
   boostLatch = false;
   drive = { pose: parkedPose(spec, home), speed: 0, curvature: 0 };
   resetViewOnPark(); // 停回家位：回到默认跟随，停着时可再选别的视图
+  player.resetMotion();
   placeVehicle(player.root, spec, drive.pose);
   player.setAwning(awningOut(state));
   toast('已停回家位');
@@ -950,13 +952,18 @@ function frame(t: number) {
   // 停好的 NPC 以 parked 身份参与：只挡玩家自动驾驶（GPT 审核 #4 第 3 轮第 2 条）
   for (const c of [...npcs.values(), ...leaving]) {
     c.parked = !c.runner && !c.pending;
+    c.beforeStep = c.runner ? c.pose : undefined;
     if (c.runner || c.parked) traffic.push(c);
   }
   const step = stepTraffic(traffic, dt);
+  if (mode !== 'parked') {
+    // 此时位姿已经过碰撞或让行判定，但 autoDone 尚未切换模式：末帧也只记一次实际里程。
+    player.updateMotion(prevPose, playerAgent.pose, dt, mode === 'driving' ? drive.curvature : undefined);
+  }
   if ([...step.finished, ...step.skipped].some((a) => a !== playerAgent)) parkedDirty = true;
 
   if (mode === 'auto' && autoRun) {
-    // 停好的车变了（NPC 刚停好、跳过动画、存档重建）：重新验证剩余路线，被挡则重规划，规划不了或被挡太久就交还手动
+    // 停好的车变了（NPC 刚停好、跳过、存档重建）：重新验证剩余路线，被挡则重规划，规划不了或被挡太久就交还手动
     const parkedNow = [...npcs.values()].filter((c) => !c.runner && !c.pending); // 含本帧刚停好 / 跳过到位的车
     const g = guardAutoRoute(playerAgent, parkedNow, parkedDirty, autoReplan ?? (() => null), AUTO_SPEED);
     if (g.kind === 'replanned') autoRun = playerAgent.runner;
@@ -997,6 +1004,10 @@ function frame(t: number) {
     c.view.root.visible = !c.pending;
     c.view.setLights(running);
     placeVehicle(c.view.root, c.spec, c.pose);
+    if (c.beforeStep) {
+      if (!c.runner || c.pending) c.view.resetMotion(); // 完成/跳过，不把瞬移换算成里程
+      else c.view.updateMotion(c.beforeStep, c.pose, dt);
+    }
   }
 
   if (t - lastTick > 1000) {
@@ -1104,7 +1115,7 @@ function renderHud() {
 
   setHtml('#spots', `
     <h2>我的营地车位</h2>
-    <p class="hint">露营者自己开来、自己离开，离开时付停车费进入待收取：${NPC.rateCentsPerHour / 100} 金 / 小时，单次最多 ${NPC.capMinutes / 60} 小时。爱心车位免费给露营者停。</p>
+    <p class="hint">露营者自己开来、自己离开，离开时付停车费进入待收取：${NPC.rateCentsPerHour / 100} 金 / 小时，单次最多 ${NPC.capMinutes / 60} 小时。爱心车位免费给露营者。</p>
     ${state.camp.spots
       .map((sp) => {
         const label = stallById(sp.id).label;
@@ -1152,7 +1163,7 @@ function renderHud() {
     .slice(-6)
     .reverse()
     .map((e) => {
-      const capped = e.amount !== e.gross ? `（软上限后，毛收入 ${displayGold(e.gross)}）` : '';
+      const capped = e.amount !== e.gross ? `（软上限后，毛收入 ${displayGold(e.gross)} 金）` : '';
       const where = e.kind === 'npc_parking' ? `${stallById(e.key.split('#')[0]).label} · ` : '';
       return `<li><span class="when">${clock(e.atMs)}</span>${where}${e.note}<b class="${e.amount < 0 ? 'neg' : ''}">${e.amount >= 0 ? '+' : ''}${displayGold(e.amount)}</b>${capped}</li>`;
     })
@@ -1179,17 +1190,21 @@ if (DEV) {
   $('#dev').hidden = false;
   // 调试入口（仅 ?dev），用于车辆截图和撞击效果检查
   (window as unknown as { __campDebug: unknown }).__campDebug = {
-    vehicleShot(angle: 'front34' | 'side' | 'entrySide' | 'rear34', lit = false): string {
-      const [forward, left] = { front34: [7, -5.5], side: [0, 9], entrySide: [0, -9], rear34: [-7, 5.5] }[angle];
+    motion: () => ({ ...player.pose, speed: drive.speed, mode }),
+    vehicleShot(angle: 'front34' | 'side' | 'entrySide' | 'rear34' | 'wheel34' | 'turn34', lit = false): string {
+      const [forward, left] = { front34: [7, -5.5], side: [0, 9], entrySide: [0, -9], rear34: [-7, 5.5], wheel34: [3.9, -3.2], turn34: [5.3, -6.2] }[angle];
       const [cx, cy] = bodyCenter(spec, drive.pose);
       const cos = Math.cos(drive.pose.yaw);
       const sin = Math.sin(drive.pose.yaw);
+      const wheel = angle === 'wheel34';
+      const focusZ = wheel ? spec.lengthM / 2 - spec.frontOverhangM : 0;
+      const focusX = wheel ? -spec.widthM / 2 : 0;
       // 固定灯态，让两张截图的区别不依赖 runner 时间。即使截图失败也恢复玩家车。
       player.setLights({ head: lit, tail: lit, marker: lit, turnL: lit, turnR: lit, reverse: lit, brake: lit });
       try {
         return view.snapshot(
-          toThree(cx + forward * cos - left * sin, cy + forward * sin + left * cos, 2.6),
-          toThree(cx, cy, 1.2),
+          toThree(cx + forward * cos - left * sin, cy + forward * sin + left * cos, wheel ? 0.85 : angle === 'turn34' ? 1.6 : 2.6),
+          toThree(cx + focusZ * cos - focusX * sin, cy + focusZ * sin + focusX * cos, wheel ? 0.58 : 1.2),
           1280, 800, { fog: false, labels: false },
         ).toDataURL('image/png');
       } finally {

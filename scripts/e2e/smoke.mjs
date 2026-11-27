@@ -43,6 +43,23 @@ async function step(name, fn) {
   }
 }
 
+function savePng(dataUrl, filename) {
+  const prefix = 'data:image/png;base64,';
+  if (!dataUrl.startsWith(prefix)) throw new Error(`${filename} 未返回 PNG data URL`);
+  const png = Buffer.from(dataUrl.slice(prefix.length), 'base64');
+  if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error(`${filename} 的 PNG 文件头无效`);
+  writeFileSync(join(outDir, filename), png);
+}
+async function selectVariant(id) {
+  const chip = `#garage [data-act="variant"][data-arg="${id}"]`;
+  // 车库随 HUD 重绘，直接对当前按钮派发点击。
+  await page.evaluate((selector) => {
+    const button = document.querySelector(selector);
+    if (button && !button.classList.contains('on')) button.click();
+  }, chip);
+  await page.locator(`${chip}.on`).waitFor({ state: 'attached', timeout: 10_000 });
+}
+
 let ok = false;
 try {
   const url = new URL(base);
@@ -147,13 +164,9 @@ try {
   });
 
   await step('保存三机位、眉檐高机位、前后全亮对照与无眉檐款特写', async () => {
-    const prefix = 'data:image/png;base64,';
     const saveShot = async (angle, filename, lit = false) => {
       const dataUrl = await page.evaluate(([a, on]) => window.__campDebug.vehicleShot(a, on), [angle, lit]);
-      if (!dataUrl.startsWith(prefix)) throw new Error(`${angle} 未返回 PNG data URL`);
-      const png = Buffer.from(dataUrl.slice(prefix.length), 'base64');
-      if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error(`${angle} 的 PNG 文件头无效`);
-      writeFileSync(join(outDir, filename), png);
+      savePng(dataUrl, filename);
     };
     const selectVariant = async (id) => {
       const chip = `#garage [data-act="variant"][data-arg="${id}"]`;
@@ -591,6 +604,31 @@ try {
     // 迁移后可能再领一次当日礼物，金币只会多不会少
     if (!(got >= wantCoins)) throw new Error(`恢复后旧档没有导入：金币 ${got}，旧档 ${wantCoins}`);
     if (left !== null) throw new Error('导入后旧档没有从 localStorage 删除');
+  });
+
+  // 放在最后：这一步把玩家车切到手动驾驶，之后车库的车型按钮会禁用。
+  await step('SH6601 低顶：静止满舵轮拱与行驶中转弯前斜视角', async () => {
+    await selectVariant('SH6601A4DB_2372');
+    await page.keyboard.press('KeyO');
+    await page.waitForFunction(() => window.__campDebug.motion().mode === 'driving');
+    await page.keyboard.down('KeyA');
+    try {
+      for (const angle of ['wheel34', 'turn34']) {
+        if (angle === 'turn34') await page.keyboard.down('KeyW');
+        // 等待真实输入达到目标姿态，同一帧拍摄；不用墙钟延迟猜车速，也不改车的姿态摆拍。
+        const frame = await page.waitForFunction((angle) => {
+          const m = window.__campDebug.motion();
+          if (m.steer < 19.99 * Math.PI / 180) return false;
+          if (angle === 'wheel34' ? m.speed !== 0 || m.lean !== 0 : m.speed <= 0 || m.lean < 0.015) return false;
+          return window.__campDebug.vehicleShot(angle);
+        }, angle, { timeout: 20_000 });
+        savePng(await frame.jsonValue(), `vehicle-${angle}.png`);
+        await frame.dispose();
+      }
+    } finally {
+      await page.keyboard.up('KeyW');
+      await page.keyboard.up('KeyA');
+    }
   });
 
   if (errors.length) throw new Error(`页面出现错误：\n${errors.join('\n')}`);
