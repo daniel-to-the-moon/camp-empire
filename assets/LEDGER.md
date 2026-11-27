@@ -24,7 +24,7 @@ CC0 不要求署名；仍建议在游戏「致谢」里写 Kenney、Quaternius�
 
 | 文件 | 用途 | 来源 |
 |---|---|---|
-| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供；**GPT Image 生成**（用户 2026-11-26 确认）。生成渠道：**OpenAI API**（用户 2026-11-27 确认），适用 OpenAI Services Agreement，见下节。生成者使用服务时的居住地：待用户说明（决定合同方与适用法律）。生成输入（提示词或参考图）：待用户说明（须确认不含 MXGARAGE 旧 GLB、旧 viewer 截图或其渲染图，CHARTER 第三节第 1 条）。条款见下节。只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。 |
+| [docs/visual/character-reference.png](../docs/visual/character-reference.png) | 人物造型参照，缩至 1200×600 | 用户 2026-11-26 提供；**GPT Image 生成**（用户 2026-11-26 确认）。生成渠道：**OpenAI API**（用户 2026-11-27 确认），适用 OpenAI Services Agreement，见下节。生成者使用服务时的居住地：**上海**（用户 2026-11-27 确认），不在 EEA 或瑞士。生成输入：**不含 MXGARAGE 素材**（用户 2026-11-27 确认，CHARTER 第三节第 1 条）。条款见下节。只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。 |
 
 ### GPT Image 条款核实（2026-11-26，Claude 读取官方页面）
 
@@ -47,4 +47,4 @@ CC0 不要求署名；仍建议在游戏「致谢」里写 Kenney、Quaternius�
 - 商用：页面未单独说明。
 - 合同方与适用法律（16.3、16.5）：本次只取得页面摘要、未取得原文，**待核实**。摘要称 EEA 或瑞士客户的合同方为 OpenAI Ireland Ltd.、其余为 OpenAI OpCo, LLC；EEA、瑞士、英国适用爱尔兰法律，其余适用加州法律。
 
-对本图的适用性：**待核实**。渠道已确认为 API，适用 Services Agreement；仍缺生成者居住地、生成输入是否含 MXGARAGE 素材两项，Usage Policies 与 Sharing & Publication Policy 也未读。在补齐前沿用上表限制：只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。
+对本图的适用性：**待核实**。渠道（API）、居住地（上海）、生成输入（不含 MXGARAGE 素材）均已由用户确认。按 Services Agreement 摘要，非 EEA / 瑞士客户的合同方为 OpenAI OpCo, LLC、适用加州法律（原文未取得）。仍有两项未核实：一是 OpenAI [API 支持的国家和地区](https://help.openai.com/en/articles/5347006-openai-api-supported-countries-and-territories)是否包含中国大陆、在不支持的地区使用 API 有何后果（本次页面未能读取）；二是 Usage Policies 与 Sharing & Publication Policy。在这两项核实前沿用上表限制：只作造型参照，不作贴图、不作 AI 生成输入、不入游戏资源。
