@@ -84,6 +84,8 @@ jobs:
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/gpt"
+          # gpt-agent.mjs 不带默认模型：两个变量都没设就直接报错，不发 model 为空的请求（Codex 审核 #107）
+          [ -n "$MODEL" ] || { echo "::error::缺少仓库变量 GPT_DESIGN_MODEL / GPT_MODEL"; exit 1; }
           node scripts/devloop/gpt-agent.mjs --mode read --root . --prompt "$d/prompt.md" \
             --schema scripts/devloop/discuss-schema.json --out "$d/reply.json"
           jq -er '.reply | select(type == "string" and length > 0)' "$d/reply.json" > "$d/reply.md"
