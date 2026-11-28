@@ -287,6 +287,9 @@ const OWNER = '(?:(甲|乙)(?:车|的|车的|车上的)?)?';
 
 const LEXICON: readonly LexEntry[] = [
   { re: new RegExp(`${OWNER}侧帐`, 'g'), facts: (o) => sideFacts(o, 'gear:awning') },
+  // 侧帐展开是快照里单独的状态：写了“展开/撑开”就必须有对应一方的 awning:deployed，带着侧帐不等于已展开。
+  { re: new RegExp(`${OWNER}侧帐(?:已经|已|都)?(?:展开|撑开|撑起|支起|打开)`, 'g'), facts: (o) => sideFacts(o, 'awning:deployed') },
+  { re: new RegExp(`(?:展开|撑开|撑起|支起|打开)了?${OWNER}侧帐`, 'g'), facts: (o) => sideFacts(o, 'awning:deployed') },
   { re: new RegExp(`${OWNER}炉具`, 'g'), facts: (o) => sideFacts(o, 'gear:stove') },
   { re: /(甲|乙)?(?:是|做)?营主/g, facts: (o) => sideFacts(o, 'role:host') },
   { re: /(甲|乙)?(?:（|\()?托管中/g, facts: (o) => sideFacts(o, 'presence:hosted') },
@@ -309,6 +312,19 @@ const CHAT_WORDS = ['聊', '讨论', '争了', '说：', '“', '"'];
 const BOUNDARY_WORDS = ['支付', '转账', '付款', '金币', '虚拟币', '交易', '买下', '卖给', '送给', '改了对方的车', '改装了对方', '改了挂点'];
 /** 托管中的角色不得替本人承诺。 */
 const PROMISE_WORDS = ['我答应', '我保证', '一定会', '下次我一定', '说定了', '我承诺'];
+
+/** 交谈内容：节选、话题、talk 步骤，或展示字段里的交谈绊线词。收据所需的聊天许可也按它推出。 */
+function chatContent(out: ModelOutput): string[] {
+  const hits: string[] = [];
+  if ((out.excerpt ?? []).length > 0) hits.push('带了对话节选');
+  if ((out.talk_happening ?? '').trim()) hits.push('写了话题');
+  if (out.because.some((b) => b.type === 'talk')) hits.push('有 talk 步骤');
+  for (const { field, text } of displayedTexts(out)) {
+    const w = CHAT_WORDS.find((x) => text.includes(x));
+    if (w) hits.push(`${field} 写了交谈（${w}）`);
+  }
+  return hits;
+}
 
 function displayedTexts(out: ModelOutput): { field: string; text: string }[] {
   const t = [
@@ -413,15 +429,10 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
   const allowed = opts.allowed ?? ['activity', 'talk'];
   for (const k of out.kind) if (!allowed.includes(k)) reasons.push(`越权：没有许可却生成了 ${k}`);
   for (const b of out.because) if (!out.kind.includes(b.type)) reasons.push(`because 的 ${b.type} 步骤不在 kind 里`);
-  if (!allowed.includes('talk')) {
-    // 聊天许可按内容而不按类型标签。
-    if ((out.excerpt ?? []).length > 0) reasons.push('越权：没有聊天许可却带了对话节选');
-    if ((out.talk_happening ?? '').trim()) reasons.push('越权：没有聊天许可却写了话题');
-    for (const { field, text } of displayedTexts(out)) {
-      const w = CHAT_WORDS.find((x) => text.includes(x));
-      if (w) reasons.push(`越权：没有聊天许可，${field} 却写了交谈（${w}）`);
-    }
-  }
+  // 聊天许可按内容而不按类型标签：有交谈内容就必须标 talk，没有聊天许可就整份拦下。
+  const chat = chatContent(out);
+  if (chat.length && !out.kind.includes('talk')) reasons.push(`有交谈内容却没标 talk：${chat.join('；')}`);
+  if (!allowed.includes('talk')) for (const c of chat) reasons.push(`越权：没有聊天许可，${c}`);
 
   // 动作列表：有 activity 就必须列出动作；activity 步骤只能引用列出的动作。
   if (out.kind.includes('activity')) {
@@ -453,17 +464,21 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
  */
 export type MergeResult = { ok: true; merged: ModelOutput } | { ok: false; reasons: string[] };
 
-export function mergeRuleResponse(response: ModelOutput, event: RuleEvent): MergeResult {
+/** 规则对照组的模型响应：按第四节白名单，activity 的 happening、actions、动作编号都不该出现（可以省略）。 */
+export type RuleResponse = Omit<ModelOutput, 'happening' | 'kind'> & { happening?: string; kind?: Kind[] };
+
+export function mergeRuleResponse(response: RuleResponse, event: RuleEvent): MergeResult {
   const reasons: string[] = [];
   if (response.action !== undefined) reasons.push('模型响应带了动作编号，试图覆盖锁定字段');
   if (response.because.some((b) => b.type === 'activity')) reasons.push('模型响应带了 activity 步骤，试图覆盖锁定字段');
-  if (response.happening.trim()) reasons.push('模型响应带了 activity 的 happening，试图覆盖锁定字段');
+  if ((response.happening ?? '').trim()) reasons.push('模型响应带了 activity 的 happening，试图覆盖锁定字段');
   if (response.actions !== undefined) reasons.push('模型响应带了 actions，试图覆盖锁定字段');
-  if (response.kind.includes('activity')) reasons.push('模型响应的 kind 含 activity，试图覆盖锁定字段');
+  const respKind = response.kind ?? [];
+  if (respKind.includes('activity')) reasons.push('模型响应的 kind 含 activity，试图覆盖锁定字段');
   if (reasons.length) return { ok: false, reasons };
   const facts = [...response.facts_used];
   for (const b of event.because) for (const u of b.uses) if (!hasFact(facts, u)) facts.push(u);
-  const kind: Kind[] = event.action ? Array.from(new Set<Kind>(['activity', ...response.kind])) : response.kind.filter((k) => k !== 'activity');
+  const kind: Kind[] = event.action ? Array.from(new Set<Kind>(['activity', ...respKind])) : respKind.filter((k) => k !== 'activity');
   const happening = event.action ? `甲、乙：${event.name}` : '';
   const actions = event.because.map((b) => ({ side: b.side, action: b.step }));
   return { ok: true, merged: { ...response, kind, action: event.action, happening, actions, because: [...event.because, ...response.because], facts_used: facts } };
@@ -502,6 +517,13 @@ export function plainReceipt(snap: EncounterSnapshot): Receipt {
   return { visitId: snap.visitId, facts: baseFacts(snap), views: null, excerpt: [], plain: true, kinds: [], inputFacts: [] };
 }
 
+/** 收据需要的许可类型按内容推出：有交谈内容就要聊天许可，不只看 kind 标签。 */
+function receiptKinds(out: ModelOutput): Kind[] {
+  const k = new Set<Kind>(out.kind);
+  if (chatContent(out).length) k.add('talk');
+  return [...k];
+}
+
 /** 核对通过才生成带讲述的收据；不过就退普通收据，不重试。 */
 export function buildReceipt(snap: EncounterSnapshot, out: ModelOutput, arm: Arm, opts: CheckOptions = {}): { receipt: Receipt; check: CheckResult } {
   const check = checkOutput(snap, out, arm, opts);
@@ -518,7 +540,7 @@ export function buildReceipt(snap: EncounterSnapshot, out: ModelOutput, arm: Arm
     text: l.text,
   }));
   const inputFacts = snapshotFacts(snap).filter((f) => f.subject !== 'camp' && (f.key.startsWith('gear:') || f.key === 'awning:deployed'));
-  return { receipt: { visitId: snap.visitId, facts, views: { a: out.view_a, b: out.view_b }, excerpt, plain: false, kinds: [...out.kind], inputFacts }, check };
+  return { receipt: { visitId: snap.visitId, facts, views: { a: out.view_a, b: out.view_b }, excerpt, plain: false, kinds: receiptKinds(out), inputFacts }, check };
 }
 
 /**

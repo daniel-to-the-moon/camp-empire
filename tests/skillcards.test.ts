@@ -334,6 +334,9 @@ describe('核对器：第八节必须拦下的反例', () => {
     out.facts_used = [...out.facts_used, F.aAwning];
     reject(s, out, /这一步的 uses 没有对应/);
     out.because[0] = { ...out.because[0], uses: [F.dawn, F.bAwning] };
+    reject(s, out, /这一步的 uses 没有对应/); // 写了“撑开”还要乙车侧帐已展开
+    out.because[0] = { ...out.because[0], uses: [F.dawn, F.bAwning, F.bDeployed] };
+    out.facts_used = [...out.facts_used, F.bDeployed];
     expect(checkOutput(s, out, { arm: 'growth' })).toEqual({ ok: true });
   });
 
@@ -447,6 +450,33 @@ describe('核对器：第八节必须拦下的反例', () => {
     out.because[1] = { ...out.because[1], step: '说定了下次再来' };
     out.actions = [{ side: 'b', action: '先邀甲去坡上' }, { side: 'a', action: '说定了下次再来' }];
     reject(s, out, /承诺/);
+  });
+
+  // 第二轮代码评审（#110）的 3 条 P2 回归
+  it('侧帐展开单独核：带着侧帐但没展开，写“甲车的侧帐已展开”照拦', () => {
+    const out = { ...trip1(), facts_used: [...trip1().facts_used, F.aAwning], view_a: '到达时，甲车的侧帐已展开。' };
+    reject(s, out, /侧帐已展开/);
+    const ok = { ...trip1(), facts_used: [...trip1().facts_used, F.bAwning, F.bDeployed], view_b: '乙车的侧帐已展开，两人在帐下躲雨。' };
+    expect(checkOutput(s, ok, { arm: 'growth' })).toEqual({ ok: true });
+  });
+
+  it('规则组响应按白名单省略 happening、kind 也能正常合并', () => {
+    const e = selectRuleEvent(s);
+    const { happening: _h, kind: _k, ...bare } = ruleResp();
+    const m = mergeRuleResponse(bare, e);
+    if (!m.ok) throw new Error(m.reasons.join());
+    expect(m.merged.happening).toContain(e.name);
+    expect(checkOutput(s, m.merged, { arm: 'rule', event: e })).toEqual({ ok: true });
+  });
+
+  it('交谈内容必须标 talk；收据按内容要求聊天许可，投递前撤聊天就退普通收据', () => {
+    const chatty: ModelOutput = { ...trip1(), view_a: '我和乙聊咖啡，煮了两杯带上去。' };
+    reject(s, chatty, /没标 talk/);
+    const tagged: ModelOutput = { ...chatty, kind: ['activity', 'talk'], excerpt: [{ side: 'b', presence: 'present', source: 'generated', text: '咖啡真香。' }] };
+    expect(checkOutput(s, tagged, { arm: 'growth' })).toEqual({ ok: true });
+    const { receipt } = buildReceipt(s, tagged, { arm: 'growth' });
+    expect(receipt.kinds).toContain('talk');
+    expect(deliverable(s, receipt, grants({ chat: false }))).toMatchObject({ plain: true });
   });
 
   it('来访号去重：同一来访号只认领一次', () => {
