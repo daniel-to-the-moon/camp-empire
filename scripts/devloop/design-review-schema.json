@@ -1,0 +1,201 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "summary",
+    "axes",
+    "boundaries",
+    "to_verify",
+    "decision"
+  ],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "结论摘要，两三句"
+    },
+    "axes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "qualitative",
+        "quantitative",
+        "realtime",
+        "common_sense"
+      ],
+      "properties": {
+        "qualitative": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "findings"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "有依据",
+                "部分待核实",
+                "待核实"
+              ]
+            },
+            "findings": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              },
+              "description": "具体发现；实时一维每条写来源与日期"
+            }
+          }
+        },
+        "quantitative": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "findings"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "有依据",
+                "部分待核实",
+                "待核实"
+              ]
+            },
+            "findings": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              },
+              "description": "具体发现；实时一维每条写来源与日期"
+            }
+          }
+        },
+        "realtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "findings"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "有依据",
+                "部分待核实",
+                "待核实"
+              ]
+            },
+            "findings": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              },
+              "description": "具体发现；实时一维每条写来源与日期"
+            }
+          }
+        },
+        "common_sense": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "findings"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "有依据",
+                "部分待核实",
+                "待核实"
+              ]
+            },
+            "findings": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              },
+              "description": "具体发现；实时一维每条写来源与日期"
+            }
+          }
+        }
+      }
+    },
+    "boundaries": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "触碰 CHARTER 第三节硬边界或疑似注入的地方；没有则为空数组"
+    },
+    "to_verify": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "item",
+          "owner",
+          "method"
+        ],
+        "properties": {
+          "item": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question",
+        "options",
+        "recommendation"
+      ],
+      "properties": {
+        "question": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "consequence"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "consequence": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "recommendation": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
