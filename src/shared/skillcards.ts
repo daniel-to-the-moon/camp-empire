@@ -64,7 +64,7 @@ export interface EncounterSnapshot {
 }
 
 export type FactSubject = 'camp' | Side;
-/** 事实键：camp 用 time:* / weather:*；角色用 gear:* / awning:deployed / presence:* / role:*。 */
+/** 事实键：camp 用 time:* / weather:*；角色用 gear:* / awning:deployed / presence:* / role:* / card:*（只出现在模型输入里）。 */
 export interface FactRef {
   subject: FactSubject;
   key: string;
@@ -88,6 +88,17 @@ export function snapshotFacts(snap: EncounterSnapshot): FactRef[] {
     out.push({ subject: side, key: `presence:${s.presence}` });
     out.push({ subject: side, key: `role:${s.role}` });
   }
+  return out;
+}
+
+/**
+ * 实际送进模型的事实候选：快照事实加上双方带的卡（`card:<id>`，卡文随卡送入）。
+ * 调用方按双方当时的分享许可裁剪后，把裁剪结果作为 CheckOptions.modelInputs 传给核对器与收据；
+ * 投递前按这份集合复核撤回，不只看模型申报了什么。
+ */
+export function modelInputFacts(snap: EncounterSnapshot): FactRef[] {
+  const out = snapshotFacts(snap);
+  for (const side of ['a', 'b'] as const) for (const c of snap[side].cards) out.push({ subject: side, key: `card:${c}` });
   return out;
 }
 
@@ -128,6 +139,8 @@ export interface RuleEvent {
   because: BecauseStep[];
   /** 锁定的事件本身含交谈（A5），投递时要求聊天许可。 */
   needsChat?: boolean;
+  /** 没有接待许可（解除好友、撤回接待）：无权安排相遇，与“有权但没选中活动”区分开。 */
+  denied?: boolean;
 }
 
 interface Hit {
@@ -199,15 +212,30 @@ function usesFor(snap: EncounterSnapshot, rule: RuleDef, hit: Hit): FactRef[] {
  * 规则对照组选事：先按世界前提与命中卡的 needs 过滤，再排序（双卡在前，同层按编号），取第一项；都没有就“无事”。
  * 同一快照结果唯一。选定之后才调模型写讲述；讲述不过核对就退普通收据，不回来换下一项。
  */
-export function selectRuleEvent(snap: EncounterSnapshot, allowed: readonly Kind[] = ['activity', 'talk']): RuleEvent {
+export function selectRuleEvent(snap: EncounterSnapshot, allowed: readonly Kind[]): RuleEvent {
+  if (!allowed.includes('activity')) return deepFreeze({ action: null, name: '无权安排', because: [], denied: true });
   const ordered = [...RULES.filter((r) => r.double), ...RULES.filter((r) => !r.double)];
   for (const rule of ordered) {
     const hits = rule.match(snap, allowed);
     if (hits) {
-      return { action: rule.id, name: rule.name, because: hits.map((h) => ({ type: 'activity' as const, ...h, uses: usesFor(snap, rule, h) })), ...(CHAT_RULES.has(rule.id) ? { needsChat: true } : {}) };
+      return deepFreeze({ action: rule.id, name: rule.name, because: hits.map((h) => ({ type: 'activity' as const, ...h, uses: usesFor(snap, rule, h) })), ...(CHAT_RULES.has(rule.id) ? { needsChat: true } : {}) });
     }
   }
-  return { action: null, name: '无事', because: [] };
+  return deepFreeze({ action: null, name: '无事', because: [] });
+}
+
+/** 锁定结果一经选出就冻结，合并时另做深拷贝，改合并结果改不到核对用的锁定值。 */
+function deepFreeze<T>(v: T): T {
+  if (v && typeof v === 'object') {
+    for (const x of Object.values(v as object)) deepFreeze(x);
+    Object.freeze(v);
+  }
+  return v;
+}
+
+/** 规则事件锁定的 happening（服务端生成，模型不写）。 */
+export function lockedHappening(event: RuleEvent): string {
+  return event.action ? `甲、乙：${event.name}` : '';
 }
 
 // ───────────────────────── 模型输出与核对器（纸样第四节） ─────────────────────────
@@ -228,7 +256,7 @@ export interface ActionItem {
   action: string;
 }
 
-export interface ModelOutput {
+export type ModelOutput = {
   kind: Kind[];
   /** 生长组有 activity 时必填；activity 类型的 because 只能引用这里的动作。规则组由服务端按锁定步骤生成。 */
   actions?: ActionItem[];
@@ -243,7 +271,7 @@ export interface ModelOutput {
   facts_used: FactRef[];
   view_a: string;
   view_b: string;
-}
+};
 
 /** 可署“本人”的玩家原话（第一轮不接玩家输入，恒为空）。 */
 export interface PlayerInput {
@@ -255,8 +283,10 @@ export type Arm = { arm: 'growth' } | { arm: 'rule'; event: RuleEvent };
 
 export interface CheckOptions {
   playerInputs?: readonly PlayerInput[];
-  /** 按分项许可可生成的类型（allowedKinds 的结果）；缺省两类都许可。 */
-  allowed?: readonly Kind[];
+  /** 按分项许可可生成的类型（allowedKinds 的结果）。必填：调用方忘了传就是编译错误，不默认放行。 */
+  allowed: readonly Kind[];
+  /** 本次经双方授权、实际送入模型的事实（modelInputFacts 按分享许可裁剪后的结果）。必填。 */
+  modelInputs: readonly FactRef[];
 }
 
 /** 每位玩家的分项许可（与 GAME_PILLARS 的接待、收信、聊天一致；第一轮只用接待与聊天）。 */
@@ -354,18 +384,81 @@ function cardNameLeaks(text: string): string[] {
   return hits;
 }
 
-export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm, opts: CheckOptions = {}): CheckResult {
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const isSide = (v: unknown): v is Side => v === 'a' || v === 'b';
+const isStr = (v: unknown): v is string => typeof v === 'string';
+const isFact = (v: unknown) => isObj(v) && (v.subject === 'camp' || isSide(v.subject)) && isStr(v.key);
+
+/** 结构校验：模型输出是外部数据，字段取值不合法就直接判不过，不让后面的索引抛异常。 */
+export function outputShapeErrors(out: unknown): string[] {
+  if (!isObj(out)) return ['模型输出不是对象'];
+  const e: string[] = [];
+  if (!Array.isArray(out.kind) || out.kind.some((k) => k !== 'activity' && k !== 'talk')) e.push('kind 不合法');
+  if (!isStr(out.happening)) e.push('happening 不是字符串');
+  if (out.talk_happening !== undefined && !isStr(out.talk_happening)) e.push('talk_happening 不是字符串');
+  if (!isStr(out.view_a) || !isStr(out.view_b)) e.push('view_a / view_b 不是字符串');
+  if (!Array.isArray(out.facts_used) || !out.facts_used.every(isFact)) e.push('facts_used 不合法');
+  const stepOk = (b: unknown) =>
+    isObj(b) && (b.type === 'activity' || b.type === 'talk') && isStr(b.card) && b.card in STARTER_CARDS && isSide(b.side) && isStr(b.step) && Array.isArray(b.uses) && b.uses.every(isFact);
+  if (!Array.isArray(out.because) || !out.because.every(stepOk)) e.push('because 不合法');
+  const lineOk = (l: unknown) => isObj(l) && isSide(l.side) && (l.presence === 'present' || l.presence === 'hosted') && (l.source === 'player' || l.source === 'generated') && isStr(l.text);
+  if (out.excerpt !== undefined && !(Array.isArray(out.excerpt) && out.excerpt.every(lineOk))) e.push('excerpt 不合法');
+  if (out.actions !== undefined && !(Array.isArray(out.actions) && out.actions.every((a) => isObj(a) && isSide(a.side) && isStr(a.action)))) e.push('actions 不合法');
+  return e;
+}
+
+const CLAUSE = /[，。；！？,.;!?\n]/;
+
+/**
+ * 托管中的角色不得被写成替本人承诺：所有展示字段都查（另一方视角、两类 happening 也查）。
+ * 承诺的主语取承诺词前最近的“甲 / 乙”；以“我”开头的承诺词或前面没写名字时，归给这个字段的说话人；
+ * happening 里认不出主语、而有一方托管中，就按托管方处理（保守）。
+ */
+function promiseViolations(snap: EncounterSnapshot, out: ModelOutput): string[] {
+  const hits: string[] = [];
+  const owner = (field: string): Side | null => {
+    if (field === 'view_a') return 'a';
+    if (field === 'view_b') return 'b';
+    const m = /^(because|excerpt)\[(\d+)\]$/.exec(field);
+    if (!m) return null;
+    return m[1] === 'because' ? out.because[Number(m[2])].side : (out.excerpt ?? [])[Number(m[2])].side;
+  };
+  const anyHosted = snap.a.presence === 'hosted' || snap.b.presence === 'hosted';
+  for (const { field, text } of displayedTexts(out)) {
+    for (const clause of text.split(CLAUSE)) {
+      for (const w of PROMISE_WORDS) {
+        const at = clause.indexOf(w);
+        if (at < 0) continue;
+        const before = clause.slice(0, at);
+        const named = Math.max(before.lastIndexOf('甲'), before.lastIndexOf('乙'));
+        let subject: Side | null = w.startsWith('我') ? owner(field) : null;
+        if (subject === null && named >= 0) subject = before[named] === '甲' ? 'a' : 'b';
+        if (subject === null) subject = owner(field);
+        const bad = subject ? snap[subject].presence === 'hosted' : anyHosted;
+        if (bad) hits.push(`${field} 写托管中的${subject ? SIDE_LABEL[subject] : '一方'}替本人做了承诺（${w}）`);
+      }
+    }
+  }
+  return hits;
+}
+
+export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm, opts: CheckOptions): CheckResult {
+  const shape = outputShapeErrors(out);
+  if (shape.length) return { ok: false, reasons: shape.map((x) => `结构不合法：${x}`) };
   const reasons: string[] = [];
   const truth = snapshotFacts(snap);
+  const inputs = opts.modelInputs;
 
-  // 事实：facts_used 每项都在快照里成立。
+  // 事实：facts_used 每项都在快照里成立，且是本次经授权送进模型的事实。
   for (const f of out.facts_used) {
     if (!hasFact(truth, f)) reasons.push(`facts_used 不成立：${f.subject} ${f.key}`);
+    else if (!hasFact(inputs, f)) reasons.push(`facts_used 用了未经授权送入模型的事实：${f.subject} ${f.key}`);
   }
 
-  // because：卡由所写角色这一趟装着且 needs 满足；uses ⊆ facts_used。
+  // because：卡由所写角色这一趟装着且 needs 满足；卡本身经授权送进了模型；uses ⊆ facts_used。
   for (const b of out.because) {
     const side = snap[b.side];
+    if (side.cards.includes(b.card) && !hasFact(inputs, { subject: b.side, key: `card:${b.card}` })) reasons.push(`because 用了未经授权送入模型的卡：${SIDE_LABEL[b.side]} ${b.card}`);
     if (!side.cards.includes(b.card)) reasons.push(`because 引用了${SIDE_LABEL[b.side]}没装的卡 ${b.card}`);
     else if (!needsMet(b.card, side)) reasons.push(`because 的卡 ${b.card} 需要的装备${SIDE_LABEL[b.side]}这一趟没带`);
     for (const u of b.uses) {
@@ -385,7 +478,7 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
   }
 
   // 申报覆盖：展示字段里的世界事实词必须有成立的 facts_used 对应（facts_used 为空也照查）。
-  const declared = out.facts_used.filter((f) => hasFact(truth, f));
+  const declared = out.facts_used.filter((f) => hasFact(truth, f) && hasFact(inputs, f));
   for (const { field, text } of displayedTexts(out)) {
     for (const lex of LEXICON) {
       for (const m of text.matchAll(lex.re)) {
@@ -414,16 +507,8 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
     if (l.source === 'player' && !players.some((p) => p.side === l.side && p.text === l.text)) {
       reasons.push(`节选把演绎台词署成${SIDE_LABEL[l.side]}本人`);
     }
-    if (snap[l.side].presence === 'hosted' && PROMISE_WORDS.some((w) => l.text.includes(w))) {
-      reasons.push(`托管中的${SIDE_LABEL[l.side]}替本人做了承诺`);
-    }
   }
-  // 托管中的角色在自己视角的讲述与自己的步骤里也不得替本人承诺。
-  for (const side of ['a', 'b'] as const) {
-    if (snap[side].presence !== 'hosted') continue;
-    const texts = [side === 'a' ? out.view_a : out.view_b, ...out.because.filter((b) => b.side === side).map((b) => b.step)];
-    if (texts.some((t) => PROMISE_WORDS.some((w) => t.includes(w)))) reasons.push(`托管中的${SIDE_LABEL[side]}在讲述或步骤里替本人做了承诺`);
-  }
+  reasons.push(...promiseViolations(snap, out));
 
   // 边界：不出现支付、赠送、交易、改对方车。
   for (const { field, text } of displayedTexts(out)) {
@@ -432,7 +517,7 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
   }
 
   // 分项许可：不许可的类型不生成，出现即越权。
-  const allowed = opts.allowed ?? ['activity', 'talk'];
+  const allowed = opts.allowed;
   for (const k of out.kind) if (!allowed.includes(k)) reasons.push(`越权：没有许可却生成了 ${k}`);
   for (const b of out.because) if (!out.kind.includes(b.type)) reasons.push(`because 的 ${b.type} 步骤不在 kind 里`);
   // 聊天许可按内容而不按类型标签：有交谈内容就必须标 talk，没有聊天许可就整份拦下。
@@ -453,13 +538,18 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
   // 讲述是否偏离锁定事件，纯函数判不准，不算通过事件一致性（由盲评记“讲述偏离”）。
   if (arm.arm === 'rule') {
     const chosen = arm.event.action;
+    if (arm.event.denied) reasons.push('无权安排相遇：没有接待许可');
     if ((out.action ?? null) !== chosen) reasons.push(`讲述写的事（${out.action ?? '无事'}）不是规则选中的（${chosen ?? '无事'}）`);
     if (arm.event.needsChat && !allowed.includes('talk')) reasons.push(`越权：规则事件 ${chosen} 含交谈，没有聊天许可`);
     if (chosen === null && out.kind.includes('activity')) reasons.push('规则选了“无事”，讲述却写了一起做的事');
-    const key = (b: BecauseStep) => `${b.card}|${b.side}|${b.step}`;
+    // 逐项比对锁定值：卡、角色、步骤文字和 uses 都要一致；happening 与 actions 必须等于服务端生成的。
+    const key = (b: BecauseStep) => JSON.stringify([b.type, b.card, b.side, b.step, b.uses.map((u) => [u.subject, u.key])]);
     const got = out.because.filter((b) => b.type === 'activity').map(key);
     const locked = arm.event.because.map(key);
-    if (got.length !== locked.length || got.some((k, i) => k !== locked[i])) reasons.push('activity 步骤与规则锁定的不一致');
+    if (got.length !== locked.length || got.some((k, i) => k !== locked[i])) reasons.push('activity 步骤（含 uses）与规则锁定的不一致');
+    if (out.happening !== lockedHappening(arm.event)) reasons.push('happening 与规则锁定的不一致');
+    const wantActs = JSON.stringify(arm.event.because.map((b) => [b.side, b.step]));
+    if (JSON.stringify((out.actions ?? []).map((a) => [a.side, a.action])) !== wantActs) reasons.push('actions 与规则锁定的不一致');
   }
 
   return reasons.length ? { ok: false, reasons } : { ok: true };
@@ -471,24 +561,34 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
  */
 export type MergeResult = { ok: true; merged: ModelOutput } | { ok: false; reasons: string[] };
 
-/** 规则对照组的模型响应：按第四节白名单，activity 的 happening、actions、动作编号都不该出现（可以省略）。 */
-export type RuleResponse = Omit<ModelOutput, 'happening' | 'kind'> & { happening?: string; kind?: Kind[] };
+/** 规则对照组的模型响应：只许第四节白名单里的字段；activity 的 happening、actions、动作编号一律不许出现（空值也不行）。 */
+export type RuleResponse = Pick<ModelOutput, 'talk_happening' | 'excerpt' | 'because' | 'facts_used' | 'view_a' | 'view_b'> & { kind?: Kind[] };
+const RULE_RESPONSE_KEYS: ReadonlySet<string> = new Set(['kind', 'talk_happening', 'excerpt', 'because', 'facts_used', 'view_a', 'view_b']);
 
-export function mergeRuleResponse(response: RuleResponse, event: RuleEvent): MergeResult {
+export function mergeRuleResponse(response: RuleResponse & Record<string, unknown>, event: RuleEvent): MergeResult {
   const reasons: string[] = [];
-  if (response.action !== undefined) reasons.push('模型响应带了动作编号，试图覆盖锁定字段');
-  if (response.because.some((b) => b.type === 'activity')) reasons.push('模型响应带了 activity 步骤，试图覆盖锁定字段');
-  if ((response.happening ?? '').trim()) reasons.push('模型响应带了 activity 的 happening，试图覆盖锁定字段');
-  if (response.actions !== undefined) reasons.push('模型响应带了 actions，试图覆盖锁定字段');
+  for (const k of Object.keys(response)) if (!RULE_RESPONSE_KEYS.has(k)) reasons.push(`模型响应带了白名单外的字段 ${k}，视为试图覆盖锁定字段`);
   const respKind = response.kind ?? [];
-  if (respKind.includes('activity')) reasons.push('模型响应的 kind 含 activity，试图覆盖锁定字段');
+  if (!Array.isArray(respKind) || respKind.some((k) => k !== 'talk')) reasons.push('模型响应的 kind 只能含 talk（activity 由服务端锁定）');
+  if (!Array.isArray(response.because) || response.because.some((b) => b?.type !== 'talk')) reasons.push('模型响应带了 activity 步骤，试图覆盖锁定字段');
   if (reasons.length) return { ok: false, reasons };
-  const facts = [...response.facts_used];
-  for (const b of event.because) for (const u of b.uses) if (!hasFact(facts, u)) facts.push(u);
-  const kind: Kind[] = event.action ? Array.from(new Set<Kind>(['activity', ...respKind])) : respKind.filter((k) => k !== 'activity');
-  const happening = event.action ? `甲、乙：${event.name}` : '';
-  const actions = event.because.map((b) => ({ side: b.side, action: b.step }));
-  return { ok: true, merged: { ...response, kind, action: event.action, happening, actions, because: [...event.because, ...response.because], facts_used: facts } };
+  const locked = structuredClone(event.because) as BecauseStep[];
+  const facts = structuredClone(response.facts_used);
+  for (const b of locked) for (const u of b.uses) if (!hasFact(facts, u)) facts.push({ ...u });
+  const kind: Kind[] = event.action ? Array.from(new Set<Kind>(['activity', ...respKind])) : [...respKind];
+  const merged: ModelOutput = {
+    kind,
+    action: event.action,
+    happening: lockedHappening(event),
+    actions: locked.map((b) => ({ side: b.side, action: b.step })),
+    because: [...locked, ...structuredClone(response.because)],
+    facts_used: facts,
+    view_a: response.view_a,
+    view_b: response.view_b,
+  };
+  if (response.talk_happening !== undefined) merged.talk_happening = response.talk_happening;
+  if (response.excerpt !== undefined) merged.excerpt = structuredClone(response.excerpt);
+  return { ok: true, merged };
 }
 
 // ───────────────────────── 收据（纸样第四节 收据分两层） ─────────────────────────
@@ -503,8 +603,41 @@ export interface Receipt {
   plain: boolean;
   /** 增强收据包含的互动类型；投递前按它复核许可。 */
   kinds: Kind[];
-  /** 生成时送进模型的全部可撤回事实（装备与侧帐状态）；投递前保守复核，不只看申报。 */
+  /** 本次经授权实际送进模型的全部事实（含卡）；投递前按收件方保守复核，不只看申报。 */
   inputFacts: FactRef[];
+  /** 共用的两句 happening（安全审核要查）；普通收据为空。 */
+  happening: string;
+  talkHappening: string;
+}
+
+/** 按收件方渲染的玩家收据：只含自己那份讲述，另一方的专属讲述不会随收据返回。 */
+export interface PlayerReceipt {
+  visitId: string;
+  side: Side;
+  facts: string[];
+  happening: string;
+  talkHappening: string;
+  view: string | null;
+  excerpt: { speaker: string; text: string }[];
+  plain: boolean;
+}
+
+export function renderFor(receipt: Receipt, side: Side): PlayerReceipt {
+  return {
+    visitId: receipt.visitId,
+    side,
+    facts: [...receipt.facts],
+    happening: receipt.happening,
+    talkHappening: receipt.talkHappening,
+    view: receipt.views ? receipt.views[side] : null,
+    excerpt: receipt.excerpt.map((l) => ({ ...l })),
+    plain: receipt.plain,
+  };
+}
+
+/** 一对按收件方隔离的候选收据；安全审核对这一对一起判。 */
+export function renderPair(receipt: Receipt): { a: PlayerReceipt; b: PlayerReceipt } {
+  return { a: renderFor(receipt, 'a'), b: renderFor(receipt, 'b') };
 }
 
 function presenceLabel(p: Presence) {
@@ -521,7 +654,7 @@ function baseFacts(snap: EncounterSnapshot): string[] {
 
 /** 普通收据：超预算、超时、拦截或撤权时只发它，不编故事凑数。 */
 export function plainReceipt(snap: EncounterSnapshot): Receipt {
-  return { visitId: snap.visitId, facts: baseFacts(snap), views: null, excerpt: [], plain: true, kinds: [], inputFacts: [] };
+  return { visitId: snap.visitId, facts: baseFacts(snap), views: null, excerpt: [], plain: true, kinds: [], inputFacts: [], happening: '', talkHappening: '' };
 }
 
 /** 收据需要的许可类型按内容推出：有交谈内容就要聊天许可，不只看 kind 标签。 */
@@ -532,31 +665,43 @@ function receiptKinds(out: ModelOutput, arm: Arm): Kind[] {
 }
 
 /** 核对通过才生成带讲述的收据；不过就退普通收据，不重试。 */
-export function buildReceipt(snap: EncounterSnapshot, out: ModelOutput, arm: Arm, opts: CheckOptions = {}): { receipt: Receipt; check: CheckResult } {
+export function buildReceipt(snap: EncounterSnapshot, out: ModelOutput, arm: Arm, opts: CheckOptions): { receipt: Receipt; check: CheckResult } {
   const check = checkOutput(snap, out, arm, opts);
   if (!check.ok) return { receipt: plainReceipt(snap), check };
   // because 为空（没有归因）只发普通收据，不硬挂卡。
   if (out.because.length === 0) return { receipt: plainReceipt(snap), check };
   const facts = baseFacts(snap);
   for (const b of out.because) {
-    // 卡与角色是服务端核过的归因；步骤文字是模型写的，标“演绎”，不写成本人做的。
-    facts.push(`${SIDE_LABEL[b.side]}（${presenceLabel(snap[b.side].presence)}）因${STARTER_CARDS[b.card].name} · 演绎：${b.step}`);
+    // 卡与角色是服务端核过的归因；生长组和 talk 的步骤是模型写的，标“演绎”；规则组 activity 步骤是锁定的，标“锁定”（纸样第七节）。
+    const tag = arm.arm === 'rule' && b.type === 'activity' ? '锁定' : '演绎';
+    facts.push(`${SIDE_LABEL[b.side]}（${presenceLabel(snap[b.side].presence)}）因${STARTER_CARDS[b.card].name} · ${tag}：${b.step}`);
   }
   const excerpt = (out.excerpt ?? []).map((l) => ({
     speaker: `${SIDE_LABEL[l.side]}（${presenceLabel(l.presence)}·${l.source === 'player' ? '本人' : '演绎'}）`,
     text: l.text,
   }));
-  const inputFacts = snapshotFacts(snap).filter((f) => f.subject !== 'camp' && (f.key.startsWith('gear:') || f.key === 'awning:deployed'));
-  return { receipt: { visitId: snap.visitId, facts, views: { a: out.view_a, b: out.view_b }, excerpt, plain: false, kinds: receiptKinds(out, arm), inputFacts }, check };
+  const inputFacts = opts.modelInputs.map((f) => ({ ...f }));
+  const receipt: Receipt = {
+    visitId: snap.visitId,
+    facts,
+    views: { a: out.view_a, b: out.view_b },
+    excerpt,
+    plain: false,
+    kinds: receiptKinds(out, arm),
+    inputFacts,
+    happening: out.happening,
+    talkHappening: out.talk_happening ?? '',
+  };
+  return { receipt, check };
 }
 
 /**
- * 安全审核的输入：两份收据都渲染完之后、投递之前，列出所有含模型文字的展示字段
- * （讲述、节选、happening，以及事实行里模型写的 because 步骤）。
+ * 安全审核的输入：先按收件方渲染出一对收据，再把这一对的全部展示文字一起送审
+ * （各自的讲述、节选、两类 happening，以及事实行里模型写的步骤）。任一份违规，两份一起退。
  */
-export function safetyTexts(receipt: Receipt, out: ModelOutput): string[] {
-  if (receipt.plain) return [];
-  return [out.happening, out.talk_happening ?? '', receipt.views?.a ?? '', receipt.views?.b ?? '', ...receipt.excerpt.map((l) => l.text), ...receipt.facts];
+export function safetyTexts(pair: { a: PlayerReceipt; b: PlayerReceipt }): string[] {
+  const texts = (r: PlayerReceipt) => (r.plain ? [] : [r.happening, r.talkHappening, r.view ?? '', ...r.excerpt.map((l) => l.text), ...r.facts]);
+  return [...texts(pair.a), ...texts(pair.b)];
 }
 
 /** 安全审核拦下或无法检查时，两份都只发普通收据。 */
@@ -578,7 +723,10 @@ export function deliverable(snap: EncounterSnapshot, receipt: Receipt, g: Grants
   return kindsOk && factsOk ? receipt : plainReceipt(snap);
 }
 
-/** 来访号认领：同一来访号只有第一个处理者能认领并调模型；之后到来的不重新调用、不覆盖，等首份落地后直接读。 */
+/**
+ * 来访号认领（第一轮只做去重）：同一来访号只有第一个调用者返回 true，之后返回 false。
+ * 纸样第四节第 1 步的处理期限、认领凭据和终态（已投递 / 不投递 / 超时）还没实现，见 #112。
+ */
 export function claimVisit(claimed: Set<string>, visitId: string): boolean {
   if (claimed.has(visitId)) return false;
   claimed.add(visitId);
@@ -591,12 +739,40 @@ export interface AuditRecord {
   visitId: string;
   arm: Arm['arm'];
   snapshot: EncounterSnapshot;
-  rawOutput: ModelOutput;
+  modelVersion: string;
+  promptVersion: string;
+  /** 实际获准送入模型的事实。 */
+  modelInputs: FactRef[];
+  /** 模型的原始响应，原样保存（规则组可以是省略锁定字段的响应，也可以是被丢弃的输出），不是合并后的结果。 */
+  rawResponse: unknown;
   check: CheckResult;
   safety: 'pass' | 'blocked' | 'unavailable' | 'skipped';
   expiresAtMs: number;
 }
 
-export function auditRecord(snap: EncounterSnapshot, arm: Arm, rawOutput: ModelOutput, check: CheckResult, safety: AuditRecord['safety'], nowMs: number): AuditRecord {
-  return { visitId: snap.visitId, arm: arm.arm, snapshot: snap, rawOutput, check, safety, expiresAtMs: nowMs + AUDIT_RETENTION_DAYS * 86_400_000 };
+export interface AuditInput {
+  snap: EncounterSnapshot;
+  arm: Arm;
+  modelVersion: string;
+  promptVersion: string;
+  modelInputs: readonly FactRef[];
+  rawResponse: unknown;
+  check: CheckResult;
+  safety: AuditRecord['safety'];
+  nowMs: number;
+}
+
+export function auditRecord(x: AuditInput): AuditRecord {
+  return {
+    visitId: x.snap.visitId,
+    arm: x.arm.arm,
+    snapshot: structuredClone(x.snap),
+    modelVersion: x.modelVersion,
+    promptVersion: x.promptVersion,
+    modelInputs: x.modelInputs.map((f) => ({ ...f })),
+    rawResponse: structuredClone(x.rawResponse),
+    check: x.check,
+    safety: x.safety,
+    expiresAtMs: x.nowMs + AUDIT_RETENTION_DAYS * 86_400_000,
+  };
 }

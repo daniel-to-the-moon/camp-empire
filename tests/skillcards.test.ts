@@ -7,13 +7,17 @@ import {
   ABOUT_MAX_CHARS,
   applySafety,
   safetyTexts,
-  buildReceipt,
   allowedKinds,
   auditRecord,
   AUDIT_RETENTION_DAYS,
   deliverable,
   type Grants,
-  checkOutput,
+  checkOutput as checkOutputRaw,
+  buildReceipt as buildReceiptRaw,
+  modelInputFacts,
+  renderFor,
+  renderPair,
+  lockedHappening,
   selectRuleEvent,
   snapshotFacts,
   STARTER_CARDS,
@@ -22,12 +26,23 @@ import {
   mergeRuleResponse,
   claimVisit,
   type RuleEvent,
+  type RuleResponse,
   type CardId,
   type EncounterSnapshot,
   type FactRef,
   type Gear,
   type ModelOutput,
+  type CheckOptions,
+  type Kind,
 } from '../src/shared/skillcards';
+
+const ALL: Kind[] = ['activity', 'talk'];
+type Opts = Partial<CheckOptions>;
+/** 测试里默认双方都许可、模型输入为快照全部事实与卡；需要收紧时显式传。 */
+const checkOutput = (snap: EncounterSnapshot, out: ModelOutput, arm: Parameters<typeof checkOutputRaw>[2], o: Opts = {}) =>
+  checkOutputRaw(snap, out, arm, { allowed: ALL, modelInputs: modelInputFacts(snap), ...o });
+const buildReceipt = (snap: EncounterSnapshot, out: ModelOutput, arm: Parameters<typeof checkOutputRaw>[2], o: Opts = {}) =>
+  buildReceiptRaw(snap, out, arm, { allowed: ALL, modelInputs: modelInputFacts(snap), ...o });
 
 /** 第七节的世界状态：下雨的清晨；乙营主、本人在场，带 sunrise、侧帐已展开；甲来访、托管中，带炉具和侧帐。 */
 function world(aCards: CardId[], aGear: Gear[] = ['stove', 'awning'], over: Partial<EncounterSnapshot> = {}): EncounterSnapshot {
@@ -51,8 +66,8 @@ const F = {
 } satisfies Record<string, FactRef>;
 
 /** 规则对照组的模型响应：只写讲述，不带编号、步骤、动作和 activity。 */
-function ruleResp(): ModelOutput {
-  return { kind: [], happening: '', because: [], facts_used: [F.dawn, F.rain, F.aStove], view_a: trip1().view_a, view_b: trip1().view_b };
+function ruleResp(): RuleResponse {
+  return { because: [], facts_used: [F.dawn, F.rain, F.aStove], view_a: trip1().view_a, view_b: trip1().view_b };
 }
 
 /** 第七节第一趟生长组的假输出。 */
@@ -104,30 +119,30 @@ describe('卡数据', () => {
 
 describe('规则对照组选事（第十节，同一快照结果唯一）', () => {
   it('第一趟 coffee+fixer：双卡优先，选 A1 日出咖啡', () => {
-    const e = selectRuleEvent(world(['coffee', 'fixer']));
+    const e = selectRuleEvent(world(['coffee', 'fixer']), ALL);
     expect(e.action).toBe('A1');
     expect(e.because.map((b) => `${b.card}/${b.side}`)).toEqual(['coffee/a', 'sunrise/b']);
   });
 
   it('第二趟换成 rain：rain 与 fixer 同在甲方不算双卡，按编号选单卡 A3', () => {
-    expect(selectRuleEvent(world(['rain', 'fixer'])).action).toBe('A3');
+    expect(selectRuleEvent(world(['rain', 'fixer']), ALL).action).toBe('A3');
   });
 
   it('talk 示例甲只带 carfan：唯一结果 A4', () => {
-    expect(selectRuleEvent(world(['carfan'])).action).toBe('A4');
+    expect(selectRuleEvent(world(['carfan']), ALL).action).toBe('A4');
   });
 
   it('甲带 coffee、fixer 但没带炉具：A1 在选事阶段剔除，结果 A4', () => {
-    expect(selectRuleEvent(world(['coffee', 'fixer'], ['awning'])).action).toBe('A4');
+    expect(selectRuleEvent(world(['coffee', 'fixer'], ['awning']), ALL).action).toBe('A4');
   });
 
   it('甲带 rain、乙带 fixer，只切换甲车侧帐：有 → A7，无 → A7 与 A3 都剔除 → A4', () => {
     const withAwning = world(['rain']);
     withAwning.b.cards = ['fixer'];
-    expect(selectRuleEvent(withAwning).action).toBe('A7');
+    expect(selectRuleEvent(withAwning, ALL).action).toBe('A7');
     const without = world(['rain'], ['stove']);
     without.b.cards = ['fixer'];
-    const e = selectRuleEvent(without);
+    const e = selectRuleEvent(without, ALL);
     expect(e.action).toBe('A4');
     expect(e.because).toMatchObject([{ type: 'activity', card: 'fixer', side: 'b' }]);
   });
@@ -135,23 +150,23 @@ describe('规则对照组选事（第十节，同一快照结果唯一）', () =
   it('双方都能触发 A1：营主一方固定持 coffee，归因唯一', () => {
     const s = world(['coffee', 'sunrise']);
     s.b = { ...s.b, cards: ['coffee', 'sunrise'], gear: ['stove', 'awning'] };
-    const e = selectRuleEvent(s);
+    const e = selectRuleEvent(s, ALL);
     expect(e.action).toBe('A1');
     expect(e.because.map((b) => `${b.card}/${b.side}`)).toEqual(['coffee/b', 'sunrise/a']);
     expect(e.because[0].uses).toContainEqual({ subject: 'b', key: 'gear:stove' });
     const flipped = { ...s, a: { ...s.a, role: 'host' as const }, b: { ...s.b, role: 'guest' as const } };
-    expect(selectRuleEvent(flipped).because.map((b) => `${b.card}/${b.side}`)).toEqual(['coffee/a', 'sunrise/b']);
+    expect(selectRuleEvent(flipped, ALL).because.map((b) => `${b.card}/${b.side}`)).toEqual(['coffee/a', 'sunrise/b']);
   });
 
   it('同卡配对不触发双卡动作；都不成立就“无事”', () => {
     const s = world(['sunrise'], [], { weather: 'clear' });
-    expect(selectRuleEvent(s)).toMatchObject({ action: null, name: '无事', because: [] });
+    expect(selectRuleEvent(s, ALL)).toMatchObject({ action: null, name: '无事', because: [] });
   });
 
   it('同一快照多次选事结果相同', () => {
     const s = world(['coffee', 'fixer', 'stars']);
-    const first = selectRuleEvent(s);
-    for (let i = 0; i < 5; i++) expect(selectRuleEvent(s)).toEqual(first);
+    const first = selectRuleEvent(s, ALL);
+    for (let i = 0; i < 5; i++) expect(selectRuleEvent(s, ALL)).toEqual(first);
   });
 });
 
@@ -203,8 +218,8 @@ describe('核对器：第七节正例通过', () => {
 
   it('规则对照组第一趟：服务端填 because，讲述落在 A1', () => {
     const s = world(['coffee', 'fixer']);
-    const e = selectRuleEvent(s);
-    const narr: ModelOutput = { ...ruleResp(), facts_used: [F.dawn, F.rain, F.aStove] };
+    const e = selectRuleEvent(s, ALL);
+    const narr: RuleResponse = { ...ruleResp(), facts_used: [F.dawn, F.rain, F.aStove] };
     const m = mergeRuleResponse(narr, e);
     if (!m.ok) throw new Error(m.reasons.join());
     expect(m.merged.action).toBe('A1');
@@ -215,7 +230,7 @@ describe('核对器：第七节正例通过', () => {
 
 describe('核对器：第八节必须拦下的反例', () => {
   const s = world(['coffee', 'fixer']);
-  const reject = (snap: EncounterSnapshot, out: ModelOutput, re: RegExp, arm: Parameters<typeof checkOutput>[2] = { arm: 'growth' }, opts: Parameters<typeof checkOutput>[3] = {}) => {
+  const reject = (snap: EncounterSnapshot, out: ModelOutput, re: RegExp, arm: Parameters<typeof checkOutput>[2] = { arm: 'growth' }, opts: Opts = {}) => {
     const r = checkOutput(snap, out, arm, opts);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reasons.join('\n')).toMatch(re);
@@ -302,14 +317,14 @@ describe('核对器：第八节必须拦下的反例', () => {
     reject(s, { ...trip1(), view_b: '甲把咖啡豆送给了我，还转账了 5 金币。' }, /越界/);
   });
 
-  const merged = (out: ModelOutput, e: RuleEvent) => {
+  const merged = (out: RuleResponse & Record<string, unknown>, e: RuleEvent) => {
     const m = mergeRuleResponse(out, e);
     if (!m.ok) throw new Error(m.reasons.join());
     return m.merged;
   };
 
   it('规则对照组：模型响应带了动作编号或 activity 步骤，视为试图覆盖锁定字段', () => {
-    const e = selectRuleEvent(s);
+    const e = selectRuleEvent(s, ALL);
     const withAction = mergeRuleResponse({ ...ruleResp(), action: 'A4' }, e);
     expect(withAction.ok).toBe(false);
     const withStep = mergeRuleResponse(trip1(), e);
@@ -318,7 +333,7 @@ describe('核对器：第八节必须拦下的反例', () => {
   });
 
   it('规则对照组：合并后的结果被篡改（编号或步骤与锁定不符）照样拦下', () => {
-    const e = selectRuleEvent(s);
+    const e = selectRuleEvent(s, ALL);
     const base = merged(ruleResp(), e);
     reject(s, { ...base, action: 'A4' }, /不是规则选中的/, { arm: 'rule', event: e });
     reject(s, { ...base, because: base.because.map((b, i) => (i === 0 ? { ...b, step: '泡了一壶茶' } : b)) }, /锁定/, { arm: 'rule', event: e });
@@ -341,7 +356,7 @@ describe('核对器：第八节必须拦下的反例', () => {
   });
 
   it('规则对照组锁定 A1 的步骤与 uses：持 coffee 的甲含甲车炉具', () => {
-    const e = selectRuleEvent(s);
+    const e = selectRuleEvent(s, ALL);
     expect(e.because).toEqual([
       { type: 'activity', card: 'coffee', side: 'a', step: '煮了咖啡', uses: [F.aStove, F.dawn] },
       { type: 'activity', card: 'sunrise', side: 'b', step: '邀对方去看日出', uses: [F.dawn] },
@@ -350,7 +365,7 @@ describe('核对器：第八节必须拦下的反例', () => {
 
   it('规则对照组选了无事，讲述却写一起做的事', () => {
     const quiet = world(['sunrise'], [], { weather: 'clear' });
-    const e = selectRuleEvent(quiet);
+    const e = selectRuleEvent(quiet, ALL);
     const out: ModelOutput = { kind: ['activity'], action: null, happening: '两人一起散步。', because: [], facts_used: [], view_a: '散步。', view_b: '散步。' };
     reject(quiet, out, /无事/, { arm: 'rule', event: e });
   });
@@ -362,6 +377,23 @@ describe('核对器：第八节必须拦下的反例', () => {
     expect(receipt.facts).toEqual(['乙接待了甲', '甲（托管中），乙（本人在场）']);
   });
 
+  it('按收件方分两份：只有甲那份讲述违规，一对一起送审，拦下后甲乙都只拿到各自的普通收据', () => {
+    const snap = world(['coffee', 'fixer']);
+    const out: ModelOutput = { ...trip1(), view_a: '乙一早叫我去坡上，真是个蠢货。' };
+    const { receipt } = buildReceipt(snap, out, { arm: 'growth' });
+    const pair = renderPair(receipt);
+    expect(pair.a.view).toBe(out.view_a);
+    expect(pair.b.view).toBe(out.view_b);
+    expect(JSON.stringify(pair.b)).not.toContain('蠢货');
+    expect(safetyTexts(pair).some((t) => t.includes('蠢货'))).toBe(true);
+    const after = renderPair(applySafety(snap, receipt, 'blocked'));
+    for (const side of ['a', 'b'] as const) {
+      expect(after[side]).toMatchObject({ side, plain: true, view: null, excerpt: [], happening: '' });
+      expect(after[side].facts).toEqual(['乙接待了甲', '甲（托管中），乙（本人在场）']);
+    }
+    expect(renderFor(applySafety(snap, receipt, 'pass'), 'b').view).toBe(out.view_b);
+  });
+
   it('只在 because 步骤里写辱骂：安全审核的输入包含事实行，拦下后两份都退普通收据', () => {
     const snap = world(['coffee', 'fixer']);
     const out = trip1();
@@ -369,7 +401,7 @@ describe('核对器：第八节必须拦下的反例', () => {
     out.actions = [{ side: 'b', action: '先邀甲去坡上' }, { side: 'a', action: '骂了乙一句蠢货' }];
     const { receipt } = buildReceipt(snap, out, { arm: 'growth' });
     expect(receipt.plain).toBe(false);
-    expect(safetyTexts(receipt, out).some((t) => t.includes('蠢货'))).toBe(true);
+    expect(safetyTexts(renderPair(receipt)).some((t) => t.includes('蠢货'))).toBe(true);
     expect(applySafety(snap, receipt, 'blocked')).toMatchObject({ plain: true, views: null });
     expect(applySafety(snap, receipt, 'unavailable').plain).toBe(true);
     expect(applySafety(snap, receipt, 'pass')).toBe(receipt);
@@ -398,9 +430,10 @@ describe('核对器：第八节必须拦下的反例', () => {
     expect(deliverable(s, passed, unfriend)).toBeNull();
   });
 
-  it('审核等待期间只撤回一条已展示事实的分享许可：增强收据退普通收据；没展示的事实不影响', () => {
+  it('审核等待期间撤回任一条送进模型的事实（展示过或没展示）都退普通收据；快照外的事实不影响', () => {
     const { receipt } = buildReceipt(s, trip1(), { arm: 'growth' });
     expect(deliverable(s, receipt, grants(), [F.aStove])).toMatchObject({ plain: true });
+    expect(deliverable(s, receipt, grants(), [F.aAwning])).toMatchObject({ plain: true }); // 送进了模型、讲述没提
     expect(deliverable(s, receipt, grants(), [F.bDeployed])).toMatchObject({ plain: true });
     expect(deliverable(s, receipt, grants(), [{ subject: 'b', key: 'gear:stove' }])).toBe(receipt);
   });
@@ -421,7 +454,7 @@ describe('核对器：第八节必须拦下的反例', () => {
   });
 
   it('规则组合并：响应写了 happening 或 actions 视为覆盖锁定字段；合并后由服务端填', () => {
-    const e = selectRuleEvent(s);
+    const e = selectRuleEvent(s, ALL);
     expect(mergeRuleResponse({ ...ruleResp(), happening: '两人去钓鱼。' }, e).ok).toBe(false);
     expect(mergeRuleResponse({ ...ruleResp(), actions: [{ side: 'a', action: '钓鱼' }] }, e).ok).toBe(false);
     const m = merged(ruleResp(), e);
@@ -461,8 +494,8 @@ describe('核对器：第八节必须拦下的反例', () => {
   });
 
   it('规则组响应按白名单省略 happening、kind 也能正常合并', () => {
-    const e = selectRuleEvent(s);
-    const { happening: _h, kind: _k, ...bare } = ruleResp();
+    const e = selectRuleEvent(s, ALL);
+    const bare = ruleResp();
     const m = mergeRuleResponse(bare, e);
     if (!m.ok) throw new Error(m.reasons.join());
     expect(m.merged.happening).toContain(e.name);
@@ -482,7 +515,7 @@ describe('核对器：第八节必须拦下的反例', () => {
   it('规则组选中 A5：事件本身含交谈，收据要求聊天许可，投递前撤聊天退普通收据', () => {
     const snap = world(['carfan'], ['stove', 'awning']);
     snap.b = { ...snap.b, cards: ['fixer'] };
-    const e = selectRuleEvent(snap);
+    const e = selectRuleEvent(snap, ALL);
     expect(e).toMatchObject({ action: 'A5', needsChat: true });
     const resp = { because: [], facts_used: [], view_a: '和乙一起看了看车。', view_b: '和甲一起看了看车。' };
     const m = mergeRuleResponse(resp, e);
@@ -505,7 +538,7 @@ describe('核对器：第八节必须拦下的反例', () => {
     for (const ca of cards) for (const cb of cards) for (const time of ['dawn', 'day', 'dusk', 'night'] as const) for (const weather of ['clear', 'rain', 'just_rained'] as const) {
       const snap = world([ca], ['stove', 'awning'], { time, weather });
       snap.b = { ...snap.b, cards: [cb], gear: ['stove', 'awning'] };
-      const e = selectRuleEvent(snap);
+      const e = selectRuleEvent(snap, ALL);
       if (!e.action) continue;
       seen.add(e.action);
       const m = mergeRuleResponse({ because: [], facts_used: [], view_a: '这一趟挺好。', view_b: '这一趟挺好。' }, e);
@@ -513,6 +546,91 @@ describe('核对器：第八节必须拦下的反例', () => {
       expect(checkOutput(snap, m.merged, { arm: 'rule', event: e }), `${e.action} ${ca}/${cb} ${time} ${weather}`).toEqual({ ok: true });
     }
     expect([...seen].sort()).toEqual(['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8']);
+  });
+
+  // 第六轮云端 GPT 审核（#110，09627451）回归
+  it('模型输入按授权裁剪：未授权送入的事实或卡不能用；投递前撤回卡的分享许可也退普通收据', () => {
+    const noStove = modelInputFacts(s).filter((f) => !(f.subject === 'a' && f.key === 'gear:stove'));
+    reject(s, trip1(), /未经授权送入模型的事实：a gear:stove/, { arm: 'growth' }, { modelInputs: noStove });
+    const noCard = modelInputFacts(s).filter((f) => !(f.subject === 'a' && f.key === 'card:coffee'));
+    reject(s, trip1(), /未经授权送入模型的卡：甲 coffee/, { arm: 'growth' }, { modelInputs: noCard });
+    const { receipt } = buildReceipt(s, trip1(), { arm: 'growth' });
+    expect(receipt.inputFacts).toContainEqual({ subject: 'a', key: 'card:coffee' });
+    expect(deliverable(s, receipt, grants(), [{ subject: 'a', key: 'card:coffee' }])).toMatchObject({ plain: true });
+    expect(deliverable(s, receipt, grants(), [{ subject: 'b', key: 'card:sunrise' }])).toMatchObject({ plain: true });
+  });
+
+  it('规则组锁定值逐项比对：删改 uses、替换 happening、追加动作都拦；改合并结果改不到锁定值', () => {
+    const e = selectRuleEvent(s, ALL);
+    const arm = { arm: 'rule' as const, event: e };
+    const base = merged(ruleResp(), e);
+    expect(base.happening).toBe(lockedHappening(e));
+    reject(s, { ...base, because: base.because.map((b, i) => (i === 0 ? { ...b, uses: [] } : b)) }, /uses/, arm);
+    reject(s, { ...base, happening: '甲、乙：一起去钓鱼' }, /happening 与规则锁定/, arm);
+    reject(s, { ...base, actions: [...(base.actions ?? []), { side: 'a', action: '顺手钓了条鱼' }] }, /actions 与规则锁定/, arm);
+    const snapshot = JSON.stringify(e);
+    base.because[0].uses.length = 0;
+    base.because[0].step = '泡了一壶茶';
+    expect(JSON.stringify(e)).toBe(snapshot);
+    reject(s, base, /锁定/, arm);
+    expect(() => {
+      (e.because[0].uses as unknown[]).push({ subject: 'a', key: 'gear:awning' });
+    }).toThrow();
+  });
+
+  it('规则组白名单按字段是否存在判：空 happening、空 actions、未知字段都拦', () => {
+    const e = selectRuleEvent(s, ALL);
+    for (const extra of [{ happening: '' }, { actions: [] }, { action: null }, { mood: '开心' }]) {
+      const m = mergeRuleResponse({ ...ruleResp(), ...extra }, e);
+      expect(m.ok, JSON.stringify(extra)).toBe(false);
+    }
+    expect(mergeRuleResponse({ ...ruleResp(), kind: ['talk'], talk_happening: '聊车。', excerpt: [{ side: 'b', presence: 'present', source: 'generated', text: '车不错。' }] }, e).ok).toBe(true);
+  });
+
+  it('没有接待许可：选事直接判无权安排，和“有权但没选中”区分开', () => {
+    const unfriend: Grants = { a: { friends: false, host: true, chat: true }, b: { friends: true, host: true, chat: true } };
+    const noHost = grants({ host: false });
+    for (const g of [unfriend, noHost]) {
+      const e = selectRuleEvent(s, allowedKinds(g));
+      expect(e).toMatchObject({ action: null, denied: true, because: [] });
+      const m = merged({ because: [], facts_used: [], view_a: '没见着。', view_b: '没见着。' }, e);
+      reject(s, m, /无权安排/, { arm: 'rule', event: e }, { allowed: allowedKinds(g) });
+    }
+    const quiet = world(['sunrise'], [], { weather: 'clear' });
+    expect(selectRuleEvent(quiet, ALL)).toMatchObject({ action: null, name: '无事' });
+    expect(selectRuleEvent(quiet, ALL).denied).toBeUndefined();
+  });
+
+  it('托管承诺查所有展示字段：另一方视角、happening 都拦；在场者自己的承诺不误归给托管者', () => {
+    reject(s, { ...trip1(), view_b: '甲保证一定会再来。' }, /托管中的甲替本人做了承诺/);
+    reject(s, { ...trip1(), happening: trip1().happening + '甲说定了下次再来。' }, /happening 写托管中的甲/);
+    reject(s, { ...trip1(), kind: ['activity', 'talk'], talk_happening: '甲一定会再来营地。', excerpt: [{ side: 'b', presence: 'present', source: 'generated', text: '下次见。' }] }, /talk_happening 写托管中的甲/);
+    expect(checkOutput(s, { ...trip1(), view_b: '我保证明天还来叫甲。' }, { arm: 'growth' })).toEqual({ ok: true });
+  });
+
+  it('规则组的锁定步骤在事实行里标“锁定”，生长组标“演绎”', () => {
+    const e = selectRuleEvent(s, ALL);
+    const { receipt } = buildReceipt(s, merged(ruleResp(), e), { arm: 'rule', event: e });
+    expect(receipt.facts.slice(2)).toEqual(['甲（托管中）因手冲咖啡 · 锁定：煮了咖啡', '乙（本人在场）因早起看日出 · 锁定：邀对方去看日出']);
+  });
+
+  it('畸形输出（side 不合法、缺 uses、kind 乱写）判不过，不抛异常', () => {
+    const bad = (patch: (o: Record<string, unknown>) => void) => {
+      const o = structuredClone(trip1()) as unknown as Record<string, unknown>;
+      patch(o);
+      return o as unknown as ModelOutput;
+    };
+    const cases = [
+      bad((o) => ((o.because as Record<string, unknown>[])[0].side = 'c')),
+      bad((o) => delete (o.because as Record<string, unknown>[])[0].uses),
+      bad((o) => (o.kind = ['dance'])),
+      bad((o) => delete o.view_a),
+    ];
+    for (const c of cases) {
+      expect(() => checkOutput(s, c, { arm: 'growth' })).not.toThrow();
+      expect(checkOutput(s, c, { arm: 'growth' })).toMatchObject({ ok: false, reasons: [expect.stringMatching(/结构不合法/)] });
+      expect(buildReceipt(s, c, { arm: 'growth' }).receipt.plain).toBe(true);
+    }
   });
 
   it('来访号去重：同一来访号只认领一次', () => {
@@ -542,10 +660,27 @@ describe('内部审计记录', () => {
   it('含被丢弃的原始输出，与玩家收据分开，带到期时间', () => {
     const snap = world(['coffee', 'fixer']);
     const raw: ModelOutput = { ...trip1(), view_a: '多亏我那张手冲咖啡卡。' };
-    const { receipt, check } = buildReceipt(snap, raw, { arm: 'growth' });
-    const rec = auditRecord(snap, { arm: 'growth' }, raw, check, 'skipped', 0);
-    expect(rec.rawOutput.view_a).toContain('手冲咖啡卡');
-    expect(JSON.stringify(receipt)).not.toContain('手冲咖啡卡');
+    const inputs = modelInputFacts(snap);
+    const { receipt, check } = buildReceipt(snap, raw, { arm: 'growth' }, { modelInputs: inputs });
+    const rec = auditRecord({ snap, arm: { arm: 'growth' }, modelVersion: 'fake-model-0', promptVersion: 'prompt-v0.8', modelInputs: inputs, rawResponse: raw, check, safety: 'skipped', nowMs: 0 });
+    expect(rec).toMatchObject({ modelVersion: 'fake-model-0', promptVersion: 'prompt-v0.8' });
+    expect(rec.modelInputs).toEqual(inputs);
+    expect((rec.rawResponse as ModelOutput).view_a).toContain('手冲咖啡卡');
+    expect(JSON.stringify(renderPair(receipt))).not.toContain('手冲咖啡卡');
     expect(rec.expiresAtMs).toBe(AUDIT_RETENTION_DAYS * 86_400_000);
+  });
+
+  it('规则组的原始响应（省略锁定字段）原样存入，不用合并结果替代；与玩家收据隔离', () => {
+    const snap = world(['coffee', 'fixer']);
+    const e = selectRuleEvent(snap, ALL);
+    const raw = { because: [], facts_used: [], view_a: '这一趟挺好。', view_b: '这一趟挺好。' };
+    const m = mergeRuleResponse(raw, e);
+    if (!m.ok) throw new Error(m.reasons.join());
+    const arm = { arm: 'rule' as const, event: e };
+    const { receipt, check } = buildReceipt(snap, m.merged, arm);
+    const rec = auditRecord({ snap, arm, modelVersion: 'fake-model-0', promptVersion: 'prompt-v0.8', modelInputs: modelInputFacts(snap), rawResponse: raw, check, safety: 'pass', nowMs: 0 });
+    expect(rec.rawResponse).toEqual(raw);
+    expect(rec.rawResponse).not.toHaveProperty('happening');
+    expect(JSON.stringify(renderPair(receipt))).not.toContain('rawResponse');
   });
 });
