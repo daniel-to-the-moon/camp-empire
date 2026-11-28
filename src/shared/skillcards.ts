@@ -191,7 +191,7 @@ function usesFor(snap: EncounterSnapshot, rule: RuleDef, hit: Hit): FactRef[] {
   const uses: FactRef[] = STARTER_CARDS[hit.card].needs.map((g) => ({ subject: hit.side, key: `gear:${g}` }));
   if (rule.id === 'A1' || rule.id === 'A2' || rule.id === 'A8') uses.push({ subject: 'camp', key: `time:${snap.time}` });
   if (rule.id === 'A3' || rule.id === 'A7') uses.push({ subject: 'camp', key: `weather:${snap.weather}` });
-  if (rule.id === 'A6') uses.push({ subject: hit.side, key: 'role:host' });
+  if (rule.id === 'A6') uses.push({ subject: hit.side, key: 'role:host' }, { subject: hit.side === 'a' ? 'b' : 'a', key: 'role:guest' });
   return uses;
 }
 

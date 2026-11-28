@@ -499,6 +499,22 @@ describe('核对器：第八节必须拦下的反例', () => {
     expect(checkOutput(s, { ...trip1(), facts_used: [...trip1().facts_used, { subject: 'a', key: 'role:guest' }], view_a: '甲是来访者，一早被乙叫去坡上。' }, { arm: 'growth' })).toEqual({ ok: true });
   });
 
+  it('规则组每个能选中的事件，配中性讲述合并后都能通过核对（锁定步骤自己不触发词表漏报）', () => {
+    const cards: CardId[] = ['coffee', 'sunrise', 'rain', 'fixer', 'carfan', 'stars'];
+    const seen = new Set<string>();
+    for (const ca of cards) for (const cb of cards) for (const time of ['dawn', 'day', 'dusk', 'night'] as const) for (const weather of ['clear', 'rain', 'just_rained'] as const) {
+      const snap = world([ca], ['stove', 'awning'], { time, weather });
+      snap.b = { ...snap.b, cards: [cb], gear: ['stove', 'awning'] };
+      const e = selectRuleEvent(snap);
+      if (!e.action) continue;
+      seen.add(e.action);
+      const m = mergeRuleResponse({ because: [], facts_used: [], view_a: '这一趟挺好。', view_b: '这一趟挺好。' }, e);
+      if (!m.ok) throw new Error(m.reasons.join());
+      expect(checkOutput(snap, m.merged, { arm: 'rule', event: e }), `${e.action} ${ca}/${cb} ${time} ${weather}`).toEqual({ ok: true });
+    }
+    expect([...seen].sort()).toEqual(['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8']);
+  });
+
   it('来访号去重：同一来访号只认领一次', () => {
     const claimed = new Set<string>();
     expect(claimVisit(claimed, 'v1')).toBe(true);
