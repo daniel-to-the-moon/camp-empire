@@ -66,7 +66,8 @@ export function refs(issue, max = 5, repo = '') {
     if (n !== issue.number && !found.includes(n) && found.length < max) found.push(n);
   };
   // 按出现顺序扫描：先试完整链接，否则试 #数字（链接整体被吃掉，所以链接里的锚点不会当作 #数字）
-  const TOKEN_RE = /(https?:\/\/[^\s<>()\[\]"'`]+)|(?:^|[^\w&/])#([1-9]\d{0,5})\b/gi;
+  // 链接只吃 ASCII URL 字符（全角标点、中文自然断开），再去掉句末的 ASCII 标点
+  const TOKEN_RE = /(https?:\/\/[\w\-.~:/?#@!$&*+,;=%]+)|(?:^|[^\w&/])#([1-9]\d{0,5})\b/gi;
   for (const m of body.matchAll(TOKEN_RE)) {
     if (m[2]) {
       add(Number(m[2]));
@@ -75,7 +76,7 @@ export function refs(issue, max = 5, repo = '') {
     if (!want) continue;
     let u;
     try {
-      u = new URL(m[1]);
+      u = new URL(m[1].replace(/[.,;:!?]+$/, ''));
     } catch {
       continue;
     }

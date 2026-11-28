@@ -75,6 +75,10 @@ test('引用 issue：#编号与本仓库链接，去重、去掉自己、有上�
   ].join('\n') }, 5, 'o/r'), [109, 110]);
   // 链接里的锚点不当作 #数字引用
   assert.deepEqual(refs({ number: 7, body: 'https://example.com/page#12 与 #13' }, 5, 'o/r'), [13]);
+  // 句末标点不属于链接（Codex #116 review）
+  for (const tail of ['.', '。', '，', '；', '！', '?', '）', '、', '」', ').', '。下一句'])
+    assert.deepEqual(refs({ number: 7, body: `见 https://github.com/o/r/issues/106${tail}` }, 5, 'o/r'), [106], tail);
+  assert.deepEqual(refs({ number: 7, body: '(https://github.com/o/r/pull/12)' }, 5, 'o/r'), [12]);
   assert.deepEqual(refs({ number: 1, body: '#2 #3 #4 #5 #6 #8' }, 3), [2, 3, 4]);
   assert.deepEqual(refs({ number: 1, body: null }), []);
 });
