@@ -494,6 +494,11 @@ describe('核对器：第八节必须拦下的反例', () => {
     expect(deliverable(snap, receipt, grants({ chat: false }))).toMatchObject({ plain: true });
   });
 
+  it('来访一方也核：乙是营主，讲述写“乙是来访者”照拦；写对了放行', () => {
+    reject(s, { ...trip1(), view_a: '乙是来访者，我接待了乙。' }, /来访者/);
+    expect(checkOutput(s, { ...trip1(), facts_used: [...trip1().facts_used, { subject: 'a', key: 'role:guest' }], view_a: '甲是来访者，一早被乙叫去坡上。' }, { arm: 'growth' })).toEqual({ ok: true });
+  });
+
   it('来访号去重：同一来访号只认领一次', () => {
     const claimed = new Set<string>();
     expect(claimVisit(claimed, 'v1')).toBe(true);

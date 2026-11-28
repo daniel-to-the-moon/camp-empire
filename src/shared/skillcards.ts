@@ -297,6 +297,7 @@ const LEXICON: readonly LexEntry[] = [
   { re: new RegExp(`(?:展开|撑开|撑起|支起|打开)了?${OWNER}侧帐`, 'g'), facts: (o) => sideFacts(o, 'awning:deployed') },
   { re: new RegExp(`${OWNER}炉具`, 'g'), facts: (o) => sideFacts(o, 'gear:stove') },
   { re: /(甲|乙)?(?:是|做)?营主/g, facts: (o) => sideFacts(o, 'role:host') },
+  { re: /(甲|乙)?(?:是)?(?:来访者|来访的人|访客|客人)/g, facts: (o) => sideFacts(o, 'role:guest') },
   { re: /(甲|乙)?(?:（|\()?托管中/g, facts: (o) => sideFacts(o, 'presence:hosted') },
   { re: /(甲|乙)?(?:（|\()?本人在场/g, facts: (o) => sideFacts(o, 'presence:present') },
   { re: /()(?:清晨|天没亮|一早|早上|蒙蒙亮)/g, facts: () => [{ subject: 'camp', key: 'time:dawn' }] },
