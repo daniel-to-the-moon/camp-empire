@@ -1,0 +1,187 @@
+# Claude 只读设计首评（用户 2026-11-28 批准设计）。见 docs/DEVLOOP.md “讨论、提案与沉淀”。
+# - issue 被仓库所有者打上 proposal / discussion，且不带 devloop / gpt-design → Claude 首评一次（四维评审，缺证据写待核实，末尾只列一件拍板事项）
+# - 之后改正文 → 只更新首评评论里的「待复评」状态行，不调模型、不发新长评
+# - 手动触发：issue=N（默认 dry_run，只产出评论草稿为产物）；fixture=<名> 用假 issue 试跑，强制 dry_run
+# 判定在 scripts/devloop/design-review-gate.mjs，去重 / 提示词 / 渲染 / 状态在 design-review-build.mjs（均有测试）。
+# 总开关：仓库变量 CLAUDE_DESIGN_REVIEW=on（未设则不运行）。WebSearch 默认开（用户 2026-11-28 选定，WebFetch 不开），
+#         CLAUDE_DESIGN_REVIEW_WEB=off 可关。模型：CLAUDE_DESIGN_REVIEW_MODEL，默认 claude-opus-5-5。
+# 安全结构（同 gpt-discuss.yml / gpt-review.yml 的 Claude 审核）：
+#   review：只读令牌；只检出 main；Claude 只有 Read / Glob / Grep（+ WebSearch），没有 Bash、不能写文件，
+#           --setting-sources user + --strict-mcp-config 不加载仓库里的钩子与 MCP。评论的首行、状态块、触发记录、去重标记由脚本写入，不经模型。
+#   post  ：只有 issues:write，不检出代码、不运行模型；发前再查一次去重标记。
+name: claude-design-review
+
+on:
+  issues:
+    types: [labeled, edited]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: '要首评的 issue 编号（用 fixture 时填 0）'
+        required: true
+      dry_run:
+        description: '只产出评论草稿为产物，不发评论'
+        type: boolean
+        default: true
+      fixture:
+        description: '可选：scripts/devloop/fixtures/design-review/<名>.json 代替真实 issue（强制 dry_run）'
+        required: false
+
+permissions: {}
+
+# 按 issue 串行整次运行，保留全部排队：带两个标签新建时，后到的那次能看到前一次已发的首评并跳过
+concurrency:
+  group: claude-design-review-${{ github.event.issue.number || inputs.issue }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  review:
+    # 粗筛，减少无关事件启动 runner；精确判定在 design-review-gate.mjs
+    if: >-
+      vars.CLAUDE_DESIGN_REVIEW == 'on' && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.action == 'labeled' && (github.event.label.name == 'proposal' || github.event.label.name == 'discussion')) ||
+        (github.event.action == 'edited' && github.event.changes.body != null))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      mode: ${{ steps.gate.outputs.mode }}
+      issue: ${{ steps.gate.outputs.issue }}
+      dry: ${{ steps.gate.outputs.dry }}
+      post: ${{ steps.build.outputs.post }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 判定
+        id: gate
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: node scripts/devloop/design-review-gate.mjs "${{ github.event_name }}" "$GITHUB_EVENT_PATH"
+      - name: 取最新正文、标签、评论与引用 issue（或 fixture）
+        if: steps.gate.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ steps.gate.outputs.issue }}
+          FIXTURE: ${{ inputs.fixture }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/dr"; mkdir -p "$d"
+          if [ -n "$FIXTURE" ]; then
+            node scripts/devloop/design-review-build.mjs fixture --name "$FIXTURE" --out "$d"
+          else
+            bash scripts/devloop/discuss-fetch.sh "$REPO" "$N" "$d"
+            node scripts/devloop/design-review-build.mjs refs --issue "$d/issue.json" --max 5 > "$d/refs.txt"
+            while read -r m; do
+              gh api "repos/$REPO/issues/$m" --jq '{number, title, state, body, labels: [.labels[].name]}' > "$d/ref-$m.json" || rm -f "$d/ref-$m.json"
+            done < "$d/refs.txt"
+          fi
+      - name: 去重、重查标签、拼提示词 / 算待复评状态
+        id: build
+        if: steps.gate.outputs.run == 'true'
+        env:
+          MODE: ${{ steps.gate.outputs.mode }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_AT: ${{ github.event.issue.updated_at }}
+          ACTOR: ${{ github.actor }}
+          MAIN_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          node scripts/devloop/design-review-build.mjs "$MODE" --dir "$RUNNER_TEMP/dr" \
+            --event "$GITHUB_EVENT_PATH" --header scripts/devloop/design-review-prompt.md
+      - name: 安装 Claude Code（固定版本）
+        if: steps.build.outputs.post == 'true' && steps.gate.outputs.mode == 'first'
+        run: npm install -g --no-audit --no-fund @anthropic-ai/claude-code@2.1.318
+      - name: Claude 设计首评
+        if: steps.build.outputs.post == 'true' && steps.gate.outputs.mode == 'first'
+        env:
+          # 鉴权同 gpt-review.yml：有 CLAUDE_CODE_OAUTH_TOKEN 就用它、不走网关；否则 ANTHROPIC_API_KEY + 网关
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && secrets.ANTHROPIC_API_KEY || '' }}
+          ANTHROPIC_BASE_URL: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN == '' && vars.ANTHROPIC_BASE_URL || '' }}
+          MODEL: ${{ vars.CLAUDE_DESIGN_REVIEW_MODEL || 'claude-opus-5-5' }}
+          WEB: ${{ vars.CLAUDE_DESIGN_REVIEW_WEB }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -n "$ANTHROPIC_BASE_URL" ] || unset ANTHROPIC_BASE_URL
+          [ -n "$ANTHROPIC_API_KEY" ] || unset ANTHROPIC_API_KEY
+          [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] || unset CLAUDE_CODE_OAUTH_TOKEN
+          d="$RUNNER_TEMP/dr"
+          if [ "$WEB" = off ]; then
+            allow="Read,Glob,Grep"
+            deny="Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task"
+          else
+            allow="Read,Glob,Grep,WebSearch"
+            deny="Bash,Edit,Write,NotebookEdit,WebFetch,Task"
+          fi
+          claude -p "$(cat "$d/prompt.md")" \
+            --model "$MODEL" \
+            --max-turns 40 \
+            --output-format json \
+            --json-schema "$(cat scripts/devloop/design-review-schema.json)" \
+            --add-dir "$d" \
+            --allowedTools "$allow" \
+            --disallowedTools "$deny" \
+            --setting-sources user \
+            --strict-mcp-config \
+            < /dev/null > "$d/claude-result.json"
+          node scripts/devloop/design-review-build.mjs render --dir "$d" --run-url "$RUN_URL" \
+            --model "$MODEL" --tools "$allow" --out "$d/comment.md"
+          cat "$d/comment.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: steps.build.outputs.post == 'true'
+        with:
+          name: design-review-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/dr/comment.md
+            ${{ runner.temp }}/dr/status.json
+            ${{ runner.temp }}/dr/trigger.json
+            ${{ runner.temp }}/dr/claude-result.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  post:
+    needs: review
+    if: needs.review.outputs.post == 'true' && needs.review.outputs.dry != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: design-review-${{ github.run_id }}
+          path: out
+      - name: 发首评 / 更新待复评状态（不运行模型）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ needs.review.outputs.issue }}
+          MODE: ${{ needs.review.outputs.mode }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = first ]; then
+            [ "$(head -1 out/comment.md)" = '执行者：Claude（设计首评）' ] || { echo "::error::首行不符"; exit 1; }
+            # 发前再查一次：已有机器人发的首评标记就放弃（先存文件再 grep：grep -q 提前退出会让管道在 pipefail 下判错）
+            gh api --paginate "repos/$REPO/issues/$N/comments?per_page=100" \
+              --jq '.[] | select(.user.login == "github-actions[bot]" and .user.type == "Bot") | .body' > bot-bodies.txt
+            if grep -qF '<!-- claude-design-review:first ' bot-bodies.txt; then
+              echo "已有 Claude 设计首评，跳过"
+              exit 0
+            fi
+            gh issue comment "$N" -R "$REPO" --body-file out/comment.md
+          else
+            id=$(jq -er '.comment_id' out/status.json)
+            jq -er '.body' out/status.json > body.md
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@body.md > /dev/null
+          fi

@@ -97,6 +97,15 @@ node scripts/devloop/devloop.mjs review <PR号> --no-merge
 - 触发判定在 `scripts/devloop/discuss-gate.mjs`、去重与提示词在 `discuss-build.mjs`（均有测试）；`@gpt` 点名时只回答触发的那条评论，这条评论完整保留、优先占用提示词预算，讨论全文用剩余预算截断（至少保留 40,000 字，提案值，待核实）；评审任务只读令牌、gpt-agent.mjs 只给读文件与搜索工具，发评论任务不运行模型。
 - GPT 只评审与提问，不拍板。目前这只是约定：`claude.yml` 只检查标签本身，不检查是谁打的；有写权限的账号打上 `devloop` 都会触发。若要强制只认用户，需要在工作流里校验打标签者，**待用户决定**。
 
+**Claude 只读设计首评**（`.github/workflows/claude-design-review.yml`，用户 2026-11-28 批准设计；总开关仓库变量 `CLAUDE_DESIGN_REVIEW=on`，未设则不运行）：
+- 触发：仓库所有者给 issue 打上 `proposal` / `discussion`，且 issue 不带 `devloop` / `gpt-design`（事件里的标签可能过时，取数后按最新标签再判一次）。判定在 `scripts/devloop/design-review-gate.mjs`，去重、提示词、渲染、状态在 `design-review-build.mjs`（均有测试）。
+- 每帖只首评一次：按 issue 串行排队；首评前和发评论前各查一次，只认 `github-actions[bot]` 发出、带 `<!-- claude-design-review:first` 标记的评论（标记里记着首评依据的正文哈希）。带两个标签新建时，后到的那次跳过。
+- 内容：读最新正文、评论与正文引用的 issue（最多 5 个），按 CHARTER 第二节四维（定性 / 定量 / 实时来源与日期 / 常识）评审，缺证据写“待核实”，末尾只列一件需要用户拍板的事。评论首行固定 `执行者：Claude（设计首评）`，附触发记录与运行链接；这些和标记由脚本写入，不经模型。
+- 正文编辑后：只把首评评论里的状态行改成“待复评”（改回原文则恢复“无需复评”），不调模型、不发新的长评。
+- 权限：评审任务只读令牌、只检出 main；Claude 只有 Read / Glob / Grep 与 WebSearch（用户 2026-11-28 选定；WebFetch 不开；`CLAUDE_DESIGN_REVIEW_WEB=off` 可关搜索），`--setting-sources user --strict-mcp-config`。发评论任务只有 `issues: write`，不运行模型。鉴权同 `gpt-review.yml` 的 Claude 审核（优先 `CLAUDE_CODE_OAUTH_TOKEN`）；模型 `CLAUDE_DESIGN_REVIEW_MODEL`，默认 `claude-opus-5-5`。
+- 试跑（不碰真实 issue）：`gh workflow run claude-design-review.yml -R daniel-to-the-moon/camp-empire -f issue=0 -f fixture=proposal-basic`（或 `injection`），评论草稿在运行摘要与产物里。对真实 issue 手动触发默认也是试跑，加 `-f dry_run=false` 才发评论。
+- 费用：走订阅令牌时消耗订阅额度、无现金支出，属 AI 费用，不计入每月 1000 元上限（用户 2026-11-21 口径）；单次 token 量与 WebSearch 计量**待核实**（试跑后按 `claude-result.json` 补）。同一标签仍会触发 GPT 首评（`gpt-discuss.yml`），两方各评一次。
+
 ## 云端审核（取代本机常驻，用户 2026-11-08 决定）
 
 `.github/workflows/gpt-review.yml` + `scripts/devloop/cloud.mjs`，与本机 `devloop.mjs` 共用判定、合并、CI、签名标记模块。
