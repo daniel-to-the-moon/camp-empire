@@ -2,6 +2,18 @@
 
 请对照已确认的 rfc_06 无帽三视图，评估这版静态角色。先看无帽轮廓与五官，再看戴帽后哪些角度影响辨识。请在[角色造型讨论 #106](https://github.com/daniel-to-the-moon/camp-empire/issues/106)反馈，可注明图号、视角、部位和建议。例如「图 10，后下方，后枕与帽沿之间的空隙是否需要再收」。造型结论待成员确认。
 
+## 鞋底与后跟
+
+请先对照 rfc_06 原图确认后跟到前掌的过渡。游戏模型后跟厚 32 mm，前掌约 18 mm，两脚着地面齐平。再看鞋面上的三道横带是否都能从鞋舌读到两侧落点。
+
+[![图 12，参考侧视与修正后模型](previews/12_reference-sole-profile.png)](previews/12_reference-sole-profile.png)
+
+[![图 13，参考正面与鞋带修正前后](previews/13_reference-laces.png)](previews/13_reference-laces.png)
+
+图 11 使用相同机位比较修正前后，右列为当前版本。
+
+[![图 11，鞋底与后跟，修正前后四视图](previews/11_sole-heel-before-after.png)](previews/11_sole-heel-before-after.png)
+
 ## 全身八方位
 
 两组视图分别从对应的游戏版 GLB 直接在 Blender 中渲染。以角色自身的左右为准，从正面起每次绕行 45°，相同机位、比例与灯光可以逐格对看。点击图片可放大。
@@ -27,7 +39,7 @@
 
 ## 可旋转查看的样件
 
-戴帽共 **2,991 个三角面**（身体 2,331，独立帽 660），上限 3,000。帽顶高 1.318737 m。角色采用单材质顶点色，当前用于静态造型评审。
+戴帽共 **2,999 个三角面**（身体 2,339，独立帽 660），上限 3,000。帽顶高 1.318737 m。角色采用单材质顶点色，当前用于静态造型评审。
 
 - [戴帽 GLB](glb/host_q_tripo_p20_r2s1_capped.glb) · [无帽 GLB](glb/host_q_tripo_p20_r2s1_barehead.glb) · [独立帽 GLB](glb/host_q_tripo_p20_r2s1_cap.glb)
 - [游戏面数版 Blender](blender/host_q_tripo_p20_r2s1_game.blend) · [细雕高模 Blender](blender/host_q_tripo_p20_r2s1_hi.blend)
