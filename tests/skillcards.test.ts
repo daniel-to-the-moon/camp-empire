@@ -633,6 +633,17 @@ describe('核对器：第八节必须拦下的反例', () => {
     }
   });
 
+  it('规则组畸形响应（facts_used 为 null、缺失或含 null，because 不是数组）合并返回失败，不抛异常', () => {
+    const e = selectRuleEvent(s, ALL);
+    const base = ruleResp() as unknown as Record<string, unknown>;
+    const cases: unknown[] = [{ ...base, facts_used: null }, (({ facts_used: _f, ...r }) => r)(base), { ...base, facts_used: [null] }, { ...base, because: 'x' }, null];
+    for (const c of cases) {
+      const run = () => mergeRuleResponse(c as RuleResponse & Record<string, unknown>, e);
+      expect(run).not.toThrow();
+      expect(run()).toMatchObject({ ok: false, reasons: [expect.stringMatching(/结构不合法/)] });
+    }
+  });
+
   it('来访号去重：同一来访号只认领一次', () => {
     const claimed = new Set<string>();
     expect(claimVisit(claimed, 'v1')).toBe(true);

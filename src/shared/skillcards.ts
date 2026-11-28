@@ -566,6 +566,10 @@ export type RuleResponse = Pick<ModelOutput, 'talk_happening' | 'excerpt' | 'bec
 const RULE_RESPONSE_KEYS: ReadonlySet<string> = new Set(['kind', 'talk_happening', 'excerpt', 'because', 'facts_used', 'view_a', 'view_b']);
 
 export function mergeRuleResponse(response: RuleResponse & Record<string, unknown>, event: RuleEvent): MergeResult {
+  if (!isObj(response)) return { ok: false, reasons: ['结构不合法：模型响应不是对象'] };
+  // 先做结构校验（模型响应是外部数据），再读 because / facts_used，畸形响应返回失败而不是抛异常。
+  const shape = outputShapeErrors({ ...response, kind: response.kind ?? [], happening: '' });
+  if (shape.length) return { ok: false, reasons: shape.map((x) => `结构不合法：${x}`) };
   const reasons: string[] = [];
   for (const k of Object.keys(response)) if (!RULE_RESPONSE_KEYS.has(k)) reasons.push(`模型响应带了白名单外的字段 ${k}，视为试图覆盖锁定字段`);
   const respKind = response.kind ?? [];
