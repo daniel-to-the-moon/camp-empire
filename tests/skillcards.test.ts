@@ -479,6 +479,21 @@ describe('核对器：第八节必须拦下的反例', () => {
     expect(deliverable(s, receipt, grants({ chat: false }))).toMatchObject({ plain: true });
   });
 
+  it('规则组选中 A5：事件本身含交谈，收据要求聊天许可，投递前撤聊天退普通收据', () => {
+    const snap = world(['carfan'], ['stove', 'awning']);
+    snap.b = { ...snap.b, cards: ['fixer'] };
+    const e = selectRuleEvent(snap);
+    expect(e).toMatchObject({ action: 'A5', needsChat: true });
+    const resp = { because: [], facts_used: [], view_a: '和乙一起看了看车。', view_b: '和甲一起看了看车。' };
+    const m = mergeRuleResponse(resp, e);
+    if (!m.ok) throw new Error(m.reasons.join());
+    expect(checkOutput(snap, m.merged, { arm: 'rule', event: e })).toEqual({ ok: true });
+    reject(snap, m.merged, /含交谈/, { arm: 'rule', event: e }, { allowed: ['activity'] });
+    const { receipt } = buildReceipt(snap, m.merged, { arm: 'rule', event: e });
+    expect(receipt.kinds).toContain('talk');
+    expect(deliverable(snap, receipt, grants({ chat: false }))).toMatchObject({ plain: true });
+  });
+
   it('来访号去重：同一来访号只认领一次', () => {
     const claimed = new Set<string>();
     expect(claimVisit(claimed, 'v1')).toBe(true);

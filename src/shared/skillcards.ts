@@ -126,6 +126,8 @@ export interface RuleEvent {
   action: ActionId | null;
   name: string;
   because: BecauseStep[];
+  /** 锁定的事件本身含交谈（A5），投递时要求聊天许可。 */
+  needsChat?: boolean;
 }
 
 interface Hit {
@@ -133,6 +135,9 @@ interface Hit {
   side: Side;
   step: string;
 }
+
+/** 事件本身含交谈的规则：选中后收据要求聊天许可。 */
+const CHAT_RULES: ReadonlySet<ActionId> = new Set(['A5']);
 
 interface RuleDef {
   id: ActionId;
@@ -199,7 +204,7 @@ export function selectRuleEvent(snap: EncounterSnapshot, allowed: readonly Kind[
   for (const rule of ordered) {
     const hits = rule.match(snap, allowed);
     if (hits) {
-      return { action: rule.id, name: rule.name, because: hits.map((h) => ({ type: 'activity' as const, ...h, uses: usesFor(snap, rule, h) })) };
+      return { action: rule.id, name: rule.name, because: hits.map((h) => ({ type: 'activity' as const, ...h, uses: usesFor(snap, rule, h) })), ...(CHAT_RULES.has(rule.id) ? { needsChat: true } : {}) };
     }
   }
   return { action: null, name: '无事', because: [] };
@@ -448,6 +453,7 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
   if (arm.arm === 'rule') {
     const chosen = arm.event.action;
     if ((out.action ?? null) !== chosen) reasons.push(`讲述写的事（${out.action ?? '无事'}）不是规则选中的（${chosen ?? '无事'}）`);
+    if (arm.event.needsChat && !allowed.includes('talk')) reasons.push(`越权：规则事件 ${chosen} 含交谈，没有聊天许可`);
     if (chosen === null && out.kind.includes('activity')) reasons.push('规则选了“无事”，讲述却写了一起做的事');
     const key = (b: BecauseStep) => `${b.card}|${b.side}|${b.step}`;
     const got = out.because.filter((b) => b.type === 'activity').map(key);
@@ -518,9 +524,9 @@ export function plainReceipt(snap: EncounterSnapshot): Receipt {
 }
 
 /** 收据需要的许可类型按内容推出：有交谈内容就要聊天许可，不只看 kind 标签。 */
-function receiptKinds(out: ModelOutput): Kind[] {
+function receiptKinds(out: ModelOutput, arm: Arm): Kind[] {
   const k = new Set<Kind>(out.kind);
-  if (chatContent(out).length) k.add('talk');
+  if (chatContent(out).length || (arm.arm === 'rule' && arm.event.needsChat)) k.add('talk');
   return [...k];
 }
 
@@ -540,7 +546,7 @@ export function buildReceipt(snap: EncounterSnapshot, out: ModelOutput, arm: Arm
     text: l.text,
   }));
   const inputFacts = snapshotFacts(snap).filter((f) => f.subject !== 'camp' && (f.key.startsWith('gear:') || f.key === 'awning:deployed'));
-  return { receipt: { visitId: snap.visitId, facts, views: { a: out.view_a, b: out.view_b }, excerpt, plain: false, kinds: receiptKinds(out), inputFacts }, check };
+  return { receipt: { visitId: snap.visitId, facts, views: { a: out.view_a, b: out.view_b }, excerpt, plain: false, kinds: receiptKinds(out, arm), inputFacts }, check };
 }
 
 /**
