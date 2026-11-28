@@ -1,5 +1,5 @@
 /**
- * 角色技能卡第一轮（issue #112，纸样 docs/SKILL_CARDS.md v0.7）：卡数据、事实快照、核对器、规则对照组选事。
+ * 角色技能卡第一轮（issue #112，纸样 docs/SKILL_CARDS.md v0.8）：卡数据、事实快照、核对器、规则对照组选事。
  *
  * 纯函数、只读，不依赖 DOM / three / 网络；不接真实模型，模型输出由调用方（测试里是固定假数据）给出。
  * 两组共用同一个核对器：生长组由模型提议事件并给 `because`，规则对照组由 selectRuleEvent 选事并填 `activity` 的 `because`。
@@ -139,7 +139,7 @@ interface RuleDef {
   name: string;
   double: boolean;
   /** 返回命中的「卡—角色—步骤」；前提或 needs 不满足返回 null（候选不合格，试下一项）。 */
-  match(snap: EncounterSnapshot): Hit[] | null;
+  match(snap: EncounterSnapshot, allowed: readonly Kind[]): Hit[] | null;
 }
 
 const holds = (snap: EncounterSnapshot, side: Side, card: CardId) => snap[side].cards.includes(card) && needsMet(card, snap[side]);
@@ -174,7 +174,8 @@ const RULES: readonly RuleDef[] = [
   { id: 'A2', name: '一起看景', double: true, match: (n) => (n.time === 'dawn' || n.time === 'night' ? cross(n, 'sunrise', 'stars', '带路去坡上', '认出几颗星') : null) },
   { id: 'A3', name: '帐下避雨', double: false, match: (n) => (n.weather === 'rain' ? single(n, ['rain'], '在侧帐下搭出干地方') : null) },
   { id: 'A4', name: '顺手看车', double: false, match: (n) => single(n, ['fixer', 'carfan'], '凑过去看了看对方的车') },
-  { id: 'A5', name: '一起摆弄车', double: true, match: (n) => cross(n, 'carfan', 'fixer', '讲起车的来历', '比划着看挂点') },
+  // A5 含交谈（讲起车的来历），需要双方许可聊天。
+  { id: 'A5', name: '一起摆弄车', double: true, match: (n, allowed) => (allowed.includes('talk') ? cross(n, 'carfan', 'fixer', '讲起车的来历', '比划着看挂点') : null) },
   { id: 'A6', name: '请喝一杯', double: false, match: (n) => single(n, ['coffee'], '给来访的人煮了一杯', (s) => n[s].role === 'host') },
   { id: 'A7', name: '教搭法', double: true, match: (n) => (n.weather !== 'clear' ? cross(n, 'rain', 'fixer', '画了侧帐搭法的图解', '照着图解看懂了') : null) },
   { id: 'A8', name: '夜里看星', double: false, match: (n) => (n.time === 'night' ? single(n, ['stars'], '把椅子搬到空地看星') : null) },
@@ -193,10 +194,10 @@ function usesFor(snap: EncounterSnapshot, rule: RuleDef, hit: Hit): FactRef[] {
  * 规则对照组选事：先按世界前提与命中卡的 needs 过滤，再排序（双卡在前，同层按编号），取第一项；都没有就“无事”。
  * 同一快照结果唯一。选定之后才调模型写讲述；讲述不过核对就退普通收据，不回来换下一项。
  */
-export function selectRuleEvent(snap: EncounterSnapshot): RuleEvent {
+export function selectRuleEvent(snap: EncounterSnapshot, allowed: readonly Kind[] = ['activity', 'talk']): RuleEvent {
   const ordered = [...RULES.filter((r) => r.double), ...RULES.filter((r) => !r.double)];
   for (const rule of ordered) {
-    const hits = rule.match(snap);
+    const hits = rule.match(snap, allowed);
     if (hits) {
       return { action: rule.id, name: rule.name, because: hits.map((h) => ({ type: 'activity' as const, ...h, uses: usesFor(snap, rule, h) })) };
     }
@@ -216,8 +217,16 @@ export interface ExcerptLine {
   text: string;
 }
 
+/** 「哪位角色 → 做了什么」，不带卡、不带因果；没挂卡的动作也写进来，撤卡试验据此判定出现与否。 */
+export interface ActionItem {
+  side: Side;
+  action: string;
+}
+
 export interface ModelOutput {
   kind: Kind[];
+  /** 生长组有 activity 时必填；activity 类型的 because 只能引用这里的动作。规则组由服务端按锁定步骤生成。 */
+  actions?: ActionItem[];
   /** 规则对照组必须回填已选动作；生长组不填。 */
   action?: ActionId | null;
   /** activity 的一句话（无 activity 时可为空串）。 */
@@ -286,18 +295,15 @@ const LEXICON: readonly LexEntry[] = [
   { re: /()(?:夜里|夜晚|晚上|深夜)/g, facts: () => [{ subject: 'camp', key: 'time:night' }] },
   { re: /()傍晚/g, facts: () => [{ subject: 'camp', key: 'time:dusk' }] },
   { re: /()白天/g, facts: () => [{ subject: 'camp', key: 'time:day' }] },
-  {
-    re: /()(?:下雨|雨里|雨中|雨天|雨下|雨停)/g,
-    facts: () => [
-      { subject: 'camp', key: 'weather:rain' },
-      { subject: 'camp', key: 'weather:just_rained' },
-    ],
-  },
+  { re: /()(?:下雨|雨里|雨中|雨天|雨下)/g, facts: () => [{ subject: 'camp', key: 'weather:rain' }] },
+  { re: /()(?:雨停|雨后)/g, facts: () => [{ subject: 'camp', key: 'weather:just_rained' }] },
   { re: /()(?:晴天|天晴|大晴|晴了)/g, facts: () => [{ subject: 'camp', key: 'weather:clear' }] },
 ];
 
 /** 命中词前紧挨这些词时视为设想或将来语气（“等雨停”“要是晴了”），不算断言当前事实。 */
-const HYPOTHETICAL = /(?:等到|等|如果|要是|盼着|希望|再)$/;
+const HYPOTHETICAL = /(?:等到|等|如果|要是|盼着|希望)$/;
+/** 交谈内容的绊线词：不许可聊天时，这些出现在讲述、happening 或步骤里也按越权拦下。 */
+const CHAT_WORDS = ['聊', '讨论', '争了', '说：', '“', '"'];
 
 /** 越界词（提案，纸面启发式，实现时可换结构化动作白名单）。 */
 const BOUNDARY_WORDS = ['支付', '转账', '付款', '金币', '虚拟币', '交易', '买下', '卖给', '送给', '改了对方的车', '改装了对方', '改了挂点'];
@@ -390,6 +396,12 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
       reasons.push(`托管中的${SIDE_LABEL[l.side]}替本人做了承诺`);
     }
   }
+  // 托管中的角色在自己视角的讲述与自己的步骤里也不得替本人承诺。
+  for (const side of ['a', 'b'] as const) {
+    if (snap[side].presence !== 'hosted') continue;
+    const texts = [side === 'a' ? out.view_a : out.view_b, ...out.because.filter((b) => b.side === side).map((b) => b.step)];
+    if (texts.some((t) => PROMISE_WORDS.some((w) => t.includes(w)))) reasons.push(`托管中的${SIDE_LABEL[side]}在讲述或步骤里替本人做了承诺`);
+  }
 
   // 边界：不出现支付、赠送、交易、改对方车。
   for (const { field, text } of displayedTexts(out)) {
@@ -401,6 +413,24 @@ export function checkOutput(snap: EncounterSnapshot, out: ModelOutput, arm: Arm,
   const allowed = opts.allowed ?? ['activity', 'talk'];
   for (const k of out.kind) if (!allowed.includes(k)) reasons.push(`越权：没有许可却生成了 ${k}`);
   for (const b of out.because) if (!out.kind.includes(b.type)) reasons.push(`because 的 ${b.type} 步骤不在 kind 里`);
+  if (!allowed.includes('talk')) {
+    // 聊天许可按内容而不按类型标签。
+    if ((out.excerpt ?? []).length > 0) reasons.push('越权：没有聊天许可却带了对话节选');
+    if ((out.talk_happening ?? '').trim()) reasons.push('越权：没有聊天许可却写了话题');
+    for (const { field, text } of displayedTexts(out)) {
+      const w = CHAT_WORDS.find((x) => text.includes(x));
+      if (w) reasons.push(`越权：没有聊天许可，${field} 却写了交谈（${w}）`);
+    }
+  }
+
+  // 动作列表：有 activity 就必须列出动作；activity 步骤只能引用列出的动作。
+  if (out.kind.includes('activity')) {
+    const acts = out.actions ?? [];
+    if (acts.length === 0) reasons.push('有 activity 却没有 actions 动作列表');
+    for (const b of out.because) {
+      if (b.type === 'activity' && !acts.some((a) => a.side === b.side && a.action === b.step)) reasons.push(`because 的步骤“${b.step}”不在 actions 里`);
+    }
+  }
 
   // 规则对照组：只核结构化字段——动作编号与 activity 步骤必须等于锁定的结果。
   // 讲述是否偏离锁定事件，纯函数判不准，不算通过事件一致性（由盲评记“讲述偏离”）。
@@ -427,11 +457,16 @@ export function mergeRuleResponse(response: ModelOutput, event: RuleEvent): Merg
   const reasons: string[] = [];
   if (response.action !== undefined) reasons.push('模型响应带了动作编号，试图覆盖锁定字段');
   if (response.because.some((b) => b.type === 'activity')) reasons.push('模型响应带了 activity 步骤，试图覆盖锁定字段');
+  if (response.happening.trim()) reasons.push('模型响应带了 activity 的 happening，试图覆盖锁定字段');
+  if (response.actions !== undefined) reasons.push('模型响应带了 actions，试图覆盖锁定字段');
+  if (response.kind.includes('activity')) reasons.push('模型响应的 kind 含 activity，试图覆盖锁定字段');
   if (reasons.length) return { ok: false, reasons };
   const facts = [...response.facts_used];
   for (const b of event.because) for (const u of b.uses) if (!hasFact(facts, u)) facts.push(u);
   const kind: Kind[] = event.action ? Array.from(new Set<Kind>(['activity', ...response.kind])) : response.kind.filter((k) => k !== 'activity');
-  return { ok: true, merged: { ...response, kind, action: event.action, because: [...event.because, ...response.because], facts_used: facts } };
+  const happening = event.action ? `甲、乙：${event.name}` : '';
+  const actions = event.because.map((b) => ({ side: b.side, action: b.step }));
+  return { ok: true, merged: { ...response, kind, action: event.action, happening, actions, because: [...event.because, ...response.because], facts_used: facts } };
 }
 
 // ───────────────────────── 收据（纸样第四节 收据分两层） ─────────────────────────
@@ -446,8 +481,8 @@ export interface Receipt {
   plain: boolean;
   /** 增强收据包含的互动类型；投递前按它复核许可。 */
   kinds: Kind[];
-  /** 事实行展示到的世界事实；投递前逐条复核对收件方仍可分享。 */
-  shownFacts: FactRef[];
+  /** 生成时送进模型的全部可撤回事实（装备与侧帐状态）；投递前保守复核，不只看申报。 */
+  inputFacts: FactRef[];
 }
 
 function presenceLabel(p: Presence) {
@@ -464,13 +499,15 @@ function baseFacts(snap: EncounterSnapshot): string[] {
 
 /** 普通收据：超预算、超时、拦截或撤权时只发它，不编故事凑数。 */
 export function plainReceipt(snap: EncounterSnapshot): Receipt {
-  return { visitId: snap.visitId, facts: baseFacts(snap), views: null, excerpt: [], plain: true, kinds: [], shownFacts: [] };
+  return { visitId: snap.visitId, facts: baseFacts(snap), views: null, excerpt: [], plain: true, kinds: [], inputFacts: [] };
 }
 
 /** 核对通过才生成带讲述的收据；不过就退普通收据，不重试。 */
 export function buildReceipt(snap: EncounterSnapshot, out: ModelOutput, arm: Arm, opts: CheckOptions = {}): { receipt: Receipt; check: CheckResult } {
   const check = checkOutput(snap, out, arm, opts);
   if (!check.ok) return { receipt: plainReceipt(snap), check };
+  // because 为空（没有归因）只发普通收据，不硬挂卡。
+  if (out.because.length === 0) return { receipt: plainReceipt(snap), check };
   const facts = baseFacts(snap);
   for (const b of out.because) {
     // 卡与角色是服务端核过的归因；步骤文字是模型写的，标“演绎”，不写成本人做的。
@@ -480,9 +517,8 @@ export function buildReceipt(snap: EncounterSnapshot, out: ModelOutput, arm: Arm
     speaker: `${SIDE_LABEL[l.side]}（${presenceLabel(l.presence)}·${l.source === 'player' ? '本人' : '演绎'}）`,
     text: l.text,
   }));
-  const shownFacts: FactRef[] = [];
-  for (const f of [...out.facts_used, ...out.because.flatMap((b) => b.uses)]) if (!hasFact(shownFacts, f)) shownFacts.push(f);
-  return { receipt: { visitId: snap.visitId, facts, views: { a: out.view_a, b: out.view_b }, excerpt, plain: false, kinds: [...out.kind], shownFacts }, check };
+  const inputFacts = snapshotFacts(snap).filter((f) => f.subject !== 'camp' && (f.key.startsWith('gear:') || f.key === 'awning:deployed'));
+  return { receipt: { visitId: snap.visitId, facts, views: { a: out.view_a, b: out.view_b }, excerpt, plain: false, kinds: [...out.kind], inputFacts }, check };
 }
 
 /**
@@ -509,7 +545,7 @@ export function deliverable(snap: EncounterSnapshot, receipt: Receipt, g: Grants
   if (now.length === 0) return null;
   if (receipt.plain) return receipt;
   const kindsOk = receipt.kinds.every((k) => now.includes(k));
-  const factsOk = !receipt.shownFacts.some((f) => hasFact(unshared, f));
+  const factsOk = !receipt.inputFacts.some((f) => hasFact(unshared, f));
   return kindsOk && factsOk ? receipt : plainReceipt(snap);
 }
 

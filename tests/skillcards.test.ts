@@ -1,5 +1,5 @@
 /**
- * 角色技能卡第一轮（issue #112，纸样 docs/SKILL_CARDS.md v0.7）：规则对照组选事唯一、核对器拦下第八节反例、收据分两层。
+ * 角色技能卡第一轮（issue #112，纸样 docs/SKILL_CARDS.md v0.8）：规则对照组选事唯一、核对器拦下第八节反例、收据分两层。
  * 模型输出全部是固定假数据，不接真实模型。
  */
 import { describe, expect, it } from 'vitest';
@@ -50,6 +50,11 @@ const F = {
   bDeployed: { subject: 'b', key: 'awning:deployed' },
 } satisfies Record<string, FactRef>;
 
+/** 规则对照组的模型响应：只写讲述，不带编号、步骤、动作和 activity。 */
+function ruleResp(): ModelOutput {
+  return { kind: [], happening: '', because: [], facts_used: [F.dawn, F.rain, F.aStove], view_a: trip1().view_a, view_b: trip1().view_b };
+}
+
 /** 第七节第一趟生长组的假输出。 */
 function trip1(): ModelOutput {
   return {
@@ -58,6 +63,10 @@ function trip1(): ModelOutput {
     because: [
       { type: 'activity', card: 'sunrise', side: 'b', step: '先邀甲去坡上', uses: [F.dawn] },
       { type: 'activity', card: 'coffee', side: 'a', step: '煮了两杯', uses: [F.aStove] },
+    ],
+    actions: [
+      { side: 'b', action: '先邀甲去坡上' },
+      { side: 'a', action: '煮了两杯' },
     ],
     facts_used: [F.dawn, F.rain, F.aStove],
     view_a: '乙一早叫我去坡上等日出，我煮了两杯咖啡带上去。',
@@ -159,6 +168,10 @@ describe('核对器：第七节正例通过', () => {
         { type: 'activity', card: 'rain', side: 'a', step: '帮着压低侧帐边角', uses: [F.aAwning, F.bDeployed] },
         { type: 'activity', card: 'sunrise', side: 'b', step: '提议雨小了再去看', uses: [F.rain] },
       ],
+      actions: [
+        { side: 'a', action: '帮着压低侧帐边角' },
+        { side: 'b', action: '提议雨小了再去看' },
+      ],
       facts_used: [F.dawn, F.rain, F.aAwning, F.bAwning, F.bDeployed],
       view_a: '雨太大，我帮乙压低了侧帐，我们在帐下等了一早上。',
       view_b: '雨下得急，甲帮我压低了侧帐，日出没看成。',
@@ -191,7 +204,7 @@ describe('核对器：第七节正例通过', () => {
   it('规则对照组第一趟：服务端填 because，讲述落在 A1', () => {
     const s = world(['coffee', 'fixer']);
     const e = selectRuleEvent(s);
-    const narr: ModelOutput = { ...trip1(), because: [], facts_used: [F.dawn, F.rain, F.aStove] };
+    const narr: ModelOutput = { ...ruleResp(), facts_used: [F.dawn, F.rain, F.aStove] };
     const m = mergeRuleResponse(narr, e);
     if (!m.ok) throw new Error(m.reasons.join());
     expect(m.merged.action).toBe('A1');
@@ -232,6 +245,7 @@ describe('核对器：第八节必须拦下的反例', () => {
     onlyA.b = { ...onlyA.b, gear: [], awningDeployed: false };
     const out = trip1();
     out.because[0] = { type: 'activity', card: 'sunrise', side: 'b', step: '撑开乙车的侧帐再邀甲', uses: [F.dawn] };
+    out.actions = [{ side: 'b', action: '撑开乙车的侧帐再邀甲' }, { side: 'a', action: '煮了两杯' }];
     reject(onlyA, out, /乙车的侧帐/);
   });
 
@@ -296,15 +310,16 @@ describe('核对器：第八节必须拦下的反例', () => {
 
   it('规则对照组：模型响应带了动作编号或 activity 步骤，视为试图覆盖锁定字段', () => {
     const e = selectRuleEvent(s);
-    const withAction = mergeRuleResponse({ ...trip1(), because: [], action: 'A4' }, e);
+    const withAction = mergeRuleResponse({ ...ruleResp(), action: 'A4' }, e);
     expect(withAction.ok).toBe(false);
     const withStep = mergeRuleResponse(trip1(), e);
-    expect(withStep).toMatchObject({ ok: false, reasons: [expect.stringMatching(/activity 步骤/)] });
+    expect(withStep.ok).toBe(false);
+    if (!withStep.ok) expect(withStep.reasons.join('\n')).toMatch(/activity 步骤/);
   });
 
   it('规则对照组：合并后的结果被篡改（编号或步骤与锁定不符）照样拦下', () => {
     const e = selectRuleEvent(s);
-    const base = merged({ ...trip1(), because: [] }, e);
+    const base = merged(ruleResp(), e);
     reject(s, { ...base, action: 'A4' }, /不是规则选中的/, { arm: 'rule', event: e });
     reject(s, { ...base, because: base.because.map((b, i) => (i === 0 ? { ...b, step: '泡了一壶茶' } : b)) }, /锁定/, { arm: 'rule', event: e });
   });
@@ -313,6 +328,7 @@ describe('核对器：第八节必须拦下的反例', () => {
     const out = trip1();
     out.facts_used = [...out.facts_used, F.bAwning];
     out.because[0] = { type: 'activity', card: 'sunrise', side: 'b', step: '先撑开乙车的侧帐再邀甲', uses: [F.dawn] };
+    out.actions = [{ side: 'b', action: '先撑开乙车的侧帐再邀甲' }, { side: 'a', action: '煮了两杯' }];
     reject(s, out, /这一步的 uses 没有对应/);
     out.because[0] = { ...out.because[0], uses: [F.dawn, F.aAwning] };
     out.facts_used = [...out.facts_used, F.aAwning];
@@ -347,6 +363,7 @@ describe('核对器：第八节必须拦下的反例', () => {
     const snap = world(['coffee', 'fixer']);
     const out = trip1();
     out.because[1] = { ...out.because[1], step: '骂了乙一句蠢货' };
+    out.actions = [{ side: 'b', action: '先邀甲去坡上' }, { side: 'a', action: '骂了乙一句蠢货' }];
     const { receipt } = buildReceipt(snap, out, { arm: 'growth' });
     expect(receipt.plain).toBe(false);
     expect(safetyTexts(receipt, out).some((t) => t.includes('蠢货'))).toBe(true);
@@ -381,7 +398,55 @@ describe('核对器：第八节必须拦下的反例', () => {
   it('审核等待期间只撤回一条已展示事实的分享许可：增强收据退普通收据；没展示的事实不影响', () => {
     const { receipt } = buildReceipt(s, trip1(), { arm: 'growth' });
     expect(deliverable(s, receipt, grants(), [F.aStove])).toMatchObject({ plain: true });
-    expect(deliverable(s, receipt, grants(), [F.bDeployed])).toBe(receipt);
+    expect(deliverable(s, receipt, grants(), [F.bDeployed])).toMatchObject({ plain: true });
+    expect(deliverable(s, receipt, grants(), [{ subject: 'b', key: 'gear:stove' }])).toBe(receipt);
+  });
+
+  // 第一轮代码评审（#110）的 7 条 P2 回归
+  it('没有聊天许可：带节选、话题或在讲述里写交谈都按越权拦下', () => {
+    const only = { allowed: allowedKinds(grants({ chat: false })) };
+    reject(s, { ...trip1(), excerpt: [{ side: 'b', presence: 'present', source: 'generated', text: '这车不错。' }] }, /对话节选/, { arm: 'growth' }, only);
+    reject(s, { ...trip1(), talk_happening: '聊了聊车。' }, /话题/, { arm: 'growth' }, only);
+    reject(s, { ...trip1(), view_b: '我们一边喝咖啡一边聊车。' }, /写了交谈/, { arm: 'growth' }, only);
+  });
+
+  it('没有聊天许可时规则组不选 A5', () => {
+    const snap = world(['carfan'], ['stove', 'awning']);
+    snap.b = { ...snap.b, cards: ['fixer'] };
+    expect(selectRuleEvent(snap, ['activity', 'talk']).action).toBe('A5');
+    expect(selectRuleEvent(snap, ['activity']).action).not.toBe('A5');
+  });
+
+  it('规则组合并：响应写了 happening 或 actions 视为覆盖锁定字段；合并后由服务端填', () => {
+    const e = selectRuleEvent(s);
+    expect(mergeRuleResponse({ ...ruleResp(), happening: '两人去钓鱼。' }, e).ok).toBe(false);
+    expect(mergeRuleResponse({ ...ruleResp(), actions: [{ side: 'a', action: '钓鱼' }] }, e).ok).toBe(false);
+    const m = merged(ruleResp(), e);
+    expect(m.happening).toContain(e.name);
+    expect(m.actions).toEqual(e.because.map((b) => ({ side: b.side, action: b.step })));
+  });
+
+  it('because 为空即使过了核对也只给普通收据', () => {
+    const quiet = world(['sunrise'], [], { weather: 'clear' });
+    const out: ModelOutput = { kind: [], happening: '', because: [], facts_used: [], view_a: '各自睡了个好觉。', view_b: '各自睡了个好觉。' };
+    expect(buildReceipt(quiet, out, { arm: 'growth' }).receipt.plain).toBe(true);
+  });
+
+  it('下雨的快照里陈述“雨停了”照拦', () => {
+    reject(s, { ...trip1(), happening: '雨停了，两人去坡上。' }, /雨停/);
+  });
+
+  it('activity 步骤必须对应 actions 里同一方、同一句动作', () => {
+    reject(s, { ...trip1(), actions: undefined }, /actions/);
+    reject(s, { ...trip1(), actions: [{ side: 'b', action: '先邀甲去坡上' }, { side: 'b', action: '煮了两杯' }] }, /不在 actions/);
+  });
+
+  it('托管中的一方在自己的视角或步骤里替本人承诺也拦', () => {
+    reject(s, { ...trip1(), view_a: '下次我一定带你去看海。' }, /承诺/);
+    const out = trip1();
+    out.because[1] = { ...out.because[1], step: '说定了下次再来' };
+    out.actions = [{ side: 'b', action: '先邀甲去坡上' }, { side: 'a', action: '说定了下次再来' }];
+    reject(s, out, /承诺/);
   });
 
   it('来访号去重：同一来访号只认领一次', () => {
