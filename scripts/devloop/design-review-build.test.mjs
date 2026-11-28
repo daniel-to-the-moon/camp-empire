@@ -59,7 +59,26 @@ test('首评前重查：已评过、已带 devloop / gpt-design、已关闭、�
 });
 
 test('引用 issue：#编号与本仓库链接，去重、去掉自己、有上限，忽略 HTML 实体', () => {
-  assert.deepEqual(refs({ number: 7, body: '见 #104、#7、#104 与 https://github.com/o/r/issues/106 ，&#39; a#5' }), [104, 106]);
+  assert.deepEqual(refs({ number: 7, body: '见 #104、#7、#104 与 https://github.com/o/r/issues/106 ，&#39; a#5' }, 5, 'o/r'), [104, 106]);
+  // 别的仓库的链接不算本仓库的引用（Codex 审核 #114）
+  assert.deepEqual(refs({ number: 7, body: 'https://github.com/anthropics/claude-code/issues/104 与 https://github.com/o/rx/issues/9 与 https://github.com/O/R/pull/12' }, 5, 'o/r'), [12]);
+  assert.deepEqual(refs({ number: 7, body: 'https://github.com/o/r/issues/106' }), []);
+  // 伪主机、嵌在其他仓库路径里的地址、多一级路径都不算（GPT 审核 #116）
+  assert.deepEqual(refs({ number: 7, body: [
+    'https://notgithub.com/o/r/issues/104',
+    'https://github.com.evil.example/o/r/issues/105',
+    'https://github.com/x/y/blob/main/github.com/o/r/issues/106',
+    'https://example.com/?u=https://github.com/o/r/issues/107',
+    'https://github.com/o/r/issues/108/files',
+    'https://github.com/o/r/issues/109#issuecomment-1',
+    'https://github.com/o/r/pull/110?x=1',
+  ].join('\n') }, 5, 'o/r'), [109, 110]);
+  // 链接里的锚点不当作 #数字引用
+  assert.deepEqual(refs({ number: 7, body: 'https://example.com/page#12 与 #13' }, 5, 'o/r'), [13]);
+  // 句末标点不属于链接（Codex #116 review）
+  for (const tail of ['.', '。', '，', '；', '！', '?', '）', '、', '」', ').', '。下一句'])
+    assert.deepEqual(refs({ number: 7, body: `见 https://github.com/o/r/issues/106${tail}` }, 5, 'o/r'), [106], tail);
+  assert.deepEqual(refs({ number: 7, body: '(https://github.com/o/r/pull/12)' }, 5, 'o/r'), [12]);
   assert.deepEqual(refs({ number: 1, body: '#2 #3 #4 #5 #6 #8' }, 3), [2, 3, 4]);
   assert.deepEqual(refs({ number: 1, body: null }), []);
 });
@@ -244,5 +263,11 @@ test('claude-design-review.yml：评审只读、Claude 无写工具、发评论�
   assert.match(post, /needs\.review\.outputs\.dry != 'true'/);
   assert.match(post, /claude-design-review:first /);
   assert.match(yml, /cancel-in-progress: false/);
+  // 提示词走标准输入（避免 E2BIG），触发记录里的 main 提交取实际检出的提交（Codex 审核 #114）
+  assert.match(review, /< "\$d\/prompt\.md" > "\$d\/claude-result\.json"/);
+  assert.ok(!/claude -p "\$\(cat/.test(review));
+  assert.match(review, /MAIN_SHA=\$\(git rev-parse HEAD\)/);
+  assert.ok(!/github\.sha/.test(review));
+  assert.match(review, /refs --issue "\$d\/issue\.json" --repo "\$REPO"/);
   assert.match(yml, /node scripts\/devloop\/design-review-gate\.mjs/);
 });

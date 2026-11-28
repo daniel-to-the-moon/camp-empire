@@ -4,7 +4,7 @@
  *
  * 子命令（结果写 $GITHUB_OUTPUT：post=true|false、reason=…）：
  *   fixture --name <名> --out <目录>        用 fixtures/design-review/<名>.json 代替真实 issue（试跑用）
- *   refs    --issue issue.json [--max 5]     打印正文里引用的其他 issue 编号，每行一个
+ *   refs    --issue issue.json --repo <owner/name> [--max 5]   打印正文里引用的本仓库 issue 编号，每行一个
  *   first   --dir <目录> --event <事件> --header <提示词头>
  *           已有首评标记 / 重新读到的标签含 devloop、gpt-design / issue 已关闭 → post=false；
  *           否则写 <目录>/prompt.md 与 <目录>/trigger.json
@@ -52,16 +52,40 @@ export function beijing(iso) {
 export const isFirstReview = (c) => c?.user?.login === BOT_LOGIN && c?.user?.type === 'Bot' && String(c?.body ?? '').includes(FIRST_MARKER);
 export const findFirstReview = (comments) => comments.find(isFirstReview) ?? null;
 
-/** 正文里引用的其他 issue（#数字、本仓库 issues/数字 链接），去重、去掉自己，最多 max 个 */
-export function refs(issue, max = 5) {
+/**
+ * 正文里引用的其他 issue：#数字，或**本仓库**的 issues / pull 完整链接。
+ * 链接先按 URL 解析：主机必须是 github.com，路径必须正好是 /<owner>/<repo>/(issues|pull)/<编号>（可带 #锚点、?参数），
+ * owner/repo 与本仓库一致（不区分大小写）。伪主机、别的仓库、嵌在其他路径里的地址都不算（Codex / GPT 审核 #114、#116）。
+ * 链接里的锚点不当作 #数字。按出现顺序去重、去掉自己，最多 max 个。repo 不给时只认 #数字。
+ */
+export function refs(issue, max = 5, repo = '') {
   const body = String(issue?.body ?? '');
-  const seen = [];
-  for (const m of body.matchAll(/(?:^|[^\w&/])#([1-9]\d{0,5})\b|\/issues\/([1-9]\d{0,5})\b/g)) {
-    const n = Number(m[1] ?? m[2]);
-    if (n !== issue.number && !seen.includes(n)) seen.push(n);
-    if (seen.length >= max) break;
+  const want = String(repo).toLowerCase();
+  const found = [];
+  const add = (n) => {
+    if (n !== issue.number && !found.includes(n) && found.length < max) found.push(n);
+  };
+  // 按出现顺序扫描：先试完整链接，否则试 #数字（链接整体被吃掉，所以链接里的锚点不会当作 #数字）
+  // 链接只吃 ASCII URL 字符（全角标点、中文自然断开），再去掉句末的 ASCII 标点
+  const TOKEN_RE = /(https?:\/\/[\w\-.~:/?#@!$&*+,;=%]+)|(?:^|[^\w&/])#([1-9]\d{0,5})\b/gi;
+  for (const m of body.matchAll(TOKEN_RE)) {
+    if (m[2]) {
+      add(Number(m[2]));
+      continue;
+    }
+    if (!want) continue;
+    let u;
+    try {
+      u = new URL(m[1].replace(/[.,;:!?]+$/, ''));
+    } catch {
+      continue;
+    }
+    if (u.hostname.toLowerCase() !== 'github.com') continue;
+    const parts = u.pathname.split('/').filter(Boolean);
+    if (parts.length !== 4 || `${parts[0]}/${parts[1]}`.toLowerCase() !== want || !['issues', 'pull'].includes(parts[2])) continue;
+    if (/^[1-9]\d{0,5}$/.test(parts[3])) add(Number(parts[3]));
   }
-  return seen;
+  return found;
 }
 
 function clip(s, limit) {
@@ -229,7 +253,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     writeFileSync(join(arg('out'), 'comments.jsonl'), (f.comments ?? []).map((c) => JSON.stringify(c)).join('\n') + '\n');
     for (const r of f.refs ?? []) writeFileSync(join(arg('out'), `ref-${r.number}.json`), JSON.stringify(r));
   } else if (cmd === 'refs') {
-    const ns = refs(JSON.parse(readFileSync(arg('issue'), 'utf8')), Number(arg('max') ?? 5));
+    const ns = refs(JSON.parse(readFileSync(arg('issue'), 'utf8')), Number(arg('max') ?? 5), arg('repo') ?? '');
     process.stdout.write(ns.map((n) => `${n}\n`).join(''));
   } else if (cmd === 'first' || cmd === 'status') {
     const issue = JSON.parse(readFileSync(join(dir, 'issue.json'), 'utf8'));
