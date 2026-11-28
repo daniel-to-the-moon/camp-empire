@@ -80,7 +80,7 @@ jobs:
             node scripts/devloop/design-review-build.mjs fixture --name "$FIXTURE" --out "$d"
           else
             bash scripts/devloop/discuss-fetch.sh "$REPO" "$N" "$d"
-            node scripts/devloop/design-review-build.mjs refs --issue "$d/issue.json" --max 5 > "$d/refs.txt"
+            node scripts/devloop/design-review-build.mjs refs --issue "$d/issue.json" --repo "$REPO" --max 5 > "$d/refs.txt"
             while read -r m; do
               gh api "repos/$REPO/issues/$m" --jq '{number, title, state, body, labels: [.labels[].name]}' > "$d/ref-$m.json" || rm -f "$d/ref-$m.json"
             done < "$d/refs.txt"
@@ -93,10 +93,10 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_AT: ${{ github.event.issue.updated_at }}
           ACTOR: ${{ github.actor }}
-          MAIN_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          node scripts/devloop/design-review-build.mjs "$MODE" --dir "$RUNNER_TEMP/dr" \
+          # 记录实际检出的 main 提交（排队期间 main 可能前进，事件自带的提交号不一定是检出的版本）
+          MAIN_SHA=$(git rev-parse HEAD) node scripts/devloop/design-review-build.mjs "$MODE" --dir "$RUNNER_TEMP/dr" \
             --event "$GITHUB_EVENT_PATH" --header scripts/devloop/design-review-prompt.md
       - name: 安装 Claude Code（固定版本）
         if: steps.build.outputs.post == 'true' && steps.gate.outputs.mode == 'first'
@@ -124,7 +124,8 @@ jobs:
             allow="Read,Glob,Grep,WebSearch"
             deny="Bash,Edit,Write,NotebookEdit,WebFetch,Task"
           fi
-          claude -p "$(cat "$d/prompt.md")" \
+          # 提示词经标准输入传入：作为单个参数可能超过 Linux 单参数上限（约 128 KB，E2BIG）
+          claude -p \
             --model "$MODEL" \
             --max-turns 40 \
             --output-format json \
@@ -134,7 +135,7 @@ jobs:
             --disallowedTools "$deny" \
             --setting-sources user \
             --strict-mcp-config \
-            < /dev/null > "$d/claude-result.json"
+            < "$d/prompt.md" > "$d/claude-result.json"
           node scripts/devloop/design-review-build.mjs render --dir "$d" --run-url "$RUN_URL" \
             --model "$MODEL" --tools "$allow" --out "$d/comment.md"
           cat "$d/comment.md" >> "$GITHUB_STEP_SUMMARY"

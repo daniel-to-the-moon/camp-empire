@@ -59,7 +59,10 @@ test('首评前重查：已评过、已带 devloop / gpt-design、已关闭、�
 });
 
 test('引用 issue：#编号与本仓库链接，去重、去掉自己、有上限，忽略 HTML 实体', () => {
-  assert.deepEqual(refs({ number: 7, body: '见 #104、#7、#104 与 https://github.com/o/r/issues/106 ，&#39; a#5' }), [104, 106]);
+  assert.deepEqual(refs({ number: 7, body: '见 #104、#7、#104 与 https://github.com/o/r/issues/106 ，&#39; a#5' }, 5, 'o/r'), [104, 106]);
+  // 别的仓库的链接不算本仓库的引用（Codex 审核 #114）
+  assert.deepEqual(refs({ number: 7, body: 'https://github.com/anthropics/claude-code/issues/104 与 https://github.com/o/rx/issues/9 与 https://github.com/O/R/pull/12' }, 5, 'o/r'), [12]);
+  assert.deepEqual(refs({ number: 7, body: 'https://github.com/o/r/issues/106' }), []);
   assert.deepEqual(refs({ number: 1, body: '#2 #3 #4 #5 #6 #8' }, 3), [2, 3, 4]);
   assert.deepEqual(refs({ number: 1, body: null }), []);
 });
@@ -244,5 +247,11 @@ test('claude-design-review.yml：评审只读、Claude 无写工具、发评论�
   assert.match(post, /needs\.review\.outputs\.dry != 'true'/);
   assert.match(post, /claude-design-review:first /);
   assert.match(yml, /cancel-in-progress: false/);
+  // 提示词走标准输入（避免 E2BIG），触发记录里的 main 提交取实际检出的提交（Codex 审核 #114）
+  assert.match(review, /< "\$d\/prompt\.md" > "\$d\/claude-result\.json"/);
+  assert.ok(!/claude -p "\$\(cat/.test(review));
+  assert.match(review, /MAIN_SHA=\$\(git rev-parse HEAD\)/);
+  assert.ok(!/github\.sha/.test(review));
+  assert.match(review, /refs --issue "\$d\/issue\.json" --repo "\$REPO"/);
   assert.match(yml, /node scripts\/devloop\/design-review-gate\.mjs/);
 });

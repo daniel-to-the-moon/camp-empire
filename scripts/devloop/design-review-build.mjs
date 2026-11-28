@@ -4,7 +4,7 @@
  *
  * 子命令（结果写 $GITHUB_OUTPUT：post=true|false、reason=…）：
  *   fixture --name <名> --out <目录>        用 fixtures/design-review/<名>.json 代替真实 issue（试跑用）
- *   refs    --issue issue.json [--max 5]     打印正文里引用的其他 issue 编号，每行一个
+ *   refs    --issue issue.json --repo <owner/name> [--max 5]   打印正文里引用的本仓库 issue 编号，每行一个
  *   first   --dir <目录> --event <事件> --header <提示词头>
  *           已有首评标记 / 重新读到的标签含 devloop、gpt-design / issue 已关闭 → post=false；
  *           否则写 <目录>/prompt.md 与 <目录>/trigger.json
@@ -52,11 +52,18 @@ export function beijing(iso) {
 export const isFirstReview = (c) => c?.user?.login === BOT_LOGIN && c?.user?.type === 'Bot' && String(c?.body ?? '').includes(FIRST_MARKER);
 export const findFirstReview = (comments) => comments.find(isFirstReview) ?? null;
 
-/** 正文里引用的其他 issue（#数字、本仓库 issues/数字 链接），去重、去掉自己，最多 max 个 */
-export function refs(issue, max = 5) {
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * 正文里引用的其他 issue：#数字，或**本仓库**的 issues / pull 链接（别的仓库的链接不算，否则会取到本仓库同号的无关 issue）。
+ * 去重、去掉自己，最多 max 个。repo 为 owner/name；不给时只认 #数字。
+ */
+export function refs(issue, max = 5, repo = '') {
   const body = String(issue?.body ?? '');
+  const link = repo ? `|github\\.com\\/${escapeRe(repo)}\\/(?:issues|pull)\\/([1-9]\\d{0,5})\\b` : '';
+  const re = new RegExp(`(?:^|[^\\w&/])#([1-9]\\d{0,5})\\b${link}`, 'gi');
   const seen = [];
-  for (const m of body.matchAll(/(?:^|[^\w&/])#([1-9]\d{0,5})\b|\/issues\/([1-9]\d{0,5})\b/g)) {
+  for (const m of body.matchAll(re)) {
     const n = Number(m[1] ?? m[2]);
     if (n !== issue.number && !seen.includes(n)) seen.push(n);
     if (seen.length >= max) break;
@@ -229,7 +236,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     writeFileSync(join(arg('out'), 'comments.jsonl'), (f.comments ?? []).map((c) => JSON.stringify(c)).join('\n') + '\n');
     for (const r of f.refs ?? []) writeFileSync(join(arg('out'), `ref-${r.number}.json`), JSON.stringify(r));
   } else if (cmd === 'refs') {
-    const ns = refs(JSON.parse(readFileSync(arg('issue'), 'utf8')), Number(arg('max') ?? 5));
+    const ns = refs(JSON.parse(readFileSync(arg('issue'), 'utf8')), Number(arg('max') ?? 5), arg('repo') ?? '');
     process.stdout.write(ns.map((n) => `${n}\n`).join(''));
   } else if (cmd === 'first' || cmd === 'status') {
     const issue = JSON.parse(readFileSync(join(dir, 'issue.json'), 'utf8'));
