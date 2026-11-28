@@ -63,6 +63,18 @@ test('引用 issue：#编号与本仓库链接，去重、去掉自己、有上�
   // 别的仓库的链接不算本仓库的引用（Codex 审核 #114）
   assert.deepEqual(refs({ number: 7, body: 'https://github.com/anthropics/claude-code/issues/104 与 https://github.com/o/rx/issues/9 与 https://github.com/O/R/pull/12' }, 5, 'o/r'), [12]);
   assert.deepEqual(refs({ number: 7, body: 'https://github.com/o/r/issues/106' }), []);
+  // 伪主机、嵌在其他仓库路径里的地址、多一级路径都不算（GPT 审核 #116）
+  assert.deepEqual(refs({ number: 7, body: [
+    'https://notgithub.com/o/r/issues/104',
+    'https://github.com.evil.example/o/r/issues/105',
+    'https://github.com/x/y/blob/main/github.com/o/r/issues/106',
+    'https://example.com/?u=https://github.com/o/r/issues/107',
+    'https://github.com/o/r/issues/108/files',
+    'https://github.com/o/r/issues/109#issuecomment-1',
+    'https://github.com/o/r/pull/110?x=1',
+  ].join('\n') }, 5, 'o/r'), [109, 110]);
+  // 链接里的锚点不当作 #数字引用
+  assert.deepEqual(refs({ number: 7, body: 'https://example.com/page#12 与 #13' }, 5, 'o/r'), [13]);
   assert.deepEqual(refs({ number: 1, body: '#2 #3 #4 #5 #6 #8' }, 3), [2, 3, 4]);
   assert.deepEqual(refs({ number: 1, body: null }), []);
 });

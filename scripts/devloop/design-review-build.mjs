@@ -52,23 +52,39 @@ export function beijing(iso) {
 export const isFirstReview = (c) => c?.user?.login === BOT_LOGIN && c?.user?.type === 'Bot' && String(c?.body ?? '').includes(FIRST_MARKER);
 export const findFirstReview = (comments) => comments.find(isFirstReview) ?? null;
 
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 /**
- * 正文里引用的其他 issue：#数字，或**本仓库**的 issues / pull 链接（别的仓库的链接不算，否则会取到本仓库同号的无关 issue）。
- * 去重、去掉自己，最多 max 个。repo 为 owner/name；不给时只认 #数字。
+ * 正文里引用的其他 issue：#数字，或**本仓库**的 issues / pull 完整链接。
+ * 链接先按 URL 解析：主机必须是 github.com，路径必须正好是 /<owner>/<repo>/(issues|pull)/<编号>（可带 #锚点、?参数），
+ * owner/repo 与本仓库一致（不区分大小写）。伪主机、别的仓库、嵌在其他路径里的地址都不算（Codex / GPT 审核 #114、#116）。
+ * 链接里的锚点不当作 #数字。按出现顺序去重、去掉自己，最多 max 个。repo 不给时只认 #数字。
  */
 export function refs(issue, max = 5, repo = '') {
   const body = String(issue?.body ?? '');
-  const link = repo ? `|github\\.com\\/${escapeRe(repo)}\\/(?:issues|pull)\\/([1-9]\\d{0,5})\\b` : '';
-  const re = new RegExp(`(?:^|[^\\w&/])#([1-9]\\d{0,5})\\b${link}`, 'gi');
-  const seen = [];
-  for (const m of body.matchAll(re)) {
-    const n = Number(m[1] ?? m[2]);
-    if (n !== issue.number && !seen.includes(n)) seen.push(n);
-    if (seen.length >= max) break;
+  const want = String(repo).toLowerCase();
+  const found = [];
+  const add = (n) => {
+    if (n !== issue.number && !found.includes(n) && found.length < max) found.push(n);
+  };
+  // 按出现顺序扫描：先试完整链接，否则试 #数字（链接整体被吃掉，所以链接里的锚点不会当作 #数字）
+  const TOKEN_RE = /(https?:\/\/[^\s<>()\[\]"'`]+)|(?:^|[^\w&/])#([1-9]\d{0,5})\b/gi;
+  for (const m of body.matchAll(TOKEN_RE)) {
+    if (m[2]) {
+      add(Number(m[2]));
+      continue;
+    }
+    if (!want) continue;
+    let u;
+    try {
+      u = new URL(m[1]);
+    } catch {
+      continue;
+    }
+    if (u.hostname.toLowerCase() !== 'github.com') continue;
+    const parts = u.pathname.split('/').filter(Boolean);
+    if (parts.length !== 4 || `${parts[0]}/${parts[1]}`.toLowerCase() !== want || !['issues', 'pull'].includes(parts[2])) continue;
+    if (/^[1-9]\d{0,5}$/.test(parts[3])) add(Number(parts[3]));
   }
-  return seen;
+  return found;
 }
 
 function clip(s, limit) {

@@ -124,7 +124,8 @@ jobs:
             allow="Read,Glob,Grep,WebSearch"
             deny="Bash,Edit,Write,NotebookEdit,WebFetch,Task"
           fi
-          # 提示词经标准输入传入：作为单个参数可能超过 Linux 单参数上限（约 128 KB，E2BIG）
+          # 提示词经标准输入传入，不作为单个命令行参数：Linux 对单个参数字符串有长度上限（execve(2) 手册“Limits on size of
+          # arguments and environment”：MAX_ARG_STRLEN = 32 页），超出则 E2BIG。runner 上的实际值未实测，待核实；讨论全文上限 THREAD_LIMIT 为 110,000 字。
           claude -p \
             --model "$MODEL" \
             --max-turns 40 \
