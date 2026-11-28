@@ -11,12 +11,13 @@
     "e2e": "node scripts/e2e/smoke.mjs",
     "economy:table": "tsx scripts/economy-table.ts",
     "swept:table": "tsx scripts/swept-table.ts",
-    "lap:table": "tsx scripts/lap-table.ts"
+    "perf:measure": "tsx scripts/perf-measure.ts"
   },
   "dependencies": {
     "three": "0.187.0"
   },
   "devDependencies": {
+    "@types/node": "24.19.2",
     "@types/three": "0.187.0",
     "fake-indexeddb": "6.2.7",
     "playwright": "1.63.0",
